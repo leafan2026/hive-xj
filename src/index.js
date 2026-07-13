@@ -198,10 +198,10 @@ export default {
 <body>
   <header class="header">
     <div class="header-inner">
-      <h1>📊 小金商户用户跟踪 · 数据看板</h1>
+      <h1>小金商户用户跟踪 · 数据看板</h1>
       <div class="header-meta">
         <span>数据来源：金数据</span>
-        <button class="refresh-btn" onclick="refreshData()">🔄 刷新数据</button>
+        <button class="refresh-btn" onclick="refreshData()">刷新数据</button>
       </div>
     </div>
   </header>

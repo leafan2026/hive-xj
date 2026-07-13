@@ -12,11 +12,11 @@ let creatorChart = null;
 
 // 分类顺序与图标/颜色
 const CATEGORIES = [
-  { key: "A潜客", icon: "🔍", color: "#42a5f5" },
-  { key: "B入驻", icon: "🏠", color: "#66bb6a" },
-  { key: "C首单", icon: "🛒", color: "#ffa726" },
-  { key: "D存量", icon: "📦", color: "#ab47bc" },
-  { key: "E流失", icon: "⚠️", color: "#ef5350" },
+  { key: "A潜客", icon: "🔍", color: "#0071e3" },
+  { key: "B入驻", icon: "🏠", color: "#34c759" },
+  { key: "C首单", icon: "🛒", color: "#ff9500" },
+  { key: "D存量", icon: "📦", color: "#af52de" },
+  { key: "E流失", icon: "⚠️", color: "#ff3b30" },
 ];
 
 // Debounce
@@ -115,7 +115,7 @@ function renderCategoryChart(stats) {
     data: {
       labels: labels.map((l) => {
         const m = CATEGORIES.find((c) => c.key === l);
-        return m ? `${m.icon} ${l}` : l;
+        return l;
       }),
       datasets: [
         {
@@ -155,10 +155,10 @@ function renderIntentionChart(stats) {
   const labels = Object.keys(stats.intentionCounts);
   const values = Object.values(stats.intentionCounts);
   const colors = {
-    无: "#bdbdbd",
-    低: "#ffb74d",
-    中: "#66bb6a",
-    高: "#42a5f5",
+    无: "#d2d2d7",
+    低: "#ff9500",
+    中: "#34c759",
+    高: "#0071e3",
   };
 
   intentionChart = new Chart(ctx, {
@@ -169,7 +169,7 @@ function renderIntentionChart(stats) {
         {
           label: "数量",
           data: values,
-          backgroundColor: labels.map((l) => colors[l] || "#90caf9"),
+          backgroundColor: labels.map((l) => colors[l] || "#b3d9fa"),
           borderRadius: 4,
         },
       ],
@@ -184,7 +184,7 @@ function renderIntentionChart(stats) {
         y: {
           beginAtZero: true,
           ticks: { precision: 0, font: { size: 11 } },
-          grid: { color: "#f0f0f0" },
+          grid: { color: "#e8e8ed" },
         },
         x: {
           ticks: { font: { size: 11 } },
@@ -206,7 +206,7 @@ function renderWeeklyChart(stats, sortedWeeks) {
     // 只在有数据的分类才显示
     return sortedWeeks.some((w) => (stats.weeklyCategoryCounts[w]?.[c.key] || 0) > 0);
   }).map((cat) => ({
-    label: `${cat.icon} ${cat.key}`,
+    label: cat.key,
     data: sortedWeeks.map((w) => stats.weeklyCategoryCounts[w]?.[cat.key] || 0),
     backgroundColor: cat.color,
     borderRadius: 2,
@@ -255,7 +255,7 @@ function renderWeeklyChart(stats, sortedWeeks) {
           stacked: true,
           beginAtZero: true,
           ticks: { precision: 0, font: { size: 11 } },
-          grid: { color: "#f0f0f0" },
+          grid: { color: "#e8e8ed" },
         },
       },
     },
@@ -269,7 +269,7 @@ function renderCreatorChart(stats) {
   const entries = Object.entries(stats.followerCounts).sort((a, b) => b[1] - a[1]);
   const labels = entries.map((e) => e[0]);
   const values = entries.map((e) => e[1]);
-  const bgColors = ["#0f3460", "#1a5276", "#2980b9", "#3498db", "#5dade2", "#85c1e9"];
+  const bgColors = ["#0071e3", "#3f8ce8", "#6ba7ee", "#93c0f3", "#b9d7f8", "#dcebfc"];
 
   creatorChart = new Chart(ctx, {
     type: "bar",
@@ -295,7 +295,7 @@ function renderCreatorChart(stats) {
         x: {
           beginAtZero: true,
           ticks: { precision: 0, font: { size: 11 } },
-          grid: { color: "#f0f0f0" },
+          grid: { color: "#e8e8ed" },
         },
         y: {
           ticks: { font: { size: 11 } },
@@ -332,10 +332,10 @@ function renderTable(res) {
       : "-";
 
     const vxLink = e.field_1
-      ? `<a class="link-icon" href="${escapeHtml(e.field_1)}" target="_blank" rel="noopener">🔗 vx</a>`
+      ? `<a class="link-icon" href="${escapeHtml(e.field_1)}" target="_blank" rel="noopener">vx</a>`
       : "-";
     const chatLink = e.field_2
-      ? `<a class="link-icon" href="${escapeHtml(e.field_2)}" target="_blank" rel="noopener">💬 会话</a>`
+      ? `<a class="link-icon" href="${escapeHtml(e.field_2)}" target="_blank" rel="noopener">会话</a>`
       : "-";
 
     tr.innerHTML = `
