@@ -1,0 +1,10 @@
+node_modules/
+.deploy-dist/
+.wrangler/
+.wrangler.wdl-tmp*.json
+*.log
+
+# Never commit tenant credentials
+.env
+.env.*
+!.env.example
