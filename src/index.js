@@ -233,46 +233,6 @@ export default {
       </div>
     </div>
 
-    <div class="filters">
-      <select id="filterCategory" onchange="loadEntries()">
-        <option value="">全部分类</option>
-        <option value="A潜客">A潜客</option>
-        <option value="B入驻">B入驻</option>
-        <option value="C首单">C首单</option>
-        <option value="D存量">D存量</option>
-        <option value="E流失">E流失</option>
-      </select>
-      <select id="filterIntention" onchange="loadEntries()">
-        <option value="">全部意向</option>
-        <option value="无">无</option>
-        <option value="低">低</option>
-        <option value="中">中</option>
-        <option value="高">高</option>
-      </select>
-      <input type="text" id="filterSearch" placeholder="搜索场景/跟进内容…" oninput="debounceSearch()">
-      <span class="entry-count" id="entryCount"></span>
-    </div>
-
-    <div class="table-wrapper">
-      <table class="entries-table" id="entriesTable">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>分类</th>
-            <th>场景</th>
-            <th>意向</th>
-            <th>会话时间</th>
-            <th>跟进情况</th>
-            <th>跟进时间</th>
-            <th>跟进人</th>
-            <th>链接</th>
-          </tr>
-        </thead>
-        <tbody id="entriesBody"></tbody>
-      </table>
-    </div>
-
-    <div class="pagination" id="pagination"></div>
 
     <div class="loading-overlay" id="loadingOverlay">
       <div class="loading-spinner"></div>

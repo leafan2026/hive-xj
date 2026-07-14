@@ -29,16 +29,6 @@ const CATEGORIES = [
   { key: "E流失", icon: "⚠️", color: "#dccfec" },
 ];
 
-// Debounce
-let searchTimer = null;
-function debounceSearch() {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    currentPage = 1;
-    loadEntries();
-  }, 400);
-}
-
 // ============== Data Loading ==============
 
 async function fetchAPI(path) {
@@ -68,37 +58,12 @@ async function loadDashboard() {
   }
 }
 
-async function loadEntries() {
-  showLoading(true);
-  try {
-    const category = document.getElementById("filterCategory").value;
-    const intention = document.getElementById("filterIntention").value;
-    const search = document.getElementById("filterSearch").value;
-
-    let url = `/app/api/entries?page=${currentPage}&per_page=${PER_PAGE}`;
-    if (category) url += `&category=${encodeURIComponent(category)}`;
-    if (intention) url += `&intention=${encodeURIComponent(intention)}`;
-    if (search) url += `&search=${encodeURIComponent(search)}`;
-
-    const res = await fetchAPI(url);
-    if (!res.success) throw new Error(res.error);
-
-    renderTable(res);
-    renderPagination(res);
-    document.getElementById("entryCount").textContent = `共 ${res.total} 条`;
-  } catch (err) {
-    console.error("加载列表失败:", err);
-  } finally {
-    showLoading(false);
-  }
-}
-
 async function refreshData() {
   const btn = document.querySelector(".refresh-btn");
   btn.disabled = true;
   btn.textContent = "⏳ 刷新中…";
   currentPage = 1;
-  await Promise.all([loadDashboard(), loadEntries()]);
+  await loadDashboard();
   btn.disabled = false;
   btn.textContent = "🔄 刷新数据";
 }
@@ -329,132 +294,6 @@ function renderCreatorChart(stats) {
       },
     },
   });
-}
-
-function renderTable(res) {
-  const tbody = document.getElementById("entriesBody");
-  tbody.innerHTML = "";
-
-  if (res.data.length === 0) {
-    tbody.innerHTML =
-      '<tr><td colspan="9" style="text-align:center;padding:40px;color:#999;">暂无数据</td></tr>';
-    return;
-  }
-
-  for (const e of res.data) {
-    const tr = document.createElement("tr");
-    const catClass = getCategoryClass(e.field_3);
-    const intentClass = getIntentionClass(e.field_8);
-
-    const scene = e.field_4 || "";
-    const followup = e.field_7 || "";
-    const sessionTime = e.field_5 || "-";
-    const followTime = e.field_9 || "-";
-
-    // 序列号 → 跳转到金数据详情页
-    const snLink = e.serial_number
-      ? `<a class="sn-link" href="${JINSHUJU_TABLE_URL}?serial_number=${e.serial_number}" target="_blank" rel="noopener">${e.serial_number}</a>`
-      : "-";
-
-    const vxLink = e.field_1
-      ? `<a class="link-icon" href="${escapeHtml(e.field_1)}" target="_blank" rel="noopener">vx</a>`
-      : "-";
-    const chatLink = e.field_2
-      ? `<a class="link-icon" href="${escapeHtml(e.field_2)}" target="_blank" rel="noopener">会话</a>`
-      : "-";
-
-    tr.innerHTML = `
-      <td>${snLink}</td>
-      <td><span class="badge ${catClass}">${getCatIcon(e.field_3)} ${escapeHtml(e.field_3 || "-")}</span></td>
-      <td class="scene-cell" title="${escapeHtml(scene)}">${escapeHtml(scene) || "-"}</td>
-      <td><span class="badge ${intentClass}">${escapeHtml(e.field_8 || "-")}</span></td>
-      <td>${escapeHtml(sessionTime)}</td>
-      <td class="followup-cell" title="${escapeHtml(followup)}">${escapeHtml(followup) || "-"}</td>
-      <td>${escapeHtml(followTime)}</td>
-      <td>${escapeHtml(e.field_10 || "未分配")}</td>
-      <td>${vxLink} ${chatLink}</td>
-    `;
-    tbody.appendChild(tr);
-  }
-}
-
-function renderPagination(res) {
-  const container = document.getElementById("pagination");
-  container.innerHTML = "";
-
-  if (res.totalPages <= 1) return;
-
-  const prev = document.createElement("button");
-  prev.className = "page-btn";
-  prev.textContent = "‹";
-  prev.disabled = currentPage <= 1;
-  prev.onclick = () => {
-    if (currentPage > 1) {
-      currentPage--;
-      loadEntries();
-    }
-  };
-  container.appendChild(prev);
-
-  const start = Math.max(1, currentPage - 2);
-  const end = Math.min(res.totalPages, currentPage + 2);
-
-  if (start > 1) {
-    const first = document.createElement("button");
-    first.className = "page-btn";
-    first.textContent = "1";
-    first.onclick = () => {
-      currentPage = 1;
-      loadEntries();
-    };
-    container.appendChild(first);
-    if (start > 2) {
-      const dots = document.createElement("span");
-      dots.style.padding = "0 4px";
-      dots.textContent = "…";
-      container.appendChild(dots);
-    }
-  }
-
-  for (let i = start; i <= end; i++) {
-    const btn = document.createElement("button");
-    btn.className = "page-btn" + (i === currentPage ? " active" : "");
-    btn.textContent = i;
-    btn.onclick = () => {
-      currentPage = i;
-      loadEntries();
-    };
-    container.appendChild(btn);
-  }
-
-  if (end < res.totalPages) {
-    if (end < res.totalPages - 1) {
-      const dots = document.createElement("span");
-      dots.style.padding = "0 4px";
-      dots.textContent = "…";
-      container.appendChild(dots);
-    }
-    const last = document.createElement("button");
-    last.className = "page-btn";
-    last.textContent = res.totalPages;
-    last.onclick = () => {
-      currentPage = res.totalPages;
-      loadEntries();
-    };
-    container.appendChild(last);
-  }
-
-  const next = document.createElement("button");
-  next.className = "page-btn";
-  next.textContent = "›";
-  next.disabled = currentPage >= res.totalPages;
-  next.onclick = () => {
-    if (currentPage < res.totalPages) {
-      currentPage++;
-      loadEntries();
-    }
-  };
-  container.appendChild(next);
 }
 
 // ============== Helpers ==============
