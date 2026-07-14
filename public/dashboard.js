@@ -18,6 +18,7 @@ let categoryChart = null;
 let intentionChart = null;
 let weeklyChart = null;
 let creatorChart = null;
+let startupChart = null;
 
 // 分类顺序与图标/颜色
 const CATEGORIES = [
@@ -46,6 +47,7 @@ async function loadDashboard() {
     renderIntentionChart(res.stats);
     renderWeeklyChart(res.stats, res.sortedWeeks);
     renderCreatorChart(res.stats);
+    renderStartupChart(res.stats);
   } catch (err) {
     console.error("加载看板失败:", err);
     document.querySelector(".charts-grid").innerHTML =
@@ -288,6 +290,55 @@ function renderCreatorChart(stats) {
         },
         y: {
           ticks: { font: { size: 11 } },
+          grid: { display: false },
+        },
+      },
+    },
+  });
+}
+
+
+function renderStartupChart(stats) {
+  const ctx = document.getElementById("startupChart").getContext("2d");
+  if (startupChart) startupChart.destroy();
+
+  const entries = Object.entries(stats.startupCounts || {}).sort(
+    (a, b) => b[1] - a[1]
+  );
+  const labels = entries.map((e) => e[0]);
+  const values = entries.map((e) => e[1]);
+  // 未标记灰色，其余长春花紫
+  const colors = labels.map((l) => (l === "未标记" ? "#e0dcea" : "#a997df"));
+
+  startupChart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "记录数",
+          data: values,
+          backgroundColor: colors,
+          borderRadius: 6,
+          maxBarThickness: 26,
+        },
+      ],
+    },
+    options: {
+      indexAxis: "y",
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+      },
+      scales: {
+        x: {
+          beginAtZero: true,
+          ticks: { precision: 0, font: { size: 11 } },
+          grid: { color: "#e7e2f0" },
+        },
+        y: {
+          ticks: { font: { size: 12 } },
           grid: { display: false },
         },
       },

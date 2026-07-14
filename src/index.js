@@ -14,6 +14,7 @@ const MD_FIELDS = {
   field_8: "6a55d4aa9a45d48bb3a3d651", // 意向（下拉）
   field_9: "6a55d4aa9a45d48bb3a3d652", // 跟进时间
   field_10: "6a55d4aa9a45d48bb3a3d653", // 跟进人（下拉）
+  field_11: "6a55dae40b68d2c42bcc1677", // 启动状态（Lookup）
 };
 const MD_OPTION_FIELDS = new Set(["field_3", "field_8", "field_10"]);
 
@@ -22,14 +23,23 @@ function mdOptionValue(v) {
   return Array.isArray(v) && v.length > 0 ? v[0].value : "";
 }
 
+function mdText(v) {
+  if (v == null) return "";
+  if (Array.isArray(v)) {
+    return v
+      .map((x) => (x && typeof x === "object" ? x.value || "" : String(x)))
+      .filter(Boolean)
+      .join(",");
+  }
+  return String(v);
+}
+
 function mdMapRow(row) {
   const e = { created_at: row.ctime || "" };
   for (const [name, id] of Object.entries(MD_FIELDS)) {
     e[name] = MD_OPTION_FIELDS.has(name)
       ? mdOptionValue(row[id])
-      : row[id] == null
-        ? ""
-        : String(row[id]);
+      : mdText(row[id]);
   }
   return e;
 }
@@ -86,6 +96,7 @@ function buildStats(entries) {
   const weeklyCounts = {};
   const weeklyCategoryCounts = {}; // { "27": { "A潜客": 3, ... }, ... }
   const followerCounts = {};
+  const startupCounts = {};
   let followedCount = 0;
   let withIntention = 0;
 
@@ -94,11 +105,13 @@ function buildStats(entries) {
     const intent = e.field_8 || "未标记";
     const week = e.field_6 || "未知";
     const follower = e.field_10 || "未分配";
+    const startup = e.field_11 || "未标记";
 
     categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
     intentionCounts[intent] = (intentionCounts[intent] || 0) + 1;
     weeklyCounts[week] = (weeklyCounts[week] || 0) + 1;
     followerCounts[follower] = (followerCounts[follower] || 0) + 1;
+    startupCounts[startup] = (startupCounts[startup] || 0) + 1;
 
     // 按周 + 分类的交叉统计
     if (!weeklyCategoryCounts[week]) weeklyCategoryCounts[week] = {};
@@ -123,6 +136,7 @@ function buildStats(entries) {
     weeklyCounts,
     weeklyCategoryCounts,
     followerCounts,
+    startupCounts,
   };
 }
 
@@ -291,6 +305,10 @@ export default {
       <div class="chart-card">
         <h3>跟进人统计</h3>
         <canvas id="creatorChart"></canvas>
+      </div>
+      <div class="chart-card chart-card-wide">
+        <h3>启动状态</h3>
+        <canvas id="startupChart"></canvas>
       </div>
       <div class="chart-card chart-card-wide">
         <h3>各周趋势 · 按分类</h3>

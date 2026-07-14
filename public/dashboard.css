@@ -477,3 +477,9 @@ body {
     line-clamp: 2;
   }
 }
+
+/* 启动状态横向条形图固定高度 */
+#startupChart {
+  height: 280px !important;
+  max-height: 280px;
+}
