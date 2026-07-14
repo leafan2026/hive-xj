@@ -97,8 +97,37 @@ function sortWeeks(weeks) {
     .sort((a, b) => Number(a) - Number(b));
 }
 
+// ============== 访问验证（Basic Auth） ==============
+// AUTH_USERS secret 格式："user1:pass1,user2:pass2"，未配置时不启用验证
+function checkAuth(request, env) {
+  const users = (env.AUTH_USERS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (users.length === 0) return true;
+  const header = request.headers.get("Authorization") || "";
+  if (!header.startsWith("Basic ")) return false;
+  let decoded;
+  try {
+    decoded = atob(header.slice(6));
+  } catch {
+    return false;
+  }
+  return users.includes(decoded);
+}
+
 export default {
   async fetch(request, env, ctx) {
+    if (!checkAuth(request, env)) {
+      return new Response("\u9700\u8981\u767b\u5f55", {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": 'Basic realm="Dashboard", charset="UTF-8"',
+          "content-type": "text/plain; charset=utf-8",
+        },
+      });
+    }
+
     const url = new URL(request.url);
     const path = url.pathname;
 
