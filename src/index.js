@@ -1,46 +1,82 @@
-// Field mapping
-const FIELD_LABELS = {
-  field_1: "vx链接",
-  field_2: "会话链接",
-  field_3: "分类",
-  field_4: "场景",
-  field_5: "会话时间",
-  field_6: "第几周",
-  field_7: "跟进情况",
-  field_8: "意向",
-  field_9: "跟进时间",
+// ============== 明道云 HAP 取数 ==============
+const MD_WORKSHEET = "6a55d4aa9a45d48bb3a3d649";
+const MD_VIEW = "6a55d4e4ac501cfc947ff91a"; // 「全部」视图
+
+// 明道云字段 ID → 看板字段
+const MD_FIELDS = {
+  field_1: "6a55d4aa9a45d48bb3a3d64a", // vx链接
+  field_2: "6a55d4aa9a45d48bb3a3d64b", // 会话链接
+  field_3: "6a55d4aa9a45d48bb3a3d64c", // 分类（下拉）
+  field_4: "6a55d4aa9a45d48bb3a3d64d", // 场景
+  field_5: "6a55d4aa9a45d48bb3a3d64e", // 会话时间
+  field_6: "6a55d4aa9a45d48bb3a3d64f", // 第几周
+  field_7: "6a55d4aa9a45d48bb3a3d650", // 跟进情况
+  field_8: "6a55d4aa9a45d48bb3a3d651", // 意向（下拉）
+  field_9: "6a55d4aa9a45d48bb3a3d652", // 跟进时间
+  field_10: "6a55d4aa9a45d48bb3a3d653", // 跟进人（下拉）
 };
+const MD_OPTION_FIELDS = new Set(["field_3", "field_8", "field_10"]);
 
-const CATEGORY_ORDER = ["A潜客", "B入驻", "C首单", "D存量", "E流失"];
+// 下拉字段值形如 [{key, value}]
+function mdOptionValue(v) {
+  return Array.isArray(v) && v.length > 0 ? v[0].value : "";
+}
 
-// 从金数据拉取所有条目（游标分页）
+function mdMapRow(row) {
+  const e = { created_at: row.ctime || "" };
+  for (const [name, id] of Object.entries(MD_FIELDS)) {
+    e[name] = MD_OPTION_FIELDS.has(name)
+      ? mdOptionValue(row[id])
+      : row[id] == null
+        ? ""
+        : String(row[id]);
+  }
+  return e;
+}
+
+// 从明道云拉取所有记录（分页）
 async function fetchAllEntries(env) {
-  const key = env.JSJ_API_KEY;
-  const secret = env.JSJ_API_SECRET;
-  const auth = btoa(`${key}:${secret}`);
+  const pageSize = 1000;
+  let pageIndex = 1;
+  let all = [];
 
-  const base = "https://next.jinshuju.net/api/v1/forms/G9Kct7/entries";
-  let cursor = null;
-  let allData = [];
-
-  do {
-    const url = cursor ? `${base}?per_page=100&next=${cursor}` : `${base}?per_page=100`;
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Basic ${auth}`,
-        Accept: "application/json",
-        "User-Agent": "WDL-Dashboard/1.0",
-      },
-    });
+  while (true) {
+    const res = await fetch(
+      `https://api.mingdao.com/v3/app/worksheets/${MD_WORKSHEET}/rows/list`,
+      {
+        method: "POST",
+        headers: {
+          "HAP-Appkey": env.HAP_APPKEY,
+          "HAP-Sign": env.HAP_SIGN,
+          "Content-Type": "application/json",
+          "User-Agent": "WDL-Dashboard/1.0",
+        },
+        body: JSON.stringify({
+          pageSize,
+          pageIndex,
+          viewId: MD_VIEW,
+          useFieldIdAsKey: true,
+          includeTotalCount: true,
+        }),
+      }
+    );
     if (!res.ok) {
-      throw new Error(`JinShuJu API error: ${res.status} ${await res.text()}`);
+      throw new Error(`Mingdao API error: ${res.status} ${await res.text()}`);
     }
     const json = await res.json();
-    allData = allData.concat(json.data);
-    cursor = json.next || null;
-  } while (cursor);
+    if (!json.success || !json.data) {
+      throw new Error(
+        `Mingdao API error: ${json.error_code} ${json.error_msg || ""}`
+      );
+    }
+    const rows = json.data.rows || [];
+    all = all.concat(rows.map(mdMapRow));
+    const total = json.data.total || 0;
+    if (rows.length < pageSize || all.length >= total) break;
+    pageIndex++;
+  }
 
-  return allData;
+  return all;
 }
 
 // 构建统计摘要
@@ -229,7 +265,7 @@ export default {
     <div class="header-inner">
       <h1>小金商户用户跟踪 · 数据看板</h1>
       <div class="header-meta">
-        <span>数据来源：金数据</span>
+        <span>数据来源：明道云</span>
         <button class="refresh-btn" onclick="refreshData()">刷新数据</button>
       </div>
     </div>

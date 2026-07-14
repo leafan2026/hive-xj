@@ -2,7 +2,6 @@
 let dashboardData = null;
 let currentPage = 1;
 const PER_PAGE = 20;
-const JINSHUJU_TABLE_URL = "https://next.jinshuju.net/tables/G9Kct7";
 
 // Chart.js 全局默认
 if (window.Chart) {
