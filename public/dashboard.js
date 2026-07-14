@@ -4,6 +4,16 @@ let currentPage = 1;
 const PER_PAGE = 20;
 const JINSHUJU_TABLE_URL = "https://next.jinshuju.net/tables/G9Kct7";
 
+// Chart.js 全局默认
+if (window.Chart) {
+  Chart.defaults.font.family =
+    '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif';
+  Chart.defaults.color = "#86868b";
+  Chart.defaults.plugins.tooltip.backgroundColor = "rgba(29, 29, 31, 0.88)";
+  Chart.defaults.plugins.tooltip.padding = 10;
+  Chart.defaults.plugins.tooltip.cornerRadius = 10;
+}
+
 // Chart instances
 let categoryChart = null;
 let intentionChart = null;
@@ -106,22 +116,24 @@ function renderCategoryChart(stats) {
   const ctx = document.getElementById("categoryChart").getContext("2d");
   if (categoryChart) categoryChart.destroy();
 
-  const labels = Object.keys(stats.categoryCounts);
-  const values = Object.values(stats.categoryCounts);
-  const colors = CATEGORIES.map((c) => c.color);
+  const order = CATEGORIES.map((c) => c.key);
+  const labels = Object.keys(stats.categoryCounts).sort(
+    (a, b) => order.indexOf(a) - order.indexOf(b)
+  );
+  const values = labels.map((l) => stats.categoryCounts[l]);
+  const colors = labels.map(
+    (l) => (CATEGORIES.find((c) => c.key === l) || {}).color || "#d2d2d7"
+  );
 
   categoryChart = new Chart(ctx, {
-    type: "pie",
+    type: "doughnut",
     data: {
-      labels: labels.map((l) => {
-        const m = CATEGORIES.find((c) => c.key === l);
-        return l;
-      }),
+      labels,
       datasets: [
         {
           data: values,
-          backgroundColor: colors.slice(0, labels.length),
-          borderWidth: 2,
+          backgroundColor: colors,
+          borderWidth: 3,
           borderColor: "#fff",
         },
       ],
@@ -129,17 +141,25 @@ function renderCategoryChart(stats) {
     options: {
       responsive: true,
       maintainAspectRatio: true,
+      cutout: "62%",
       plugins: {
         legend: {
           position: "right",
-          labels: { font: { size: 12 }, padding: 12 },
+          labels: {
+            font: { size: 12 },
+            padding: 12,
+            usePointStyle: true,
+            pointStyle: "circle",
+            boxWidth: 8,
+            boxHeight: 8,
+          },
         },
         tooltip: {
           callbacks: {
             label: function (ctx) {
               const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
               const pct = ((ctx.parsed / total) * 100).toFixed(1);
-              return `${ctx.label}: ${ctx.parsed} (${pct}%)`;
+              return ctx.label + ": " + ctx.parsed + " (" + pct + "%)";
             },
           },
         },
@@ -155,6 +175,7 @@ function renderIntentionChart(stats) {
   const labels = Object.keys(stats.intentionCounts);
   const values = Object.values(stats.intentionCounts);
   const colors = {
+    未标记: "#d2d2d7",
     无: "#d2d2d7",
     低: "#ff9500",
     中: "#34c759",
@@ -170,7 +191,8 @@ function renderIntentionChart(stats) {
           label: "数量",
           data: values,
           backgroundColor: labels.map((l) => colors[l] || "#b3d9fa"),
-          borderRadius: 4,
+          borderRadius: 6,
+          maxBarThickness: 56,
         },
       ],
     },
@@ -209,7 +231,8 @@ function renderWeeklyChart(stats, sortedWeeks) {
     label: cat.key,
     data: sortedWeeks.map((w) => stats.weeklyCategoryCounts[w]?.[cat.key] || 0),
     backgroundColor: cat.color,
-    borderRadius: 2,
+    borderRadius: 3,
+    maxBarThickness: 72,
   }));
 
   weeklyChart = new Chart(ctx, {
@@ -228,7 +251,9 @@ function renderWeeklyChart(stats, sortedWeeks) {
             font: { size: 12 },
             padding: 14,
             usePointStyle: true,
-            pointStyle: "rectRounded",
+            pointStyle: "circle",
+            boxWidth: 8,
+            boxHeight: 8,
           },
         },
         tooltip: {
@@ -269,8 +294,7 @@ function renderCreatorChart(stats) {
   const entries = Object.entries(stats.followerCounts).sort((a, b) => b[1] - a[1]);
   const labels = entries.map((e) => e[0]);
   const values = entries.map((e) => e[1]);
-  const bgColors = ["#0071e3", "#3f8ce8", "#6ba7ee", "#93c0f3", "#b9d7f8", "#dcebfc"];
-
+  
   creatorChart = new Chart(ctx, {
     type: "bar",
     data: {
@@ -279,8 +303,9 @@ function renderCreatorChart(stats) {
         {
           label: "记录数",
           data: values,
-          backgroundColor: bgColors.slice(0, labels.length),
-          borderRadius: 4,
+          backgroundColor: "#0071e3",
+          borderRadius: 6,
+          maxBarThickness: 26,
         },
       ],
     },

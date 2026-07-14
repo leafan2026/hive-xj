@@ -142,9 +142,15 @@ body {
 /* Charts Grid */
 .charts-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-bottom: 24px;
+}
+
+@media (max-width: 1024px) {
+  .charts-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 .chart-card {
@@ -155,7 +161,7 @@ body {
 }
 
 .chart-card-wide {
-  grid-column: span 2;
+  grid-column: 1 / -1;
 }
 
 .chart-card h3 {

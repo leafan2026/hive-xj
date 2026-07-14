@@ -223,13 +223,13 @@ export default {
         <h3>意向分布</h3>
         <canvas id="intentionChart"></canvas>
       </div>
-      <div class="chart-card chart-card-wide">
-        <h3>各周趋势 · 按分类</h3>
-        <canvas id="weeklyChart"></canvas>
-      </div>
       <div class="chart-card">
         <h3>跟进人统计</h3>
         <canvas id="creatorChart"></canvas>
+      </div>
+      <div class="chart-card chart-card-wide">
+        <h3>各周趋势 · 按分类</h3>
+        <canvas id="weeklyChart"></canvas>
       </div>
     </div>
 
