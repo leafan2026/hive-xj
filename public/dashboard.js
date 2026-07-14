@@ -8,7 +8,7 @@ const JINSHUJU_TABLE_URL = "https://next.jinshuju.net/tables/G9Kct7";
 if (window.Chart) {
   Chart.defaults.font.family =
     '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif';
-  Chart.defaults.color = "#86868b";
+  Chart.defaults.color = "#71838a";
   Chart.defaults.plugins.tooltip.backgroundColor = "rgba(29, 29, 31, 0.88)";
   Chart.defaults.plugins.tooltip.padding = 10;
   Chart.defaults.plugins.tooltip.cornerRadius = 10;
@@ -22,11 +22,11 @@ let creatorChart = null;
 
 // 分类顺序与图标/颜色
 const CATEGORIES = [
-  { key: "A潜客", icon: "🔍", color: "#0071e3" },
-  { key: "B入驻", icon: "🏠", color: "#34c759" },
-  { key: "C首单", icon: "🛒", color: "#ff9500" },
-  { key: "D存量", icon: "📦", color: "#af52de" },
-  { key: "E流失", icon: "⚠️", color: "#ff3b30" },
+  { key: "A潜客", icon: "🔍", color: "#0b7a75" },
+  { key: "B入驻", icon: "🏠", color: "#19535f" },
+  { key: "C首单", icon: "🛒", color: "#d7c9aa" },
+  { key: "D存量", icon: "📦", color: "#7b2d26" },
+  { key: "E流失", icon: "⚠️", color: "#c2cdd2" },
 ];
 
 // Debounce
@@ -122,7 +122,7 @@ function renderCategoryChart(stats) {
   );
   const values = labels.map((l) => stats.categoryCounts[l]);
   const colors = labels.map(
-    (l) => (CATEGORIES.find((c) => c.key === l) || {}).color || "#d2d2d7"
+    (l) => (CATEGORIES.find((c) => c.key === l) || {}).color || "#d9e0e4"
   );
 
   categoryChart = new Chart(ctx, {
@@ -175,11 +175,11 @@ function renderIntentionChart(stats) {
   const labels = Object.keys(stats.intentionCounts);
   const values = Object.values(stats.intentionCounts);
   const colors = {
-    未标记: "#d2d2d7",
-    无: "#d2d2d7",
-    低: "#ff9500",
-    中: "#34c759",
-    高: "#0071e3",
+    未标记: "#d9e0e4",
+    无: "#d9e0e4",
+    低: "#d7c9aa",
+    中: "#19535f",
+    高: "#0b7a75",
   };
 
   intentionChart = new Chart(ctx, {
@@ -190,7 +190,7 @@ function renderIntentionChart(stats) {
         {
           label: "数量",
           data: values,
-          backgroundColor: labels.map((l) => colors[l] || "#b3d9fa"),
+          backgroundColor: labels.map((l) => colors[l] || "#c2cdd2"),
           borderRadius: 6,
           maxBarThickness: 56,
         },
@@ -206,7 +206,7 @@ function renderIntentionChart(stats) {
         y: {
           beginAtZero: true,
           ticks: { precision: 0, font: { size: 11 } },
-          grid: { color: "#e8e8ed" },
+          grid: { color: "#e3e9ec" },
         },
         x: {
           ticks: { font: { size: 11 } },
@@ -280,7 +280,7 @@ function renderWeeklyChart(stats, sortedWeeks) {
           stacked: true,
           beginAtZero: true,
           ticks: { precision: 0, font: { size: 11 } },
-          grid: { color: "#e8e8ed" },
+          grid: { color: "#e3e9ec" },
         },
       },
     },
@@ -303,7 +303,7 @@ function renderCreatorChart(stats) {
         {
           label: "记录数",
           data: values,
-          backgroundColor: "#0071e3",
+          backgroundColor: "#0b7a75",
           borderRadius: 6,
           maxBarThickness: 26,
         },
@@ -320,7 +320,7 @@ function renderCreatorChart(stats) {
         x: {
           beginAtZero: true,
           ticks: { precision: 0, font: { size: 11 } },
-          grid: { color: "#e8e8ed" },
+          grid: { color: "#e3e9ec" },
         },
         y: {
           ticks: { font: { size: 11 } },

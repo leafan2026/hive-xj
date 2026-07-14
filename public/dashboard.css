@@ -5,13 +5,13 @@
 }
 
 :root {
-  --bg: #f5f5f7;
+  --bg: #f0f3f5;
   --surface: #ffffff;
-  --text: #1d1d1f;
-  --text-secondary: #86868b;
-  --accent: #0071e3;
-  --accent-hover: #0077ed;
-  --separator: rgba(0, 0, 0, 0.08);
+  --text: #1f3239;
+  --text-secondary: #71838a;
+  --accent: #0b7a75;
+  --accent-hover: #0d8c86;
+  --separator: rgba(25, 83, 95, 0.14);
   --radius-lg: 18px;
   --radius-sm: 12px;
   --shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
@@ -202,7 +202,7 @@ body {
 }
 
 .filters select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2386868b' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2371838a' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 12px center;
   padding-right: 32px;
@@ -211,7 +211,7 @@ body {
 .filters select:focus,
 .filters input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.15);
+  box-shadow: 0 0 0 4px rgba(11, 122, 117, 0.18);
 }
 
 .filters input {
@@ -270,7 +270,7 @@ body {
 }
 
 .entries-table tr:hover td {
-  background: #fafafc;
+  background: #f4f7f8;
 }
 
 /* 序列号链接 */
@@ -315,24 +315,24 @@ body {
 }
 
 .badge-a {
-  background: rgba(0, 113, 227, 0.1);
-  color: #0071e3;
+  background: rgba(11, 122, 117, 0.12);
+  color: #0b7a75;
 }
 .badge-b {
-  background: rgba(52, 199, 89, 0.12);
-  color: #248a3d;
+  background: rgba(25, 83, 95, 0.12);
+  color: #19535f;
 }
 .badge-c {
-  background: rgba(255, 149, 0, 0.12);
-  color: #c93400;
+  background: rgba(215, 201, 170, 0.4);
+  color: #79683e;
 }
 .badge-d {
-  background: rgba(175, 82, 222, 0.1);
-  color: #8944ab;
+  background: rgba(123, 45, 38, 0.1);
+  color: #7b2d26;
 }
 .badge-e {
-  background: rgba(255, 59, 48, 0.1);
-  color: #d70015;
+  background: rgba(140, 152, 158, 0.18);
+  color: #5c6b71;
 }
 
 .badge-intent-none {
@@ -340,16 +340,16 @@ body {
   color: var(--text-secondary);
 }
 .badge-intent-low {
-  background: rgba(255, 149, 0, 0.12);
-  color: #c93400;
+  background: rgba(215, 201, 170, 0.4);
+  color: #79683e;
 }
 .badge-intent-mid {
-  background: rgba(52, 199, 89, 0.12);
-  color: #248a3d;
+  background: rgba(25, 83, 95, 0.12);
+  color: #19535f;
 }
 .badge-intent-high {
-  background: rgba(0, 113, 227, 0.1);
-  color: #0071e3;
+  background: rgba(11, 122, 117, 0.12);
+  color: #0b7a75;
 }
 
 .link-icon {
@@ -404,7 +404,7 @@ body {
   display: none;
   position: fixed;
   inset: 0;
-  background: rgba(245, 245, 247, 0.7);
+  background: rgba(240, 243, 245, 0.7);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
   z-index: 999;
