@@ -118,7 +118,7 @@ function buildStats(entries) {
     weeklyCategoryCounts[week][cat] = (weeklyCategoryCounts[week][cat] || 0) + 1;
 
     if (e.field_7 && e.field_7.trim()) followedCount++;
-    if (intent !== "未标记" && intent !== "无") withIntention++;
+    if (intent !== "未标记" && intent !== "无" && intent !== "/") withIntention++;
   }
 
   return {
