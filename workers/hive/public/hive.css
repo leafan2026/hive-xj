@@ -223,3 +223,6 @@ td a:hover { text-decoration: underline; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .footer { text-align: center; padding: 28px 0 36px; color: #9aa5b6; font-size: 12.5px; }
+
+.card.skeleton .card-value, .card.skeleton .card-sub { color: #c3cbd6; }
+tr.loading-row td { text-align: center; color: #8c97a8; padding: 28px; }

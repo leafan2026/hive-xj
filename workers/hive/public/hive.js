@@ -16,7 +16,23 @@ let searchTimer = null;
 
 function $(id) { return document.getElementById(id); }
 
-function showLoading(on) { $("loading").hidden = !on; }
+// 加载态只落在明细表里，不再用全屏遮罩盖住已经渲染好的卡片和图表
+function showLoading(on) {
+  const body = $("entriesBody");
+  if (!body) return;
+  if (on && !body.querySelector("tr:not(.loading-row)")) {
+    body.innerHTML = '<tr class="loading-row"><td colspan="12">加载中…</td></tr>';
+  }
+}
+
+// 首屏先占位，避免大片空白
+function renderSkeleton() {
+  const labels = ["会话总数", "已人工质检", "Jiri 可解答率", "可避免转人工", "人工接待总时长", "接待轮次总计"];
+  $("cards").innerHTML = labels.map((l) =>
+    '<div class="card skeleton"><div class="card-label">' + l + '</div>' +
+    '<div class="card-value">—</div><div class="card-sub">加载中…</div></div>'
+  ).join("");
+}
 
 function banner(msg, kind) {
   const el = $("banner");
@@ -45,8 +61,12 @@ function destroyChart(key) {
   if (charts[key]) { charts[key].destroy(); charts[key] = null; }
 }
 
+// Chart.js 万一没加载成功，卡片和明细表照常可用
+function chartReady() { return typeof Chart !== "undefined"; }
+
 function drawBar(key, canvasId, pairs, opts) {
   const o = opts || {};
+  if (!chartReady()) return;
   destroyChart(key);
   const ctx = $(canvasId);
   if (!ctx) return;
@@ -75,6 +95,7 @@ function drawBar(key, canvasId, pairs, opts) {
 }
 
 function drawDoughnut(key, canvasId, pairs) {
+  if (!chartReady()) return;
   destroyChart(key);
   const ctx = $(canvasId);
   if (!ctx) return;
@@ -99,6 +120,7 @@ function drawDoughnut(key, canvasId, pairs) {
 }
 
 function drawLine(key, canvasId, pairs) {
+  if (!chartReady()) return;
   destroyChart(key);
   const ctx = $(canvasId);
   if (!ctx) return;
@@ -436,6 +458,22 @@ function initFilters() {
   $("refreshBtn").addEventListener("click", hardRefresh);
 }
 
+const T0 = performance.now();
+
 initTabs();
 initFilters();
-loadDashboard().then(loadEntries);
+renderSkeleton();
+showLoading(true);
+
+// 两个接口互不依赖，并行发出，谁先回谁先渲染
+Promise.all([loadDashboard(), loadEntries()]).then(() => {
+  // 把首屏耗时写在页脚，方便定位慢在网络还是接口
+  const parts = ["数据 " + Math.round(performance.now() - T0) + " ms"];
+  const nav = performance.getEntriesByType("navigation")[0];
+  if (nav) parts.push("页面 " + Math.round(nav.responseEnd - nav.startTime) + " ms");
+  const res = performance.getEntriesByName ? performance.getEntriesByType("resource") : [];
+  const chart = res.find((r) => r.name.includes("chart.min.js"));
+  if (chart) parts.push("Chart.js " + Math.round(chart.duration) + " ms");
+  const f = document.querySelector(".footer p");
+  if (f) f.textContent = "Powered by WDL · " + parts.join(" · ");
+});

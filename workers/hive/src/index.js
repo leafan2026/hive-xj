@@ -248,9 +248,11 @@ function json(data, status = 200) {
 // ============== 页面 ==============
 
 async function renderPage(env) {
-  const [cssUrl, jsUrl] = await Promise.all([
+  // Chart.js 随静态资源部署，不走公共 CDN（jsdelivr 国内经常卡住，且是阻塞脚本）
+  const [cssUrl, jsUrl, chartUrl] = await Promise.all([
     env.ASSETS.url("/hive.css"),
     env.ASSETS.url("/hive.js"),
+    env.ASSETS.url("/chart.min.js"),
   ]);
 
   return new Response(
@@ -261,7 +263,7 @@ async function renderPage(env) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI 会话质检看板</title>
 <link rel="stylesheet" href="${cssUrl}">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<link rel="preload" as="script" href="${chartUrl}">
 </head>
 <body>
 <header class="header">
@@ -345,13 +347,12 @@ async function renderPage(env) {
     </table>
   </div>
   <div class="pagination" id="pagination"></div>
-
-  <div class="loading-overlay" id="loading" hidden><div class="spinner"></div><div>加载中…</div></div>
 </main>
 
 <footer class="footer"><p>Powered by WDL</p></footer>
 <script>window.JSJ_TABLE_URL = ${JSON.stringify(JSJ_TABLE_URL)};</script>
-<script src="${jsUrl}"></script>
+<script defer src="${chartUrl}"></script>
+<script defer src="${jsUrl}"></script>
 </body>
 </html>`,
     { headers: { "content-type": "text/html; charset=utf-8" } }
