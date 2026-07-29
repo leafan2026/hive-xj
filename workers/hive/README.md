@@ -26,7 +26,7 @@
 |---|---|
 | `GET /` | 看板页面 |
 | `GET /api/dashboard` | 聚合指标（缓存未就绪时返回 `building: true`） |
-| `GET /api/entries` | 明细，支持 `page` / `per_page` / `channel` / `scene` / `nature` / `jiri` / `search` |
+| `GET /api/entries` | 明细，支持 `page` / `per_page` / `channel` / `scene` / `nature` / `jiri` / `search`（接口保留，页面已不展示明细） |
 | `POST /api/refresh` | 触发后台全量刷新 |
 | `GET /api/status` | 刷新状态与数据更新时间 |
 

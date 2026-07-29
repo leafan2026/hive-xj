@@ -8,22 +8,12 @@ const PALETTE = [
   "#4f8ef7", "#6fcf97", "#f7a55b", "#a889d6", "#7f8c9b",
 ];
 
-const state = { stats: null, page: 1, perPage: 25, refreshing: false, polling: false };
+const state = { stats: null, refreshing: false, polling: false };
 const charts = {};
-let searchTimer = null;
 
 // ============== 工具 ==============
 
 function $(id) { return document.getElementById(id); }
-
-// 加载态只落在明细表里，不再用全屏遮罩盖住已经渲染好的卡片和图表
-function showLoading(on) {
-  const body = $("entriesBody");
-  if (!body) return;
-  if (on && !body.querySelector("tr:not(.loading-row)")) {
-    body.innerHTML = '<tr class="loading-row"><td colspan="12">加载中…</td></tr>';
-  }
-}
 
 // 首屏先占位，避免大片空白
 function renderSkeleton() {
@@ -74,11 +64,13 @@ async function api(path, init) {
   }
 }
 
+// ============== 图表 ==============
+
 function destroyChart(key) {
   if (charts[key]) { charts[key].destroy(); charts[key] = null; }
 }
 
-// Chart.js 万一没加载成功，卡片和明细表照常可用
+// Chart.js 万一没加载成功，卡片和文字结论照常可用
 function chartReady() { return typeof Chart !== "undefined"; }
 
 function drawBar(key, canvasId, pairs, opts) {
@@ -172,13 +164,11 @@ function pollUntilReady() {
   state.polling = true;
   const tick = async () => {
     try {
-      const json = await api("/api/status");
-      const meta = json.meta || {};
+      const meta = (await api("/api/status")).meta || {};
       if (meta.status === "ok") {
         state.polling = false;
         banner("");
         await loadDashboard();
-        await loadEntries();
         return;
       }
       if (meta.status === "error") {
@@ -193,7 +183,6 @@ function pollUntilReady() {
 }
 
 async function loadDashboard() {
-  showLoading(true);
   try {
     const json = await api("/api/dashboard");
     if (!json.success) throw new Error(json.error || "未知错误");
@@ -208,7 +197,6 @@ async function loadDashboard() {
     renderTrend(json.stats);
     renderScene(json.stats);
     renderCost(json.stats);
-    fillFilters(json.stats);
     if (json.meta) {
       $("updatedAt").textContent =
         "数据更新于 " + new Date(json.meta.updatedAt).toLocaleString("zh-CN") +
@@ -217,8 +205,6 @@ async function loadDashboard() {
     banner("");
   } catch (err) {
     banner("看板数据加载失败：" + err.message);
-  } finally {
-    showLoading(false);
   }
 }
 
@@ -303,107 +289,6 @@ function renderCost(s) {
   ).join("");
 }
 
-function fillFilters(s) {
-  const fill = (id, obj, placeholder) => {
-    const el = $(id);
-    const current = el.value;
-    el.innerHTML = '<option value="">' + placeholder + "</option>" +
-      sortedPairs(obj).map((p) =>
-        '<option value="' + p[0] + '">' + p[0] + "（" + p[1] + "）</option>"
-      ).join("");
-    el.value = current;
-  };
-  fill("fChannel", s.channel, "全部渠道");
-  fill("fScene", s.scene, "全部业务场景");
-  fill("fNature", s.nature, "全部会话性质");
-  fill("fJiri", s.jiri, "Jiri 解答情况");
-}
-
-// ============== 明细表 ==============
-
-function natureClass(v) {
-  if (v === "有效") return "pill good";
-  if (v === "无效" || v === "转接未应答") return "pill bad";
-  if (v === "内部测试" || v === "填表人") return "pill warn";
-  return "pill";
-}
-
-function jiriClass(v) {
-  if (v === "能") return "pill good";
-  if (v === "不能") return "pill bad";
-  if (v === "部分") return "pill warn";
-  return "pill";
-}
-
-async function loadEntries() {
-  showLoading(true);
-  try {
-    const params = new URLSearchParams({
-      page: String(state.page),
-      per_page: String(state.perPage),
-      channel: $("fChannel").value,
-      scene: $("fScene").value,
-      nature: $("fNature").value,
-      jiri: $("fJiri").value,
-      search: $("fSearch").value.trim(),
-    });
-    const json = await api("/api/entries?" + params.toString());
-    if (!json.success) throw new Error(json.error || "未知错误");
-    if (json.building) { pollUntilReady(); return; }
-
-    $("entryCount").textContent = "共 " + json.total + " 条，第 " + json.page + " / " + json.totalPages + " 页";
-    $("entriesBody").innerHTML = json.data.length
-      ? json.data.map((r) =>
-          "<tr>" +
-          '<td><a href="' + window.JSJ_TABLE_URL + "?serial_number=" + r.sn + '" target="_blank" rel="noopener">' + r.sn + "</a></td>" +
-          "<td>" + (r.t || "—") + "</td>" +
-          "<td>" + r.ch + "</td>" +
-          "<td>" + r.dev + "</td>" +
-          "<td>" + r.plan + "</td>" +
-          "<td>" + r.scene + "</td>" +
-          '<td><span class="' + natureClass(r.nat) + '">' + r.nat + "</span></td>" +
-          '<td><span class="' + jiriClass(r.jiri) + '">' + r.jiri + "</span></td>" +
-          "<td>" + (r.reason || "—") + "</td>" +
-          "<td>" + fmtDuration(r.dur) + "</td>" +
-          '<td class="summary">' + (r.sm || "—") + "</td>" +
-          "<td>" + (r.url ? '<a href="' + r.url + '" target="_blank" rel="noopener">会话</a>' : "—") + "</td>" +
-          "</tr>"
-        ).join("")
-      : '<tr><td colspan="12" style="text-align:center;color:#8c97a8;padding:28px">没有符合条件的会话</td></tr>';
-
-    renderPagination(json.page, json.totalPages);
-  } catch (err) {
-    banner("明细加载失败：" + err.message);
-  } finally {
-    showLoading(false);
-  }
-}
-
-function renderPagination(page, totalPages) {
-  const el = $("pagination");
-  if (totalPages <= 1) { el.innerHTML = ""; return; }
-  const btn = (label, target, opts) => {
-    const o = opts || {};
-    return '<button data-page="' + target + '"' +
-      (o.disabled ? " disabled" : "") +
-      (o.active ? ' class="active"' : "") + ">" + label + "</button>";
-  };
-  let html = btn("‹", page - 1, { disabled: page === 1 });
-  const from = Math.max(1, page - 3);
-  const to = Math.min(totalPages, from + 6);
-  if (from > 1) html += btn("1", 1) + "<span>…</span>";
-  for (let i = from; i <= to; i++) html += btn(String(i), i, { active: i === page });
-  if (to < totalPages) html += "<span>…</span>" + btn(String(totalPages), totalPages);
-  html += btn("›", page + 1, { disabled: page === totalPages });
-  el.innerHTML = html;
-  el.querySelectorAll("button[data-page]").forEach((b) => {
-    b.addEventListener("click", () => {
-      const p = Number(b.dataset.page);
-      if (p >= 1 && p <= totalPages && p !== page) { state.page = p; loadEntries(); }
-    });
-  });
-}
-
 // ============== 交互 ==============
 
 async function hardRefresh() {
@@ -416,7 +301,6 @@ async function hardRefresh() {
   try {
     const json = await api("/api/refresh", { method: "POST" });
     if (!json.success) throw new Error(json.error || "未知错误");
-    state.page = 1;
     await waitForRefresh();
   } catch (err) {
     banner("刷新失败：" + err.message);
@@ -436,7 +320,6 @@ async function waitForRefresh() {
       if (meta.status === "ok") {
         banner("");
         await loadDashboard();
-        await loadEntries();
         return;
       }
       if (meta.status === "error") {
@@ -459,35 +342,25 @@ function initTabs() {
   });
 }
 
-function initFilters() {
-  ["fChannel", "fScene", "fNature", "fJiri"].forEach((id) => {
-    $(id).addEventListener("change", () => { state.page = 1; loadEntries(); });
-  });
-  $("fSearch").addEventListener("input", () => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => { state.page = 1; loadEntries(); }, 400);
-  });
+function initActions() {
   $("refreshBtn").addEventListener("click", hardRefresh);
 }
 
 const T0 = performance.now();
 
 initTabs();
-initFilters();
+initActions();
 renderSkeleton();
-showLoading(true);
 
-// 两个接口互不依赖，并行发出，谁先回谁先渲染
-Promise.all([loadDashboard(), loadEntries()]).then(() => {
+loadDashboard().then(() => {
   try {
-  // 把首屏耗时写在页脚，方便定位慢在网络还是接口
-  const parts = ["数据 " + Math.round(performance.now() - T0) + " ms"];
-  const nav = performance.getEntriesByType("navigation")[0];
-  if (nav) parts.push("页面 " + Math.round(nav.responseEnd - nav.startTime) + " ms");
-  const res = performance.getEntriesByName ? performance.getEntriesByType("resource") : [];
-  const chart = res.find((r) => r.name.includes("chart.min.js"));
-  if (chart) parts.push("Chart.js " + Math.round(chart.duration) + " ms");
-  const f = document.querySelector(".footer p");
-  if (f) f.textContent = "Powered by WDL · " + parts.join(" · ");
+    // 把首屏耗时写在页脚，方便定位慢在网络还是接口
+    const parts = ["数据 " + Math.round(performance.now() - T0) + " ms"];
+    const nav = performance.getEntriesByType("navigation")[0];
+    if (nav) parts.push("页面 " + Math.round(nav.responseEnd - nav.startTime) + " ms");
+    const chart = performance.getEntriesByType("resource").find((r) => r.name.includes("chart.min.js"));
+    if (chart) parts.push("Chart.js " + Math.round(chart.duration) + " ms");
+    const f = document.querySelector(".footer p");
+    if (f) f.textContent = "Powered by WDL · " + parts.join(" · ");
   } catch (e) { /* 统计失败不影响看板 */ }
 });

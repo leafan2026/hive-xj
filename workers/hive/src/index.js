@@ -327,26 +327,6 @@ async function renderPage(env) {
     </div>
   </section>
 
-  <h2 class="section-title">会话明细</h2>
-  <div class="filters">
-    <select id="fChannel"><option value="">全部渠道</option></select>
-    <select id="fScene"><option value="">全部业务场景</option></select>
-    <select id="fNature"><option value="">全部会话性质</option></select>
-    <select id="fJiri"><option value="">Jiri 解答情况</option></select>
-    <input type="text" id="fSearch" placeholder="搜索一句话总结 / 转人工原因…">
-    <span class="entry-count" id="entryCount"></span>
-  </div>
-  <div class="table-wrapper">
-    <table class="entries-table">
-      <thead><tr>
-        <th>#</th><th>会话时间</th><th>渠道</th><th>设备</th><th>套餐</th>
-        <th>业务场景</th><th>性质</th><th>Jiri</th><th>转人工原因</th>
-        <th>人工时长</th><th>一句话总结</th><th>链接</th>
-      </tr></thead>
-      <tbody id="entriesBody"></tbody>
-    </table>
-  </div>
-  <div class="pagination" id="pagination"></div>
 </main>
 
 <footer class="footer"><p>Powered by WDL</p></footer>
