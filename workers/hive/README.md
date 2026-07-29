@@ -14,6 +14,13 @@
 - cron `*/30 * * * *` 后台刷新；`POST /api/refresh` 手动触发（立即返回 202，
   进度写在 meta 里，前端轮询 `/api/status`）。
 
+## 筛选
+
+页面顶部筛选栏对**全部卡片和图表**生效：时间范围（近 7/14/30 天或自定义）、质检状态、
+渠道、设备、处理状态、业务场景、会话性质、套餐。筛选走服务端 —— 无筛选时命中预聚合
+缓存，有筛选时读 KV 明细现算，都在 200ms 量级。下拉选项只在首次全量结果时填充一次，
+否则筛完选项会跟着缩水。
+
 ## 指标口径
 
 `Jiri是否能解答` / `转人工方式` / `转人工原因` 只在人工质检过的会话上有值
@@ -25,7 +32,7 @@
 | 路径 | 说明 |
 |---|---|
 | `GET /` | 看板页面 |
-| `GET /api/dashboard` | 聚合指标（缓存未就绪时返回 `building: true`） |
+| `GET /api/dashboard` | 聚合指标。无参数时返回预聚合缓存；带筛选参数（`from` / `to` / `channel` / `device` / `status` / `scene` / `nature` / `plan` / `qc`）时读明细现算，约 200ms |
 | `GET /api/entries` | 明细，支持 `page` / `per_page` / `channel` / `scene` / `nature` / `jiri` / `search`（接口保留，页面已不展示明细） |
 | `POST /api/refresh` | 触发后台全量刷新 |
 | `GET /api/status` | 刷新状态与数据更新时间 |

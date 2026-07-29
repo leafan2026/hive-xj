@@ -8,8 +8,18 @@ const PALETTE = [
   "#4f8ef7", "#6fcf97", "#f7a55b", "#a889d6", "#7f8c9b",
 ];
 
-const state = { stats: null, refreshing: false, polling: false };
+const state = { stats: null, facets: null, refreshing: false, polling: false };
 const charts = {};
+
+// 筛选项 → 接口参数名；选项值来自首次全量结果，筛选后不再改动
+const DIM_SELECTS = {
+  fChannel: { dim: "channel", placeholder: "全部渠道" },
+  fDevice: { dim: "device", placeholder: "全部设备" },
+  fStatus: { dim: "status", placeholder: "全部处理状态" },
+  fScene: { dim: "scene", placeholder: "全部业务场景" },
+  fNature: { dim: "nature", placeholder: "全部会话性质" },
+  fPlan: { dim: "plan", placeholder: "全部套餐" },
+};
 
 // ============== 工具 ==============
 
@@ -182,9 +192,79 @@ function pollUntilReady() {
   setTimeout(tick, 4000);
 }
 
+// ============== 筛选 ==============
+
+function currentQuery() {
+  const p = new URLSearchParams();
+  const from = $("fFrom").value;
+  const to = $("fTo").value;
+  if (from) p.set("from", from);
+  if (to) p.set("to", to);
+  if ($("fQc").value) p.set("qc", $("fQc").value);
+  for (const [id, cfg] of Object.entries(DIM_SELECTS)) {
+    if ($(id).value) p.set(cfg.dim, $(id).value);
+  }
+  return p;
+}
+
+// 选项只在拿到全量结果时填一次，否则筛完选项会跟着缩水
+function fillFacets(stats) {
+  if (state.facets) return;
+  state.facets = true;
+  for (const [id, cfg] of Object.entries(DIM_SELECTS)) {
+    const el = $(id);
+    el.innerHTML = '<option value="">' + cfg.placeholder + "</option>" +
+      sortedPairs(stats[cfg.dim]).map((p) =>
+        '<option value="' + p[0] + '">' + p[0] + "（" + p[1] + "）</option>"
+      ).join("");
+  }
+}
+
+// 高亮生效中的筛选项
+function markActive() {
+  const ids = ["fRange", "fFrom", "fTo", "fQc", ...Object.keys(DIM_SELECTS)];
+  ids.forEach((id) => {
+    const el = $(id);
+    el.classList.toggle("active", !!el.value);
+  });
+}
+
+function applyRangePreset() {
+  const v = $("fRange").value;
+  const from = $("fFrom");
+  const to = $("fTo");
+  if (v === "") {
+    from.value = "";
+    to.value = "";
+    from.disabled = to.disabled = true;
+  } else if (v === "custom") {
+    from.disabled = to.disabled = false;
+  } else {
+    const days = Number(v);
+    // 以数据里的最新日期为基准，而不是今天 —— 数据可能滞后
+    const latest = state.latestDay || new Date().toISOString().slice(0, 10);
+    const end = new Date(latest + "T00:00:00");
+    const start = new Date(end.getTime() - (days - 1) * 86400000);
+    from.value = start.toISOString().slice(0, 10);
+    to.value = latest;
+    from.disabled = to.disabled = true;
+  }
+}
+
+async function reload() {
+  $("matchInfo").textContent = "筛选中…";
+  document.querySelector(".filterbar").classList.add("busy");
+  try {
+    await loadDashboard();
+  } finally {
+    document.querySelector(".filterbar").classList.remove("busy");
+  }
+}
+
 async function loadDashboard() {
   try {
-    const json = await api("/api/dashboard");
+    const qs = currentQuery().toString();
+    const json = await api("/api/dashboard" + (qs ? "?" + qs : ""));
     if (!json.success) throw new Error(json.error || "未知错误");
     if (json.building) {
       banner("首次缓存正在构建：从金数据全量拉取 6600+ 条会话，约需 20 秒，完成后自动显示。", "info");
@@ -192,17 +272,33 @@ async function loadDashboard() {
       return;
     }
     state.stats = json.stats;
+    if (!json.filtered) {
+      fillFacets(json.stats);
+      const days = Object.keys(json.stats.daily || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+      state.latestDay = days[days.length - 1] || null;
+      if (state.latestDay) {
+        $("fFrom").max = $("fTo").max = state.latestDay;
+        $("fFrom").min = $("fTo").min = days[0];
+      }
+    }
     renderCards(json.stats);
     renderAI(json.stats);
     renderTrend(json.stats);
     renderScene(json.stats);
     renderCost(json.stats);
+    markActive();
+    $("matchInfo").innerHTML = json.filtered
+      ? "筛选后 <b>" + json.matched + "</b> / " + json.fullTotal + " 条会话参与统计"
+      : "全部 <b>" + (json.fullTotal || json.stats.total) + "</b> 条会话";
     if (json.meta) {
       $("updatedAt").textContent =
         "数据更新于 " + new Date(json.meta.updatedAt).toLocaleString("zh-CN") +
         "（" + json.meta.total + " 条）";
     }
-    banner("");
+    banner(
+      json.stats.total === 0 ? "当前筛选条件下没有会话，放宽条件或点「重置筛选」。" : "",
+      "info"
+    );
   } catch (err) {
     banner("看板数据加载失败：" + err.message);
   }
@@ -344,6 +440,23 @@ function initTabs() {
 
 function initActions() {
   $("refreshBtn").addEventListener("click", hardRefresh);
+
+  // 维度下拉 + 质检状态：改动即重算
+  [...Object.keys(DIM_SELECTS), "fQc"].forEach((id) => {
+    $(id).addEventListener("change", reload);
+  });
+
+  $("fRange").addEventListener("change", () => { applyRangePreset(); reload(); });
+  $("fFrom").addEventListener("change", reload);
+  $("fTo").addEventListener("change", reload);
+
+  $("resetBtn").addEventListener("click", () => {
+    ["fRange", "fQc", ...Object.keys(DIM_SELECTS)].forEach((id) => { $(id).value = ""; });
+    applyRangePreset();
+    reload();
+  });
+
+  applyRangePreset();
 }
 
 const T0 = performance.now();

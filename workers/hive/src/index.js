@@ -230,6 +230,37 @@ async function refreshCache(env) {
   }
 }
 
+// ============== 筛选 ==============
+
+const FILTER_KEYS = ["from", "to", "channel", "device", "status", "scene", "nature", "plan", "qc"];
+
+function applyFilters(rows, q) {
+  const from = q.get("from") || "";
+  const to = q.get("to") || "";
+  const ch = q.get("channel") || "";
+  const dev = q.get("device") || "";
+  const st = q.get("status") || "";
+  const scene = q.get("scene") || "";
+  const nat = q.get("nature") || "";
+  const plan = q.get("plan") || "";
+  const qc = q.get("qc") || "";
+
+  return rows.filter((r) => {
+    const day = (r.t || "").slice(0, 10);
+    if (from && (!day || day < from)) return false;
+    if (to && (!day || day > to)) return false;
+    if (ch && r.ch !== ch) return false;
+    if (dev && r.dev !== dev) return false;
+    if (st && r.st !== st) return false;
+    if (scene && r.scene !== scene) return false;
+    if (nat && r.nat !== nat) return false;
+    if (plan && r.plan !== plan) return false;
+    if (qc === "labeled" && r.jiri === "未标记") return false;
+    if (qc === "unlabeled" && r.jiri !== "未标记") return false;
+    return true;
+  });
+}
+
 function isRunning(meta) {
   return !!meta && meta.status === "running" && Date.now() - (meta.startedAt || 0) < RUNNING_TTL_MS;
 }
@@ -278,6 +309,34 @@ async function renderPage(env) {
 
 <main class="main">
   <div id="banner" class="banner" hidden></div>
+
+  <section class="filterbar">
+    <div class="filter-row">
+      <select id="fRange" title="时间范围">
+        <option value="">全部时间</option>
+        <option value="7">近 7 天</option>
+        <option value="14">近 14 天</option>
+        <option value="30">近 30 天</option>
+        <option value="custom">自定义</option>
+      </select>
+      <input type="date" id="fFrom" title="起始日期">
+      <span class="dash">至</span>
+      <input type="date" id="fTo" title="截止日期">
+      <select id="fQc" title="质检状态">
+        <option value="">全部（含未质检）</option>
+        <option value="labeled">仅已人工质检</option>
+        <option value="unlabeled">仅未质检</option>
+      </select>
+      <select id="fChannel" data-dim="channel"></select>
+      <select id="fDevice" data-dim="device"></select>
+      <select id="fStatus" data-dim="status"></select>
+      <select id="fScene" data-dim="scene"></select>
+      <select id="fNature" data-dim="nature"></select>
+      <select id="fPlan" data-dim="plan"></select>
+      <button class="btn-ghost" id="resetBtn">重置筛选</button>
+      <span class="match-info" id="matchInfo"></span>
+    </div>
+  </section>
 
   <section class="cards" id="cards"></section>
 
@@ -378,15 +437,39 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     if (path === "/api/dashboard") {
-      const [stats, meta] = await Promise.all([
-        env.CACHE.get(K_STATS, { type: "json" }),
+      const q = url.searchParams;
+      const hasFilter = FILTER_KEYS.some((k) => q.get(k));
+
+      // 无筛选走预聚合缓存（几 KB，最快）；有筛选才读明细现算
+      if (!hasFilter) {
+        const [stats, meta] = await Promise.all([
+          env.CACHE.get(K_STATS, { type: "json" }),
+          readMeta(env),
+        ]);
+        if (!stats) {
+          kickoff(env, ctx, meta);
+          return json({ success: true, building: true, meta: await readMeta(env) });
+        }
+        return json({ success: true, stats, meta, filtered: false, matched: stats.total, fullTotal: stats.total });
+      }
+
+      const [rows, meta] = await Promise.all([
+        env.CACHE.get(K_ENTRIES, { type: "json" }),
         readMeta(env),
       ]);
-      if (!stats) {
+      if (!rows) {
         kickoff(env, ctx, meta);
         return json({ success: true, building: true, meta: await readMeta(env) });
       }
-      return json({ success: true, stats, meta });
+      const filtered = applyFilters(rows, q);
+      return json({
+        success: true,
+        stats: buildStats(filtered),
+        meta,
+        filtered: true,
+        matched: filtered.length,
+        fullTotal: rows.length,
+      });
     }
 
     if (path === "/api/entries") {

@@ -226,3 +226,38 @@ td a:hover { text-decoration: underline; }
 
 .card.skeleton .card-value, .card.skeleton .card-sub { color: #c3cbd6; }
 tr.loading-row td { text-align: center; color: #8c97a8; padding: 28px; }
+
+/* 全局筛选栏 */
+.filterbar {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 18px;
+}
+.filter-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.filter-row select, .filter-row input[type="date"] {
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+  color: var(--ink);
+  max-width: 210px;
+}
+.filter-row select:disabled, .filter-row input:disabled { background: #f4f6f9; color: #a8b2c1; }
+.filter-row select.active, .filter-row input.active { border-color: var(--accent); background: #f2f8ff; }
+.filter-row .dash { color: var(--muted); font-size: 12.5px; }
+.btn-ghost {
+  padding: 7px 13px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+.match-info { margin-left: auto; color: var(--muted); font-size: 12.5px; }
+.match-info b { color: var(--accent); }
+.filterbar.busy { opacity: .6; pointer-events: none; }
