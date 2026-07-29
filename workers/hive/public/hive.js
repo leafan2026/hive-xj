@@ -57,6 +57,23 @@ function sortedPairs(obj, limit) {
   return limit ? pairs.slice(0, limit) : pairs;
 }
 
+// 统一走这里，401 和非 JSON 响应都给出可读的提示
+async function api(path, init) {
+  const res = await fetch(BASE + path, init);
+  if (res.status === 401) {
+    throw new Error("登录状态已失效，请刷新页面重新输入账号密码");
+  }
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error("接口返回 " + res.status + "：" + text.slice(0, 120));
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error("返回内容不是 JSON：" + text.slice(0, 120));
+  }
+}
+
 function destroyChart(key) {
   if (charts[key]) { charts[key].destroy(); charts[key] = null; }
 }
@@ -155,8 +172,7 @@ function pollUntilReady() {
   state.polling = true;
   const tick = async () => {
     try {
-      const res = await fetch(BASE + "/api/status");
-      const json = await res.json();
+      const json = await api("/api/status");
       const meta = json.meta || {};
       if (meta.status === "ok") {
         state.polling = false;
@@ -179,8 +195,7 @@ function pollUntilReady() {
 async function loadDashboard() {
   showLoading(true);
   try {
-    const res = await fetch(BASE + "/api/dashboard");
-    const json = await res.json();
+    const json = await api("/api/dashboard");
     if (!json.success) throw new Error(json.error || "未知错误");
     if (json.building) {
       banner("首次缓存正在构建：从金数据全量拉取 6600+ 条会话，约需 20 秒，完成后自动显示。", "info");
@@ -332,8 +347,7 @@ async function loadEntries() {
       jiri: $("fJiri").value,
       search: $("fSearch").value.trim(),
     });
-    const res = await fetch(BASE + "/api/entries?" + params.toString());
-    const json = await res.json();
+    const json = await api("/api/entries?" + params.toString());
     if (!json.success) throw new Error(json.error || "未知错误");
     if (json.building) { pollUntilReady(); return; }
 
@@ -400,8 +414,7 @@ async function hardRefresh() {
   btn.textContent = "拉取中…";
   banner("正在后台从金数据全量拉取，约需 20 秒，完成后自动刷新页面数据。", "info");
   try {
-    const res = await fetch(BASE + "/api/refresh", { method: "POST" });
-    const json = await res.json();
+    const json = await api("/api/refresh", { method: "POST" });
     if (!json.success) throw new Error(json.error || "未知错误");
     state.page = 1;
     await waitForRefresh();
@@ -419,8 +432,7 @@ async function waitForRefresh() {
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 3000));
     try {
-      const res = await fetch(BASE + "/api/status");
-      const meta = (await res.json()).meta || {};
+      const meta = (await api("/api/status")).meta || {};
       if (meta.status === "ok") {
         banner("");
         await loadDashboard();
@@ -467,6 +479,7 @@ showLoading(true);
 
 // 两个接口互不依赖，并行发出，谁先回谁先渲染
 Promise.all([loadDashboard(), loadEntries()]).then(() => {
+  try {
   // 把首屏耗时写在页脚，方便定位慢在网络还是接口
   const parts = ["数据 " + Math.round(performance.now() - T0) + " ms"];
   const nav = performance.getEntriesByType("navigation")[0];
@@ -476,4 +489,5 @@ Promise.all([loadDashboard(), loadEntries()]).then(() => {
   if (chart) parts.push("Chart.js " + Math.round(chart.duration) + " ms");
   const f = document.querySelector(".footer p");
   if (f) f.textContent = "Powered by WDL · " + parts.join(" · ");
+  } catch (e) { /* 统计失败不影响看板 */ }
 });
