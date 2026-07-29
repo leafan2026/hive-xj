@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hive",
+  "main": "src/index.js",
+  "compatibility_date": "2026-05-31",
+  "assets": {
+    "directory": "./public"
+  },
+  "kv_namespaces": [
+    { "binding": "CACHE", "id": "hive-cache" }
+  ],
+  "triggers": {
+    "crons": ["*/30 * * * *"]
+  }
+}

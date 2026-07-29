@@ -1,0 +1,12 @@
+{
+  "name": "hive",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dry-run": "wrangler deploy --dry-run --outdir=.deploy-dist"
+  },
+  "devDependencies": {
+    "wrangler": "^4.102.0"
+  }
+}
