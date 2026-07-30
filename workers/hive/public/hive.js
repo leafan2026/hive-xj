@@ -80,216 +80,6 @@ function destroyChart(key) {
   if (charts[key]) { charts[key].destroy(); charts[key] = null; }
 }
 
-// Chart.js 万一没加载成功，卡片和文字结论照常可用
-let labelsRegistered = false;
-function chartReady() {
-  if (typeof Chart === "undefined") return false;
-  if (!labelsRegistered) {
-    Chart.register(valueLabels);
-    // 轴线、刻度文字、图例统一走页面的灰阶，避免图表比页面重
-    Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
-    Chart.defaults.font.size = 11.5;
-    Chart.defaults.color = "#8b90a7";
-    Chart.defaults.borderColor = "#eceef6";
-    Chart.defaults.plugins.tooltip.backgroundColor = "rgba(31,35,64,.92)";
-    Chart.defaults.plugins.tooltip.padding = 10;
-    Chart.defaults.plugins.tooltip.cornerRadius = 8;
-    Chart.defaults.plugins.tooltip.titleFont = { size: 12, weight: "600" };
-    Chart.defaults.plugins.tooltip.bodyFont = { size: 12 };
-    labelsRegistered = true;
-  }
-  return true;
-}
-
-function drawBar(key, canvasId, pairs, opts) {
-  const o = opts || {};
-  if (!chartReady()) return;
-  destroyChart(key);
-  const ctx = $(canvasId);
-  if (!ctx) return;
-  charts[key] = new Chart(ctx, {
-    type: "bar",
-    data: {
-      labels: pairs.map((p) => p[0]),
-      datasets: [{
-        label: o.label || "会话数",
-        data: pairs.map((p) => p[1]),
-        backgroundColor: o.color || "#4f7cf7",
-        borderRadius: 4,
-      }],
-    },
-    options: {
-      indexAxis: o.horizontal ? "y" : "x",
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { grid: { display: !o.horizontal }, ticks: { autoSkip: false, maxRotation: o.rotate || 0 } },
-        y: { beginAtZero: true, grid: { display: !!o.horizontal } },
-      },
-    },
-  });
-}
-
-function drawDoughnut(key, canvasId, pairs) {
-  if (!chartReady()) return;
-  destroyChart(key);
-  const ctx = $(canvasId);
-  if (!ctx) return;
-  charts[key] = new Chart(ctx, {
-    type: "doughnut",
-    data: {
-      labels: pairs.map((p) => p[0]),
-      datasets: [{
-        data: pairs.map((p) => p[1]),
-        backgroundColor: pairs.map((_, i) => PALETTE[i % PALETTE.length]),
-        borderWidth: 1,
-        borderColor: "#fff",
-      }],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      cutout: "48%",
-      layout: { padding: { top: 4, bottom: 2 } },
-      plugins: {
-        // 图例放底部横排：右侧竖排会把大半张卡片留白，环也被压小
-        legend: {
-          position: "bottom",
-          labels: { boxWidth: 11, boxHeight: 11, padding: 9, font: { size: 11.5 } },
-        },
-        tooltip: {
-          callbacks: {
-            label(c) {
-              const sum = c.dataset.data.reduce((a, b) => a + (Number(b) || 0), 0);
-              const pctVal = sum ? ((c.parsed / sum) * 100).toFixed(1) : 0;
-              return " " + c.label + "：" + c.parsed + "（" + pctVal + "%）";
-            },
-          },
-        },
-      },
-    },
-  });
-}
-
-function drawLine(key, canvasId, pairs) {
-  if (!chartReady()) return;
-  destroyChart(key);
-  const ctx = $(canvasId);
-  if (!ctx) return;
-  charts[key] = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels: pairs.map((p) => p[0]),
-      datasets: [{
-        label: "会话数",
-        data: pairs.map((p) => p[1]),
-        borderColor: "#4f7cf7",
-        backgroundColor: "rgba(79,124,247,.13)",
-        fill: true,
-        tension: .3,
-        pointRadius: 2,
-      }],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: { y: { beginAtZero: true } },
-    },
-  });
-}
-
-// ============== 数值标签 ==============
-
-// 参考看板会把数值直接标在柱子和折线上，这里用一个内联插件实现，不引第三方依赖
-const valueLabels = {
-  id: "valueLabels",
-  afterDatasetsDraw(chart) {
-    const opt = chart.options.plugins?.valueLabels;
-    if (!opt || opt.enabled === false) return;
-    const { ctx, data } = chart;
-    const count = data.labels?.length || 0;
-    if (count > (opt.maxLabels || 40)) return;
-
-    ctx.save();
-    ctx.font = '11px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-    ctx.textAlign = "center";
-
-    const stackTotals = {};
-    const stackTop = {};
-
-    chart.data.datasets.forEach((ds, di) => {
-      const meta = chart.getDatasetMeta(di);
-      if (meta.hidden) return;
-      const kind = ds.type || meta.type || chart.config.type;
-
-      // 环形/饼图：扇区内标「数值 · 占比」，太窄的扇区跳过
-      if (kind === "doughnut" || kind === "pie") {
-        const sum = ds.data.reduce((a, b) => a + (Number(b) || 0), 0);
-        meta.data.forEach((el, i) => {
-          const v = Number(ds.data[i]) || 0;
-          if (!v || !sum) return;
-          const share = v / sum;
-          if (share < 0.055) return;
-          const p = el.getCenterPoint();
-          ctx.fillStyle = "#fff";
-          ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-          ctx.fillText(fmtNum(v), p.x, p.y - 1);
-          ctx.font = '10px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-          ctx.fillText((share * 100).toFixed(1) + "%", p.x, p.y + 11);
-        });
-        return;
-      }
-
-      meta.data.forEach((el, i) => {
-        const v = ds.data[i];
-        if (v === null || v === undefined || v === 0) return;
-
-        if (kind === "line") {
-          ctx.fillStyle = "#5b6180";
-          ctx.font = '11px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-          ctx.fillText(fmtNum(v), el.x, el.y - 7);
-          return;
-        }
-        if (typeof el.base !== "number") return;
-
-        // 横向条形图：数值标在条的右端，不参与堆叠合计
-        if (chart.options.indexAxis === "y") {
-          ctx.textAlign = "left";
-          ctx.fillStyle = "#454b69";
-          ctx.font = '11.5px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-          ctx.fillText(fmtNum(v), el.x + 6, el.y + 4);
-          ctx.textAlign = "center";
-          return;
-        }
-
-        // 堆叠柱：段内标数值（高度够才标），顶部标合计
-        const h = Math.abs(el.base - el.y);
-        if (h >= 15) {
-          ctx.fillStyle = "#fff";
-          ctx.font = '11px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-          ctx.fillText(fmtNum(v), el.x, (el.y + el.base) / 2 + 4);
-        }
-        stackTotals[i] = (stackTotals[i] || 0) + v;
-        stackTop[i] = stackTop[i] === undefined ? el.y : Math.min(stackTop[i], el.y);
-      });
-    });
-
-    if (opt.showStackTotal !== false) {
-      ctx.fillStyle = "#454b69";
-      ctx.font = '11.5px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-      Object.keys(stackTotals).forEach((i) => {
-        const meta = chart.getDatasetMeta(0);
-        const el = meta.data[i];
-        if (!el) return;
-        ctx.fillText(fmtNum(stackTotals[i]), el.x, stackTop[i] - 6);
-      });
-    }
-    ctx.restore();
-  },
-};
-
 function fmtNum(v) {
   const n = Number(v);
   if (!isFinite(n)) return String(v);
@@ -314,6 +104,275 @@ function colorFor(map, key, i) {
   return map[key] || PALETTE[i % PALETTE.length];
 }
 
+// 折线用的横向渐变（蓝 → 紫 → 粉），面积用纵向渐隐
+const LINE_GRADIENT = ["#4bb4f8", "#6b7cf6", "#a855f7", "#e879b9"];
+
+function strokeGradient(chart, colors) {
+  const { ctx, chartArea } = chart;
+  if (!chartArea) return colors[0];
+  const g = ctx.createLinearGradient(chartArea.left, 0, chartArea.right, 0);
+  colors.forEach((c, i) => g.addColorStop(i / (colors.length - 1), c));
+  return g;
+}
+
+function areaGradient(chart, hex) {
+  const { ctx, chartArea } = chart;
+  if (!chartArea) return "rgba(0,0,0,0)";
+  const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+  g.addColorStop(0, hex + "30");
+  g.addColorStop(1, hex + "00");
+  return g;
+}
+
+// Chart.js 万一没加载成功，卡片和文字结论照常可用
+let chartsInited = false;
+function chartReady() {
+  if (typeof Chart === "undefined") return false;
+  if (!chartsInited) {
+    Chart.register(valueLabels, centerText, hoverGuide);
+    Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
+    Chart.defaults.font.size = 11.5;
+    Chart.defaults.color = "#8b90a7";
+    Chart.defaults.borderColor = "#f0f2f8";
+    Chart.defaults.plugins.tooltip.backgroundColor = "#12162b";
+    Chart.defaults.plugins.tooltip.padding = 11;
+    Chart.defaults.plugins.tooltip.cornerRadius = 10;
+    Chart.defaults.plugins.tooltip.displayColors = false;
+    Chart.defaults.plugins.tooltip.titleFont = { size: 11.5, weight: "500" };
+    Chart.defaults.plugins.tooltip.titleColor = "#b9bdd0";
+    Chart.defaults.plugins.tooltip.bodyFont = { size: 14, weight: "700" };
+    Chart.defaults.plugins.tooltip.caretSize = 6;
+    chartsInited = true;
+  }
+  return true;
+}
+
+// 无边框、无纵轴的坐标系（参考里的柱状图都不画纵轴和竖网格）
+function cleanScales(opts) {
+  const o = opts || {};
+  return {
+    x: {
+      stacked: !!o.stacked,
+      grid: { display: false, drawBorder: false },
+      border: { display: false },
+      ticks: { maxRotation: o.rotate ?? 0, autoSkip: o.autoSkip !== false, maxTicksLimit: o.maxTicks, padding: 6 },
+    },
+    y: {
+      stacked: !!o.stacked,
+      beginAtZero: true,
+      grid: { color: "#f2f4fa", drawTicks: false },
+      border: { display: false, dash: [0, 1] },
+      ticks: { padding: 10, maxTicksLimit: 6 },
+    },
+  };
+}
+
+// ============== 环形图（参考：粗圆角弧 + 大内圈 + 中心指标） ==============
+
+function drawDoughnut(key, canvasId, pairs, opts) {
+  if (!chartReady()) return;
+  const o = opts || {};
+  destroyChart(key);
+  const ctx = $(canvasId);
+  if (!ctx) return;
+  const colors = pairs.map((p, i) => (o.colorMap ? colorFor(o.colorMap, p[0], i) : PALETTE[i % PALETTE.length]));
+  const sum = pairs.reduce((a, p) => a + p[1], 0);
+  const top = pairs[0];
+
+  charts[key] = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels: pairs.map((p) => p[0]),
+      datasets: [{
+        data: pairs.map((p) => p[1]),
+        backgroundColor: colors,
+        borderWidth: 0,
+        borderRadius: 14,      // 弧两端做圆头
+        spacing: 3,            // 扇区之间留缝
+        hoverOffset: 6,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: "68%",
+      layout: { padding: { top: 6, bottom: 2 } },
+      plugins: {
+        valueLabels: { enabled: false },
+        centerText: {
+          value: top && sum ? ((top[1] / sum) * 100).toFixed(1) + "%" : "—",
+          label: top ? top[0] : "",
+        },
+        legend: {
+          position: "bottom",
+          labels: {
+            usePointStyle: true,
+            pointStyle: "circle",
+            boxWidth: 8,
+            boxHeight: 8,
+            padding: 12,
+            font: { size: 12 },
+            generateLabels(chart) {
+              const ds = chart.data.datasets[0];
+              return chart.data.labels.map((l, i) => ({
+                text: l + "  " + fmtNum(ds.data[i]),
+                fillStyle: ds.backgroundColor[i],
+                strokeStyle: ds.backgroundColor[i],
+                lineWidth: 0,
+                pointStyle: "circle",
+                hidden: !chart.getDataVisibility(i),
+                index: i,
+              }));
+            },
+          },
+        },
+        tooltip: {
+          displayColors: true,
+          callbacks: {
+            title: (items) => items[0].label,
+            label(c) {
+              const total = c.dataset.data.reduce((a, b) => a + (Number(b) || 0), 0);
+              return c.parsed + "（" + (total ? ((c.parsed / total) * 100).toFixed(1) : 0) + "%）";
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+// 环形图中心的大号指标
+const centerText = {
+  id: "centerText",
+  afterDatasetsDraw(chart) {
+    const o = chart.options.plugins?.centerText;
+    if (!o || !o.value) return;
+    const arc = chart.getDatasetMeta(0).data[0];
+    if (!arc) return;
+    const { ctx } = chart;
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#1f2340";
+    ctx.font = '700 24px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
+    ctx.fillText(o.value, arc.x, arc.y + 2);
+    if (o.label) {
+      ctx.fillStyle = "#8b90a7";
+      ctx.font = '12px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+      ctx.fillText(o.label, arc.x, arc.y + 22);
+    }
+    ctx.restore();
+  },
+};
+
+// ============== 条形图（参考：胶囊条 + 末端数值 + 双色交替） ==============
+
+function drawBar(key, canvasId, pairs, opts) {
+  if (!chartReady()) return;
+  const o = opts || {};
+  destroyChart(key);
+  const ctx = $(canvasId);
+  if (!ctx) return;
+
+  const alt = o.colors || ["#4f7cf7", "#fb8a6b"];
+  const colors = o.color ? pairs.map(() => o.color) : pairs.map((_, i) => alt[i % alt.length]);
+
+  charts[key] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: pairs.map((p) => p[0]),
+      datasets: [{
+        label: o.label || "会话数",
+        data: pairs.map((p) => p[1]),
+        backgroundColor: colors,
+        hoverBackgroundColor: colors,
+        borderRadius: 20,           // 全圆角，做成胶囊
+        borderSkipped: false,
+        barPercentage: o.horizontal ? .55 : .42,
+        categoryPercentage: .8,
+      }],
+    },
+    options: {
+      indexAxis: o.horizontal ? "y" : "x",
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: { padding: { right: o.horizontal ? 44 : 8, top: o.horizontal ? 0 : 22 } },
+      plugins: {
+        legend: { display: false },
+        valueLabels: { maxLabels: 40, showStackTotal: false },
+        tooltip: { callbacks: { title: (i) => i[0].label, label: (c) => fmtNum(c.parsed[o.horizontal ? "x" : "y"]) } },
+      },
+      scales: o.horizontal
+        ? {
+            x: { display: false, beginAtZero: true, grace: "8%" },
+            y: { grid: { display: false }, border: { display: false }, ticks: { padding: 8, font: { size: 12 } } },
+          }
+        : cleanScales({ rotate: o.rotate }),
+    },
+  });
+}
+
+// ============== 折线图（参考：渐变描边 + 渐变面积 + 白心圆点） ==============
+
+function drawLine(key, canvasId, pairs) {
+  if (!chartReady()) return;
+  destroyChart(key);
+  const ctx = $(canvasId);
+  if (!ctx) return;
+  charts[key] = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: pairs.map((p) => p[0]),
+      datasets: [{
+        label: "会话数",
+        data: pairs.map((p) => p[1]),
+        borderColor: (c) => strokeGradient(c.chart, LINE_GRADIENT),
+        backgroundColor: (c) => areaGradient(c.chart, "#7c8df8"),
+        borderWidth: 3,
+        fill: true,
+        tension: .42,
+        pointRadius: 3,
+        pointBackgroundColor: "#fff",
+        pointBorderColor: "#7c8df8",
+        pointBorderWidth: 2,
+        pointHoverRadius: 6,
+        pointHoverBorderWidth: 3,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        valueLabels: { enabled: false },
+        hoverGuide: { enabled: true },
+      },
+      scales: cleanScales({ maxTicks: 14 }),
+    },
+  });
+}
+
+// 悬停时的竖向虚线（参考图里的定位线）
+const hoverGuide = {
+  id: "hoverGuide",
+  afterDatasetsDraw(chart) {
+    if (!chart.options.plugins?.hoverGuide?.enabled) return;
+    const active = chart.tooltip?.getActiveElements?.() || [];
+    if (!active.length) return;
+    const { ctx, chartArea } = chart;
+    const x = active[0].element.x;
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = "#b9c0f0";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, chartArea.top);
+    ctx.lineTo(x, chartArea.bottom);
+    ctx.stroke();
+    ctx.restore();
+  },
+};
+
 // ============== 组合图：堆叠柱 + 双轴折线 ==============
 
 function drawCombo(key, canvasId, labels, bars, lines, opts) {
@@ -323,15 +382,22 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
   const ctx = $(canvasId);
   if (!ctx) return;
 
+  const single = bars.length === 1;
   const datasets = [
-    ...bars.map((b) => ({
+    ...bars.map((b, i) => ({
       type: "bar",
       label: b.label,
       data: b.data,
       backgroundColor: b.color,
+      hoverBackgroundColor: b.color,
       stack: "s",
       yAxisID: "y",
       borderWidth: 0,
+      // 单系列做成胶囊，堆叠时只给最上面一段留圆角
+      borderRadius: single ? 20 : (i === bars.length - 1 ? { topLeft: 6, topRight: 6 } : 0),
+      borderSkipped: false,
+      barPercentage: single ? .42 : .62,
+      categoryPercentage: .82,
       order: 2,
     })),
     ...lines.map((l) => ({
@@ -341,29 +407,29 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
       borderColor: l.color,
       backgroundColor: l.color,
       yAxisID: l.axis || "y1",
-      tension: .35,
+      tension: .42,
+      borderWidth: 2.5,
       pointRadius: 2.5,
       pointBackgroundColor: "#fff",
-      borderWidth: 2,
+      pointBorderColor: l.color,
+      pointBorderWidth: 2,
+      pointHoverRadius: 5.5,
       fill: false,
       order: 1,
     })),
   ];
 
-  const scales = {
-    x: { stacked: true, grid: { display: false }, ticks: { maxRotation: o.rotate ?? 45, autoSkip: false, font: { size: 11 } } },
-    y: { stacked: true, beginAtZero: true, title: { display: !!o.yLabel, text: o.yLabel || "" } },
-  };
+  const scales = cleanScales({ stacked: true, rotate: o.rotate ?? 45, autoSkip: false });
+  if (o.yLabel) scales.y.title = { display: true, text: o.yLabel };
   if (lines.length) {
     scales.y1 = {
       position: "right",
       beginAtZero: true,
-      grid: { drawOnChartArea: false },
-      title: { display: !!o.y1Label, text: o.y1Label || "" },
+      grid: { display: false },
+      border: { display: false },
+      ticks: { padding: 8, maxTicksLimit: 6 },
+      title: o.y1Label ? { display: true, text: o.y1Label } : undefined,
     };
-    if (lines.some((l) => l.axis === "y2")) {
-      scales.y2 = { position: "right", beginAtZero: true, grid: { drawOnChartArea: false }, display: false };
-    }
   }
 
   charts[key] = new Chart(ctx, {
@@ -372,56 +438,93 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
+      layout: { padding: { top: 22 } },
       plugins: {
-        legend: { position: "top", align: "start", labels: { boxWidth: 12, usePointStyle: false, font: { size: 12 } } },
+        legend: {
+          position: "top",
+          align: "start",
+          labels: { usePointStyle: true, pointStyle: "circle", boxWidth: 8, boxHeight: 8, padding: 14, font: { size: 12 } },
+        },
+        hoverGuide: { enabled: true },
         valueLabels: { maxLabels: o.maxLabels ?? 40, showStackTotal: o.showStackTotal !== false },
+        tooltip: { displayColors: true, bodyFont: { size: 12.5, weight: "500" } },
       },
       scales,
     },
   });
 }
 
-// 多条折线，可各自挂不同 Y 轴
-function drawMultiLine(key, canvasId, labels, series) {
-  if (!chartReady()) return;
-  destroyChart(key);
-  const ctx = $(canvasId);
-  if (!ctx) return;
-  const scales = { x: { ticks: { maxRotation: 45, autoSkip: true, maxTicksLimit: 16 } } };
-  series.forEach((s, i) => {
-    const axis = s.axis || "y";
-    scales[axis] = {
-      position: i === 0 ? "left" : "right",
-      beginAtZero: true,
-      title: { display: !!s.axisLabel, text: s.axisLabel || "" },
-      grid: { drawOnChartArea: i === 0 },
-    };
-  });
-  charts[key] = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels,
-      datasets: series.map((s) => ({
-        label: s.label,
-        data: s.data,
-        yAxisID: s.axis || "y",
-        borderColor: s.color,
-        backgroundColor: s.fill ? s.color.replace(")", ", .14)").replace("rgb", "rgba") : s.color,
-        fill: !!s.fill,
-        tension: .3,
-        pointRadius: 2,
-        borderWidth: 2,
-      })),
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: { legend: { position: "top", labels: { boxWidth: 12, font: { size: 12 } } } },
-      scales,
-    },
-  });
-}
+// ============== 数值标签 ==============
+
+// 把数值直接标在柱子和折线上，用内联插件实现，不引第三方依赖
+const valueLabels = {
+  id: "valueLabels",
+  afterDatasetsDraw(chart) {
+    const opt = chart.options.plugins?.valueLabels;
+    if (!opt || opt.enabled === false) return;
+    const count = chart.data.labels?.length || 0;
+    if (count > (opt.maxLabels || 40)) return;
+
+    const { ctx } = chart;
+    ctx.save();
+    ctx.font = '11px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
+    ctx.textAlign = "center";
+
+    const stackTotals = {};
+    const stackTop = {};
+
+    chart.data.datasets.forEach((ds, di) => {
+      const meta = chart.getDatasetMeta(di);
+      if (meta.hidden) return;
+      const kind = ds.type || meta.type || chart.config.type;
+      if (kind === "doughnut" || kind === "pie") return;
+
+      meta.data.forEach((el, i) => {
+        const v = ds.data[i];
+        if (v === null || v === undefined || v === 0) return;
+
+        if (kind === "line") {
+          ctx.fillStyle = "#5b6180";
+          ctx.font = '11px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
+          ctx.fillText(fmtNum(v), el.x, el.y - 9);
+          return;
+        }
+        if (typeof el.base !== "number") return;
+
+        // 横向条形图：数值标在条的右端
+        if (chart.options.indexAxis === "y") {
+          ctx.textAlign = "left";
+          ctx.fillStyle = "#454b69";
+          ctx.font = '600 12px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
+          ctx.fillText(fmtNum(v), el.x + 8, el.y + 4);
+          ctx.textAlign = "center";
+          return;
+        }
+
+        // 堆叠柱：段内标数值（高度够才标），顶部标合计
+        const h = Math.abs(el.base - el.y);
+        if (h >= 16) {
+          ctx.fillStyle = "#fff";
+          ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
+          ctx.fillText(fmtNum(v), el.x, (el.y + el.base) / 2 + 4);
+        }
+        stackTotals[i] = (stackTotals[i] || 0) + v;
+        stackTop[i] = stackTop[i] === undefined ? el.y : Math.min(stackTop[i], el.y);
+      });
+    });
+
+    if (opt.showStackTotal !== false) {
+      ctx.fillStyle = "#1f2340";
+      ctx.font = '700 11.5px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
+      Object.keys(stackTotals).forEach((i) => {
+        const el = chart.getDatasetMeta(0).data[i];
+        if (!el) return;
+        ctx.fillText(fmtNum(stackTotals[i]), el.x, stackTop[i] - 7);
+      });
+    }
+    ctx.restore();
+  },
+};
 
 // ============== 看板 ==============
 
@@ -582,7 +685,7 @@ function renderAI(s) {
   // 只画已质检的部分，未标记会淹没分布
   drawDoughnut("jiri", "chartJiri", sortedPairs(s.jiri).filter((p) => p[0] !== "未标记"));
   drawDoughnut("way", "chartWay", sortedPairs(s.way));
-  drawBar("reason", "chartReason", sortedPairs(s.reason), { horizontal: true, color: "#f4726c" });
+  drawBar("reason", "chartReason", sortedPairs(s.reason), { horizontal: true, colors: ["#fb8a6b", "#4f7cf7"] });
 
   const d = s.derived;
   const top = sortedPairs(s.reason, 1)[0];
@@ -708,7 +811,7 @@ function renderTrend(s) {
   setTotal("totalDeviceNature", "总计：", s.total);
 
   drawDoughnut("status", "chartStatus", sortedPairs(s.status));
-  drawBar("medium", "chartMedium", sortedPairs(s.medium, 12), { horizontal: true, color: "#8b5cf6" });
+  drawBar("medium", "chartMedium", sortedPairs(s.medium, 12), { horizontal: true, colors: ["#8b5cf6", "#38bdf8"] });
 }
 
 function renderScene(s) {
@@ -716,10 +819,10 @@ function renderScene(s) {
   drawDoughnut("effScene", "chartEffScene", effScene);
   setTotal("totalEffScene", "有效会话：", effScene.reduce((a, p) => a + p[1], 0));
 
-  drawDoughnut("nature2", "chartNature2", sortedPairs(s.nature));
+  drawDoughnut("nature2", "chartNature2", sortedPairs(s.nature), { colorMap: COLOR_NATURE });
   setTotal("totalNature2", "记录数量：", s.total);
 
-  drawBar("scene", "chartScene", sortedPairs(s.scene), { horizontal: true, color: "#4f7cf7" });
+  drawBar("scene", "chartScene", sortedPairs(s.scene), { horizontal: true, colors: ["#4f7cf7", "#fb8a6b"] });
   drawDoughnut("plan", "chartPlan", sortedPairs(s.plan));
   // 「无关」占九成以上，会把其他分类压成一条线，剔除后只看真正相关的会话
   const xj = sortedPairs(s.xjCategory).filter((p) => p[0] !== "无关");
