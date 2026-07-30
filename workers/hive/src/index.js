@@ -513,7 +513,7 @@ function json(data, status = 200) {
 
 // ============== 页面 ==============
 
-async function renderPage(env) {
+async function renderPage(env, user) {
   // Chart.js 随静态资源部署，不走公共 CDN（jsdelivr 国内经常卡住，且是阻塞脚本）
   const [cssUrl, jsUrl, chartUrl] = await Promise.all([
     env.ASSETS.url("/hive.css"),
@@ -538,6 +538,8 @@ async function renderPage(env) {
     <div class="header-meta">
       <span id="updatedAt">—</span>
       <button class="btn" id="refreshBtn">重新拉取数据</button>
+      <span class="user-chip" title="当前登录账号">${user || ""}</span>
+      <button class="btn-ghost" id="logoutBtn">退出</button>
     </div>
   </div>
 </header>
@@ -718,21 +720,162 @@ async function renderPage(env) {
   );
 }
 
-// ============== 访问验证（Basic Auth，与 app worker 一致） ==============
-// AUTH_USERS secret 格式："user1:pass1,user2:pass2"，未配置时不启用验证
-function checkAuth(request, env) {
-  const users = (env.AUTH_USERS || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (users.length === 0) return true;
-  const header = request.headers.get("Authorization") || "";
-  if (!header.startsWith("Basic ")) return false;
+// ============== 登录与会话 ==============
+// AUTH_USERS secret 格式："user1:pass1,user2:pass2"，未配置时不启用验证。
+// 登录后发一个 HMAC 签名的 Cookie 当会话，避免每次都弹浏览器原生对话框；
+// 签名密钥由 AUTH_USERS 派生 —— 改动账号即让所有旧会话失效。
+
+const COOKIE_NAME = "hive_session";
+const SESSION_DAYS = 7;
+
+function userList(env) {
+  return (env.AUTH_USERS || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function authEnabled(env) {
+  return userList(env).length > 0;
+}
+
+function b64urlEncode(bytes) {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function b64urlDecode(str) {
+  const s = str.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(s + "=".repeat((4 - (s.length % 4)) % 4));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+async function sessionKey(env) {
+  const raw = new TextEncoder().encode("hive-session|" + (env.AUTH_USERS || ""));
+  const digest = await crypto.subtle.digest("SHA-256", raw);
+  return crypto.subtle.importKey("raw", digest, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+}
+
+async function signSession(env, user) {
+  const payload = b64urlEncode(
+    new TextEncoder().encode(JSON.stringify({ u: user, exp: Date.now() + SESSION_DAYS * 86400000 }))
+  );
+  const key = await sessionKey(env);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  return payload + "." + b64urlEncode(new Uint8Array(sig));
+}
+
+async function readSession(env, token) {
+  if (!token || !token.includes(".")) return null;
+  const [payload, sig] = token.split(".");
   try {
-    return users.includes(atob(header.slice(6)));
+    const key = await sessionKey(env);
+    const ok = await crypto.subtle.verify("HMAC", key, b64urlDecode(sig), new TextEncoder().encode(payload));
+    if (!ok) return null;
+    const data = JSON.parse(new TextDecoder().decode(b64urlDecode(payload)));
+    if (!data.exp || data.exp < Date.now()) return null;
+    return data.u || null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function cookieValue(request, name) {
+  const raw = request.headers.get("Cookie") || "";
+  for (const part of raw.split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === name) return v.join("=");
+  }
+  return null;
+}
+
+// Basic Auth 仍然接受（方便 curl / 接口调试），但不再主动发起挑战
+function basicUser(request, env) {
+  const header = request.headers.get("Authorization") || "";
+  if (!header.startsWith("Basic ")) return null;
+  try {
+    const decoded = atob(header.slice(6));
+    return userList(env).includes(decoded) ? decoded.split(":")[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+async function currentUser(request, env) {
+  if (!authEnabled(env)) return "访客";
+  return (await readSession(env, cookieValue(request, COOKIE_NAME))) || basicUser(request, env);
+}
+
+function sessionCookie(token, maxAge) {
+  return `${COOKIE_NAME}=${token}; Path=/hive; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
+}
+
+async function renderLogin(env, opts) {
+  const o = opts || {};
+  const cssUrl = await env.ASSETS.url("/hive.css");
+  return new Response(
+    `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · hive 服务看板</title>
+<link rel="stylesheet" href="${cssUrl}">
+</head>
+<body class="login-body">
+<div class="login-wrap">
+  <form class="login-card" id="loginForm">
+    <div class="login-logo">hive</div>
+    <h1>hive 服务看板</h1>
+    <p class="login-sub">AI 会话质检与人工接待数据</p>
+
+    <label class="login-field">
+      <span>账号</span>
+      <input type="text" id="loginUser" autocomplete="username" required autofocus>
+    </label>
+    <label class="login-field">
+      <span>密码</span>
+      <input type="password" id="loginPass" autocomplete="current-password" required>
+    </label>
+
+    <div class="login-error" id="loginError" hidden></div>
+    <button type="submit" class="btn login-btn" id="loginBtn">登 录</button>
+    <p class="login-foot">登录状态保留 ${SESSION_DAYS} 天 · Powered by WDL</p>
+  </form>
+</div>
+<script>
+const form = document.getElementById("loginForm");
+const errEl = document.getElementById("loginError");
+const btn = document.getElementById("loginBtn");
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  errEl.hidden = true;
+  btn.disabled = true;
+  btn.textContent = "登录中…";
+  try {
+    const res = await fetch("/hive/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        user: document.getElementById("loginUser").value.trim(),
+        pass: document.getElementById("loginPass").value,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.success) { location.href = "/hive/"; return; }
+    errEl.textContent = data.error || "登录失败，请重试";
+    errEl.hidden = false;
+  } catch (err) {
+    errEl.textContent = "网络异常：" + err.message;
+    errEl.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "登 录";
+  }
+});
+</script>
+</body>
+</html>`,
+    { status: o.status || 200, headers: { "content-type": "text/html; charset=utf-8" } }
+  );
 }
 
 // ============== 路由 ==============
@@ -743,18 +886,43 @@ export default {
   },
 
   async fetch(request, env, ctx) {
-    if (!checkAuth(request, env)) {
-      return new Response("需要登录", {
-        status: 401,
+    const url = new URL(request.url);
+    const path = url.pathname.replace(/\/+$/, "") || "/";
+
+    // 登录：校验账号密码，通过则下发会话 Cookie
+    if (path === "/api/login") {
+      if (request.method !== "POST") return json({ success: false, error: "use POST" }, 405);
+      let body = {};
+      try { body = await request.json(); } catch { /* 忽略 */ }
+      const pair = String(body.user || "").trim() + ":" + String(body.pass || "");
+      if (!authEnabled(env) || !userList(env).includes(pair)) {
+        return json({ success: false, error: "账号或密码不正确" }, 401);
+      }
+      const token = await signSession(env, String(body.user).trim());
+      return new Response(JSON.stringify({ success: true }), {
         headers: {
-          "WWW-Authenticate": 'Basic realm="hive Dashboard", charset="UTF-8"',
-          "content-type": "text/plain; charset=utf-8",
+          "content-type": "application/json; charset=utf-8",
+          "set-cookie": sessionCookie(token, SESSION_DAYS * 86400),
         },
       });
     }
 
-    const url = new URL(request.url);
-    const path = url.pathname.replace(/\/+$/, "") || "/";
+    if (path === "/api/logout") {
+      return new Response(JSON.stringify({ success: true }), {
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "set-cookie": sessionCookie("", 0),
+        },
+      });
+    }
+
+    // 其余请求都要有会话（或带 Basic 头，方便接口调试）
+    const user = await currentUser(request, env);
+    if (!user) {
+      // 页面直接给登录页；接口返回 401 JSON，前端自己跳登录
+      if (path === "/") return renderLogin(env);
+      return json({ success: false, error: "未登录", login: true }, 401);
+    }
 
     if (path === "/api/dashboard") {
       const q = url.searchParams;
@@ -866,7 +1034,7 @@ export default {
 
     if (path === "/api/status") return json({ success: true, meta: await readMeta(env) });
 
-    if (path === "/") return renderPage(env);
+    if (path === "/") return renderPage(env, user);
 
     return new Response("Not Found", { status: 404 });
   },

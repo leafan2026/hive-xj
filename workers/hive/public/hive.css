@@ -331,3 +331,84 @@ tr.loading-row td { text-align: center; color: var(--muted); padding: 30px; }
   .header-inner, .main { padding-left: 16px; padding-right: 16px; }
   .card-value { font-size: 23px; }
 }
+
+
+/* ============ 登录页 ============ */
+
+.login-body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(900px 480px at 12% -10%, #e5e6fd 0%, rgba(229, 230, 253, 0) 60%),
+    radial-gradient(760px 420px at 92% 8%, #e2f0fd 0%, rgba(226, 240, 253, 0) 62%),
+    var(--bg);
+  padding: 24px;
+}
+.login-wrap { width: 100%; max-width: 400px; }
+.login-card {
+  background: var(--card);
+  border-radius: 20px;
+  padding: 40px 36px 30px;
+  box-shadow: 0 2px 6px rgba(31, 35, 64, .05), 0 22px 50px rgba(31, 35, 64, .11);
+  text-align: center;
+}
+.login-logo {
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 18px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #6d6df0, #4f7cf7);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 20px rgba(91, 91, 230, .34);
+}
+.login-card h1 { font-size: 20px; font-weight: 700; margin: 0 0 6px; letter-spacing: -.2px; }
+.login-sub { color: var(--muted); font-size: 13px; margin: 0 0 26px; }
+
+.login-field { display: block; text-align: left; margin-bottom: 15px; }
+.login-field span { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 7px; font-weight: 500; }
+.login-field input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fafbfe;
+  font-size: 14px;
+  color: var(--ink);
+  outline: none;
+  transition: border-color .14s, background .14s, box-shadow .14s;
+}
+.login-field input:focus {
+  border-color: var(--primary);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(91, 91, 230, .12);
+}
+
+.login-error {
+  background: #fdeeee;
+  color: #c8393a;
+  border-radius: 10px;
+  padding: 10px 13px;
+  font-size: 12.5px;
+  margin: 4px 0 14px;
+  text-align: left;
+}
+.login-btn { width: 100%; padding: 12px; font-size: 14px; letter-spacing: 2px; margin-top: 6px; }
+.login-foot { color: #a7abbe; font-size: 11.5px; margin: 20px 0 0; }
+
+/* 顶栏的当前用户 */
+.user-chip {
+  background: var(--primary-soft);
+  color: var(--primary);
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: 12.5px;
+  font-weight: 600;
+}

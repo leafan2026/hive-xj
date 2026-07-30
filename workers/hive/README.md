@@ -63,7 +63,18 @@
 | 名称 | 用途 |
 |---|---|
 | `JSJ_API_KEY` / `JSJ_API_SECRET` | 金数据 API 凭证 |
-| `AUTH_USERS` | Basic Auth，格式 `user1:pass1,user2:pass2`，未配置则不校验 |
+| `AUTH_USERS` | 登录账号，格式 `user1:pass1,user2:pass2`，未配置则不校验 |
+
+## 登录
+
+自带登录页（`GET /` 未登录时返回），提交到 `POST /api/login` 校验 `AUTH_USERS`，
+通过后下发 HMAC 签名的 `hive_session` Cookie（HttpOnly + Secure + SameSite=Lax，7 天）。
+签名密钥由 `AUTH_USERS` 派生 —— **改动账号会让所有已有会话失效**。顶栏显示当前账号，
+「退出」调 `POST /api/logout` 清 Cookie。
+
+接口仍接受 `Authorization: Basic`（方便 curl 调试），但不再返回 `WWW-Authenticate`，
+所以浏览器不会弹原生登录框；接口未登录统一返回 `401 {success:false, login:true}`，
+前端收到后自动跳登录页。
 
 ## 部署
 

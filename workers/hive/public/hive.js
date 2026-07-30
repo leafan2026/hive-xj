@@ -58,7 +58,9 @@ function sortedPairs(obj, limit) {
 async function api(path, init) {
   const res = await fetch(BASE + path, init);
   if (res.status === 401) {
-    throw new Error("登录状态已失效，请刷新页面重新输入账号密码");
+    // 会话过期：直接回登录页，不用让用户自己刷新
+    location.href = BASE + "/";
+    throw new Error("登录状态已失效，正在跳转登录页…");
   }
   const text = await res.text();
   if (!res.ok) {
@@ -1183,6 +1185,12 @@ function initTabs() {
 
 function initActions() {
   $("refreshBtn").addEventListener("click", hardRefresh);
+
+  const out = $("logoutBtn");
+  if (out) out.addEventListener("click", async () => {
+    try { await fetch(BASE + "/api/logout", { method: "POST" }); } catch (e) { /* 忽略 */ }
+    location.href = BASE + "/";
+  });
 
   // 维度下拉 + 质检状态：改动即重算
   Object.keys(DIM_SELECTS).forEach((id) => {
