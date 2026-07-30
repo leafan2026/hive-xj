@@ -129,7 +129,7 @@ let chartsInited = false;
 function chartReady() {
   if (typeof Chart === "undefined") return false;
   if (!chartsInited) {
-    Chart.register(valueLabels, centerText, hoverGuide);
+    Chart.register(valueLabels, centerText, hoverGuide, arcShadow);
     Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
     Chart.defaults.font.size = 11.5;
     Chart.defaults.color = "#8b90a7";
@@ -175,21 +175,31 @@ function drawDoughnut(key, canvasId, pairs, opts) {
   destroyChart(key);
   const ctx = $(canvasId);
   if (!ctx) return;
-  const colors = pairs.map((p, i) => (o.colorMap ? colorFor(o.colorMap, p[0], i) : PALETTE[i % PALETTE.length]));
-  const sum = pairs.reduce((a, p) => a + p[1], 0);
-  const top = pairs[0];
+  // 占比不足 1% 的分类会被圆头压成一条线，合并成「其他」
+  const rawSum = pairs.reduce((a, p) => a + p[1], 0);
+  const tiny = pairs.filter((p) => rawSum && p[1] / rawSum < 0.01);
+  let shown = pairs;
+  if (tiny.length > 1) {
+    const rest = tiny.reduce((a, p) => a + p[1], 0);
+    shown = pairs.filter((p) => !tiny.includes(p)).concat([["其他（各 <1%）", rest]]);
+  }
+  const colors = shown.map((p, i) => (o.colorMap ? colorFor(o.colorMap, p[0], i) : PALETTE[i % PALETTE.length]));
+  const sum = shown.reduce((a, p) => a + p[1], 0);
+  const top = shown[0];
+  const pairs2 = shown;
 
   charts[key] = new Chart(ctx, {
     type: "doughnut",
     data: {
-      labels: pairs.map((p) => p[0]),
+      labels: pairs2.map((p) => p[0]),
       datasets: [{
-        data: pairs.map((p) => p[1]),
+        data: pairs2.map((p) => p[1]),
         backgroundColor: colors,
         borderWidth: 0,
-        borderRadius: 14,      // 弧两端做圆头
-        spacing: 3,            // 扇区之间留缝
-        hoverOffset: 6,
+        borderRadius: 30,      // 弧两端做满圆头
+        spacing: 1,            // 分类之间只留一条细缝，靠阴影分层
+        hoverOffset: 10,
+        hoverBorderWidth: 0,
       }],
     },
     options: {
@@ -199,6 +209,7 @@ function drawDoughnut(key, canvasId, pairs, opts) {
       layout: { padding: { top: 6, bottom: 2 } },
       plugins: {
         valueLabels: { enabled: false },
+        arcShadow: { enabled: true },
         centerText: {
           value: top && sum ? ((top[1] / sum) * 100).toFixed(1) + "%" : "—",
           label: top ? top[0] : "",
@@ -240,6 +251,25 @@ function drawDoughnut(key, canvasId, pairs, opts) {
     },
   });
 }
+
+// 环形图的层叠效果：绘制弧之前给 canvas 打上柔和阴影，
+// 圆头弧就会在相邻弧上投影，呈现「一段压着一段」的观感（参考稿里的处理）
+const arcShadow = {
+  id: "arcShadow",
+  beforeDatasetDraw(chart, args) {
+    if (!chart.options.plugins?.arcShadow?.enabled) return;
+    const { ctx } = chart;
+    ctx.save();
+    ctx.shadowColor = "rgba(31, 35, 64, .22)";
+    ctx.shadowBlur = 9;
+    ctx.shadowOffsetX = -1;
+    ctx.shadowOffsetY = 3;
+  },
+  afterDatasetDraw(chart) {
+    if (!chart.options.plugins?.arcShadow?.enabled) return;
+    chart.ctx.restore();
+  },
+};
 
 // 环形图中心的大号指标
 const centerText = {
@@ -394,8 +424,11 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
       yAxisID: "y",
       borderWidth: 0,
       // 单系列做成胶囊，堆叠时只给最上面一段留圆角
-      borderRadius: single ? 20 : (i === bars.length - 1 ? { topLeft: 6, topRight: 6 } : 0),
+      borderRadius: single ? 20 : (i === bars.length - 1 ? { topLeft: 5, topRight: 5 } : 2),
       borderSkipped: false,
+      // 段与段之间留一条白色细缝，避免颜色直接相接糊在一起
+      borderColor: "#fff",
+      borderWidth: single ? 0 : { top: 2, right: 0, bottom: 0, left: 0 },
       barPercentage: single ? .42 : .62,
       categoryPercentage: .82,
       order: 2,
