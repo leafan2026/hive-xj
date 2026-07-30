@@ -125,9 +125,9 @@ function buildStats(rows) {
   const s = {
     total: rows.length,
     jiri: {}, way: {}, reason: {}, avoidable: 0, transferred: 0,
-    daily: {}, channel: {}, device: {}, medium: {}, status: {},
+    daily: {}, dailyCost: {}, channel: {}, device: {}, medium: {}, status: {},
     scene: {}, plan: {}, sceneByPlan: {}, xjCategory: {},
-    nature: {}, durSum: 0, durCount: 0, turnsSum: 0, creator: {},
+    nature: {}, durSum: 0, durCount: 0, turnsSum: 0,
   };
   const durations = [];
 
@@ -141,8 +141,16 @@ function buildStats(rows) {
     tally(s.plan, r.plan);
     tally(s.xjCategory, r.cat);
     tally(s.nature, r.nat);
-    tally(s.creator, r.creator);
-    if (r.t) tally(s.daily, r.t.slice(0, 10));
+
+    const day = r.t ? r.t.slice(0, 10) : "";
+    if (day) {
+      tally(s.daily, day);
+      // 每天的人工成本：总时长、有时长记录的会话数、接待轮次、转人工次数
+      const c = s.dailyCost[day] || (s.dailyCost[day] = { dur: 0, n: 0, turns: 0, transfer: 0 });
+      if (typeof r.dur === "number" && r.dur > 0) { c.dur += r.dur; c.n++; }
+      if (typeof r.turns === "number") c.turns += r.turns;
+      if (r.way) c.transfer++;
+    }
 
     if (r.way) { s.transferred++; tally(s.way, r.way); }
     if (r.reason) {
@@ -380,9 +388,15 @@ async function renderPage(env) {
 
   <section class="panel" id="panel-cost">
     <div class="grid">
+      <div class="chart-card wide">
+        <h3>每日人工接待时长趋势</h3>
+        <canvas id="chartDailyCost"></canvas>
+      </div>
+      <div class="chart-card wide">
+        <h3>每日转人工次数与接待轮次</h3>
+        <canvas id="chartDailyTransfer"></canvas>
+      </div>
       <div class="chart-card"><h3>会话性质分布</h3><canvas id="chartNature"></canvas></div>
-      <div class="chart-card"><h3>质检人统计</h3><canvas id="chartCreator"></canvas></div>
-      <div class="chart-card wide"><h3>人工接待时长概览</h3><div id="costSummary" class="stat-list"></div></div>
     </div>
   </section>
 

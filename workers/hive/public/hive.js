@@ -166,6 +166,48 @@ function drawLine(key, canvasId, pairs) {
   });
 }
 
+// 多条折线，可各自挂不同 Y 轴
+function drawMultiLine(key, canvasId, labels, series) {
+  if (!chartReady()) return;
+  destroyChart(key);
+  const ctx = $(canvasId);
+  if (!ctx) return;
+  const scales = { x: { ticks: { maxRotation: 45, autoSkip: true, maxTicksLimit: 16 } } };
+  series.forEach((s, i) => {
+    const axis = s.axis || "y";
+    scales[axis] = {
+      position: i === 0 ? "left" : "right",
+      beginAtZero: true,
+      title: { display: !!s.axisLabel, text: s.axisLabel || "" },
+      grid: { drawOnChartArea: i === 0 },
+    };
+  });
+  charts[key] = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: series.map((s) => ({
+        label: s.label,
+        data: s.data,
+        yAxisID: s.axis || "y",
+        borderColor: s.color,
+        backgroundColor: s.fill ? s.color.replace(")", ", .14)").replace("rgb", "rgba") : s.color,
+        fill: !!s.fill,
+        tension: .3,
+        pointRadius: 2,
+        borderWidth: 2,
+      })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { position: "top", labels: { boxWidth: 12, font: { size: 12 } } } },
+      scales,
+    },
+  });
+}
+
 // ============== 看板 ==============
 
 // 缓存还在构建时轮询，构建完自动渲染
@@ -369,20 +411,47 @@ function renderScene(s) {
 
 function renderCost(s) {
   drawDoughnut("nature", "chartNature", sortedPairs(s.nature));
-  drawBar("creator", "chartCreator", sortedPairs(s.creator, 10), { horizontal: true, color: "#27ae60" });
 
-  const d = s.derived;
-  const items = [
-    ["人工接待总时长", d.durSumHours + " 小时"],
-    ["平均单会话时长", fmtDuration(d.durAvg)],
-    ["中位单会话时长", fmtDuration(d.durMedian)],
-    ["有记录时长的会话", s.durCount + " 条"],
-    ["转人工接待总次数", s.turnsSum],
-    ["有效会话占比", d.effectiveRate + "%"],
-  ];
-  $("costSummary").innerHTML = items.map((i) =>
-    "<div><span>" + i[0] + "</span><strong>" + i[1] + "</strong></div>"
-  ).join("");
+  const days = Object.keys(s.dailyCost || {})
+    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    .sort();
+  const cost = days.map((d) => s.dailyCost[d]);
+
+  drawMultiLine("dailyCost", "chartDailyCost", days, [
+    {
+      label: "人工接待总时长（小时）",
+      data: cost.map((c) => Number((c.dur / 3600).toFixed(2))),
+      color: "rgb(47, 128, 237)",
+      axis: "y",
+      axisLabel: "小时",
+      fill: true,
+    },
+    {
+      label: "平均单会话时长（分钟）",
+      data: cost.map((c) => (c.n ? Number((c.dur / c.n / 60).toFixed(1)) : 0)),
+      color: "rgb(242, 153, 74)",
+      axis: "y1",
+      axisLabel: "分钟",
+    },
+  ]);
+
+  drawMultiLine("dailyTransfer", "chartDailyTransfer", days, [
+    {
+      label: "转人工会话数",
+      data: cost.map((c) => c.transfer),
+      color: "rgb(235, 87, 87)",
+      axis: "y",
+      axisLabel: "会话数",
+      fill: true,
+    },
+    {
+      label: "人工接待轮次",
+      data: cost.map((c) => c.turns),
+      color: "rgb(39, 174, 96)",
+      axis: "y1",
+      axisLabel: "轮次",
+    },
+  ]);
 }
 
 // ============== 交互 ==============
