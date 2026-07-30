@@ -114,6 +114,26 @@ function tally(target, key) {
   target[k] = (target[k] || 0) + 1;
 }
 
+// ISO 周编号，形如 2026W31
+function isoWeek(dayStr) {
+  const d = new Date(dayStr + "T00:00:00Z");
+  if (isNaN(d)) return "";
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  t.setUTCDate(t.getUTCDate() - ((t.getUTCDay() + 6) % 7) + 3);
+  const ft = new Date(Date.UTC(t.getUTCFullYear(), 0, 4));
+  ft.setUTCDate(ft.getUTCDate() - ((ft.getUTCDay() + 6) % 7) + 3);
+  return t.getUTCFullYear() + "W" + String(1 + Math.round((t - ft) / 604800000)).padStart(2, "0");
+}
+
+function bump(obj, k1, k2) {
+  const inner = obj[k1] || (obj[k1] = {});
+  inner[k2] = (inner[k2] || 0) + 1;
+}
+
+function bucket() {
+  return { total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0, dev: {}, ch: {}, nat: {} };
+}
+
 function median(nums) {
   if (!nums.length) return 0;
   const s = [...nums].sort((a, b) => a - b);
@@ -125,9 +145,13 @@ function buildStats(rows) {
   const s = {
     total: rows.length,
     jiri: {}, way: {}, reason: {}, avoidable: 0, transferred: 0,
-    daily: {}, dailyCost: {}, channel: {}, device: {}, medium: {}, status: {},
+    daily: {}, channel: {}, device: {}, medium: {}, status: {},
     scene: {}, plan: {}, sceneByPlan: {}, xjCategory: {},
     nature: {}, durSum: 0, durCount: 0, turnsSum: 0,
+    // 按天 / 按周的复合桶，供堆叠柱 + 双轴折线用
+    byDay: {}, byWeek: {},
+    // 交叉分布
+    natureByDevice: {}, natureByChannel: {}, effectiveScene: {},
   };
   const durations = [];
 
@@ -142,14 +166,27 @@ function buildStats(rows) {
     tally(s.xjCategory, r.cat);
     tally(s.nature, r.nat);
 
+    bump(s.natureByDevice, r.dev, r.nat);
+    bump(s.natureByChannel, r.ch, r.nat);
+    if (r.nat === "有效") tally(s.effectiveScene, r.scene);
+
     const day = r.t ? r.t.slice(0, 10) : "";
     if (day) {
       tally(s.daily, day);
-      // 每天的人工成本：总时长、有时长记录的会话数、接待轮次、转人工次数
-      const c = s.dailyCost[day] || (s.dailyCost[day] = { dur: 0, n: 0, turns: 0, transfer: 0 });
-      if (typeof r.dur === "number" && r.dur > 0) { c.dur += r.dur; c.n++; }
-      if (typeof r.turns === "number") c.turns += r.turns;
-      if (r.way) c.transfer++;
+      const week = isoWeek(day);
+      for (const b of [
+        s.byDay[day] || (s.byDay[day] = bucket()),
+        week ? (s.byWeek[week] || (s.byWeek[week] = bucket())) : null,
+      ]) {
+        if (!b) continue;
+        b.total++;
+        b.dev[r.dev] = (b.dev[r.dev] || 0) + 1;
+        b.ch[r.ch] = (b.ch[r.ch] || 0) + 1;
+        b.nat[r.nat] = (b.nat[r.nat] || 0) + 1;
+        if (typeof r.dur === "number" && r.dur > 0) { b.dur += r.dur; b.durCount++; }
+        if (typeof r.turns === "number") b.turns += r.turns;
+        if (r.way) b.transfer++;
+      }
     }
 
     if (r.way) { s.transferred++; tally(s.way, r.way); }
@@ -366,9 +403,22 @@ async function renderPage(env) {
 
   <section class="panel" id="panel-trend">
     <div class="grid">
-      <div class="chart-card wide"><h3>每日会话量</h3><canvas id="chartDaily"></canvas></div>
-      <div class="chart-card"><h3>渠道分布</h3><canvas id="chartChannel"></canvas></div>
-      <div class="chart-card"><h3>设备分布</h3><canvas id="chartDevice"></canvas></div>
+      <div class="chart-card wide tall">
+        <div class="chart-head"><h3>会话接待分布（按天）</h3><span class="chart-total" id="totalDayRecept"></span></div>
+        <canvas id="chartDayRecept"></canvas>
+      </div>
+      <div class="chart-card wide">
+        <div class="chart-head"><h3>每周会话来源</h3><span class="chart-total" id="totalWeekChannel"></span></div>
+        <canvas id="chartWeekChannel"></canvas>
+      </div>
+      <div class="chart-card wide">
+        <div class="chart-head"><h3>会话分布（渠道 × 会话性质）</h3><span class="chart-total" id="totalChannelNature"></span></div>
+        <canvas id="chartChannelNature"></canvas>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head"><h3>设备 × 会话性质</h3><span class="chart-total" id="totalDeviceNature"></span></div>
+        <canvas id="chartDeviceNature"></canvas>
+      </div>
       <div class="chart-card"><h3>处理状态（仅人工 / 仅 Jiri）</h3><canvas id="chartStatus"></canvas></div>
       <div class="chart-card wide"><h3>入口媒介 Top 12</h3><canvas id="chartMedium"></canvas></div>
     </div>
@@ -376,7 +426,15 @@ async function renderPage(env) {
 
   <section class="panel" id="panel-scene">
     <div class="grid">
-      <div class="chart-card wide"><h3>业务场景分布</h3><canvas id="chartScene"></canvas></div>
+      <div class="chart-card">
+        <div class="chart-head"><h3>有效会话场景</h3><span class="chart-total" id="totalEffScene"></span></div>
+        <canvas id="chartEffScene"></canvas>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head"><h3>会话性质</h3><span class="chart-total" id="totalNature2"></span></div>
+        <canvas id="chartNature2"></canvas>
+      </div>
+      <div class="chart-card wide"><h3>业务场景分布（全部会话）</h3><canvas id="chartScene"></canvas></div>
       <div class="chart-card"><h3>当前套餐分布</h3><canvas id="chartPlan"></canvas></div>
       <div class="chart-card"><h3>小金商户分类</h3><canvas id="chartXj"></canvas></div>
       <div class="chart-card wide">
@@ -389,14 +447,26 @@ async function renderPage(env) {
   <section class="panel" id="panel-cost">
     <div class="grid">
       <div class="chart-card wide">
-        <h3>每日人工接待时长趋势</h3>
-        <canvas id="chartDailyCost"></canvas>
+        <div class="chart-head">
+          <h3>会话接待分布（按周）</h3>
+          <span class="chart-total" id="totalWeekRecept"></span>
+        </div>
+        <canvas id="chartWeekRecept"></canvas>
       </div>
       <div class="chart-card wide">
-        <h3>每日转人工次数与接待轮次</h3>
-        <canvas id="chartDailyTransfer"></canvas>
+        <div class="chart-head">
+          <h3>会话时长（按周 · 会话性质堆叠 + 单会话平均时长）</h3>
+          <span class="chart-total" id="totalWeekDur"></span>
+        </div>
+        <canvas id="chartWeekDur"></canvas>
       </div>
-      <div class="chart-card"><h3>会话性质分布</h3><canvas id="chartNature"></canvas></div>
+      <div class="chart-card wide tall">
+        <div class="chart-head">
+          <h3>每日人工接待时长与转人工次数</h3>
+          <span class="chart-total" id="totalDayCost"></span>
+        </div>
+        <canvas id="chartDayCost"></canvas>
+      </div>
     </div>
   </section>
 

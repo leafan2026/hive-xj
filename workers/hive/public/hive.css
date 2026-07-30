@@ -108,8 +108,21 @@ body {
   min-height: 300px;
 }
 .chart-card.wide { grid-column: 1 / -1; }
+.chart-card.tall { min-height: 440px; }
+.chart-card.tall canvas { max-height: 400px; }
 .chart-card h3 { margin: 0 0 14px; font-size: 14px; font-weight: 600; }
 .chart-card canvas { max-height: 300px; }
+
+.chart-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.chart-head h3 { margin: 0; }
+.chart-total { color: var(--muted); font-size: 12.5px; }
+.chart-total b { color: var(--ink); font-size: 17px; font-weight: 650; margin-left: 3px; }
 
 .note {
   margin-top: 16px;

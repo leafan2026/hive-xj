@@ -81,7 +81,12 @@ function destroyChart(key) {
 }
 
 // Chart.js 万一没加载成功，卡片和文字结论照常可用
-function chartReady() { return typeof Chart !== "undefined"; }
+let labelsRegistered = false;
+function chartReady() {
+  if (typeof Chart === "undefined") return false;
+  if (!labelsRegistered) { Chart.register(valueLabels); labelsRegistered = true; }
+  return true;
+}
 
 function drawBar(key, canvasId, pairs, opts) {
   const o = opts || {};
@@ -162,6 +167,153 @@ function drawLine(key, canvasId, pairs) {
       maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: { y: { beginAtZero: true } },
+    },
+  });
+}
+
+// ============== 数值标签 ==============
+
+// 参考看板会把数值直接标在柱子和折线上，这里用一个内联插件实现，不引第三方依赖
+const valueLabels = {
+  id: "valueLabels",
+  afterDatasetsDraw(chart) {
+    const opt = chart.options.plugins?.valueLabels;
+    if (!opt || opt.enabled === false) return;
+    const { ctx, data } = chart;
+    const count = data.labels?.length || 0;
+    if (count > (opt.maxLabels || 40)) return;
+
+    ctx.save();
+    ctx.font = '11px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+    ctx.textAlign = "center";
+
+    const stackTotals = {};
+    const stackTop = {};
+
+    chart.data.datasets.forEach((ds, di) => {
+      const meta = chart.getDatasetMeta(di);
+      if (meta.hidden) return;
+      meta.data.forEach((el, i) => {
+        const v = ds.data[i];
+        if (v === null || v === undefined || v === 0) return;
+
+        if (meta.type === "line" || ds.type === "line") {
+          ctx.fillStyle = "#5a6678";
+          ctx.fillText(fmtNum(v), el.x, el.y - 7);
+          return;
+        }
+        // 堆叠柱：段内标数值（高度够才标），顶部标合计
+        const h = Math.abs(el.base - el.y);
+        if (h >= 15) {
+          ctx.fillStyle = "#fff";
+          ctx.fillText(fmtNum(v), el.x, (el.y + el.base) / 2 + 4);
+        }
+        stackTotals[i] = (stackTotals[i] || 0) + v;
+        stackTop[i] = stackTop[i] === undefined ? el.y : Math.min(stackTop[i], el.y);
+      });
+    });
+
+    if (opt.showStackTotal !== false) {
+      ctx.fillStyle = "#3b475c";
+      ctx.font = '11.5px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+      Object.keys(stackTotals).forEach((i) => {
+        const meta = chart.getDatasetMeta(0);
+        const el = meta.data[i];
+        if (!el) return;
+        ctx.fillText(fmtNum(stackTotals[i]), el.x, stackTop[i] - 6);
+      });
+    }
+    ctx.restore();
+  },
+};
+
+function fmtNum(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return String(v);
+  if (Number.isInteger(n)) return n >= 10000 ? (n / 1000).toFixed(1) + "K" : String(n);
+  return n.toFixed(n < 10 ? 2 : 1);
+}
+
+// 分类固定配色，跨图表保持一致
+const COLOR_NATURE = {
+  "有效": "#7eb6e8", "填表人": "#8fdcd0", "无效": "#b4e197",
+  "转接未应答": "#f6a6a6", "电话引导·发链接图片": "#2f80ed",
+  "内部测试": "#f6d47a", "未标记": "#c9d1dd",
+};
+const COLOR_CHANNEL = {
+  gd_next: "#f2994a", gd4: "#b07a4f", gd_app: "#9b51e0",
+  wechat_miniapp: "#27ae60", wechat_official: "#eb5757",
+  trade_weixin_app: "#2f80ed", "未知": "#9aa5b6",
+};
+const COLOR_DEVICE = { pc: "#2f80ed", mobile: "#27ae60", "未知": "#b0b8c4" };
+
+function colorFor(map, key, i) {
+  return map[key] || PALETTE[i % PALETTE.length];
+}
+
+// ============== 组合图：堆叠柱 + 双轴折线 ==============
+
+function drawCombo(key, canvasId, labels, bars, lines, opts) {
+  if (!chartReady()) return;
+  const o = opts || {};
+  destroyChart(key);
+  const ctx = $(canvasId);
+  if (!ctx) return;
+
+  const datasets = [
+    ...bars.map((b) => ({
+      type: "bar",
+      label: b.label,
+      data: b.data,
+      backgroundColor: b.color,
+      stack: "s",
+      yAxisID: "y",
+      borderWidth: 0,
+      order: 2,
+    })),
+    ...lines.map((l) => ({
+      type: "line",
+      label: l.label,
+      data: l.data,
+      borderColor: l.color,
+      backgroundColor: l.color,
+      yAxisID: l.axis || "y1",
+      tension: .35,
+      pointRadius: 2.5,
+      pointBackgroundColor: "#fff",
+      borderWidth: 2,
+      fill: false,
+      order: 1,
+    })),
+  ];
+
+  const scales = {
+    x: { stacked: true, grid: { display: false }, ticks: { maxRotation: o.rotate ?? 45, autoSkip: false, font: { size: 11 } } },
+    y: { stacked: true, beginAtZero: true, title: { display: !!o.yLabel, text: o.yLabel || "" } },
+  };
+  if (lines.length) {
+    scales.y1 = {
+      position: "right",
+      beginAtZero: true,
+      grid: { drawOnChartArea: false },
+      title: { display: !!o.y1Label, text: o.y1Label || "" },
+    };
+    if (lines.some((l) => l.axis === "y2")) {
+      scales.y2 = { position: "right", beginAtZero: true, grid: { drawOnChartArea: false }, display: false };
+    }
+  }
+
+  charts[key] = new Chart(ctx, {
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { position: "top", align: "start", labels: { boxWidth: 12, usePointStyle: false, font: { size: 12 } } },
+        valueLabels: { maxLabels: o.maxLabels ?? 40, showStackTotal: o.showStackTotal !== false },
+      },
+      scales,
     },
   });
 }
@@ -379,18 +531,94 @@ function renderAI(s) {
     (top ? " 最主要原因是 <b>" + top[0] + "</b>（" + top[1] + " 次）。" : "");
 }
 
+// 桶里出现过的分类，按全量占比排序，保证堆叠顺序稳定
+function bucketKeys(buckets, field, order) {
+  const totals = {};
+  for (const b of buckets) {
+    for (const [k, v] of Object.entries(b[field] || {})) totals[k] = (totals[k] || 0) + v;
+  }
+  const keys = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
+  if (!order) return keys;
+  return keys.sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+}
+
+function sortedKeys(obj, asc) {
+  return Object.keys(obj || {}).filter((k) => /^\d{4}(-\d{2}-\d{2}|W\d{2})$/.test(k))
+    .sort((a, b) => (asc === false ? b.localeCompare(a) : a.localeCompare(b)));
+}
+
+function setTotal(id, label, value) {
+  const el = $(id);
+  if (el) el.innerHTML = label + "<b>" + fmtNum(value) + "</b>";
+}
+
 function renderTrend(s) {
-  const daily = Object.entries(s.daily || {})
-    .filter((p) => p[0] && p[0] !== "未标记")
-    .sort((a, b) => a[0].localeCompare(b[0]));
-  drawLine("daily", "chartDaily", daily);
-  drawDoughnut("channel", "chartChannel", sortedPairs(s.channel));
-  drawDoughnut("device", "chartDevice", sortedPairs(s.device));
+  const days = sortedKeys(s.byDay);
+  const dayB = days.map((d) => s.byDay[d]);
+  const weeks = sortedKeys(s.byWeek);
+  const weekB = weeks.map((w) => s.byWeek[w]);
+
+  // 会话接待分布（按天）：设备堆叠柱 + 人工总时长 / 转人工次数双折线
+  const devKeys = bucketKeys(dayB, "dev");
+  drawCombo(
+    "dayRecept", "chartDayRecept", days,
+    devKeys.map((k, i) => ({ label: k, data: dayB.map((b) => b.dev[k] || 0), color: colorFor(COLOR_DEVICE, k, i) })),
+    [
+      { label: "人工接待总时长（小时）", data: dayB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f2c94c", axis: "y1" },
+      { label: "转人工会话接待次数", data: dayB.map((b) => b.transfer), color: "#7f8c9b", axis: "y1" },
+    ],
+    { maxLabels: 40, rotate: 60 }
+  );
+  setTotal("totalDayRecept", "总计：", dayB.reduce((a, b) => a + b.total, 0));
+
+  // 每周会话来源：渠道堆叠
+  const chKeys = bucketKeys(weekB, "ch");
+  drawCombo(
+    "weekChannel", "chartWeekChannel", weeks,
+    chKeys.map((k, i) => ({ label: k, data: weekB.map((b) => b.ch[k] || 0), color: colorFor(COLOR_CHANNEL, k, i) })),
+    [], { rotate: 0 }
+  );
+  setTotal("totalWeekChannel", "总计：", weekB.reduce((a, b) => a + b.total, 0));
+
+  // 渠道 × 会话性质
+  const channels = sortedPairs(s.channel).map((p) => p[0]);
+  const natKeys = sortedPairs(s.nature).map((p) => p[0]);
+  drawCombo(
+    "channelNature", "chartChannelNature", channels,
+    natKeys.map((k, i) => ({
+      label: k,
+      data: channels.map((c) => (s.natureByChannel[c] || {})[k] || 0),
+      color: colorFor(COLOR_NATURE, k, i),
+    })),
+    [], { rotate: 20 }
+  );
+  setTotal("totalChannelNature", "记录数量：", s.total);
+
+  // 设备 × 会话性质
+  const devices = sortedPairs(s.device).map((p) => p[0]);
+  drawCombo(
+    "deviceNature", "chartDeviceNature", devices,
+    natKeys.map((k, i) => ({
+      label: k,
+      data: devices.map((d) => (s.natureByDevice[d] || {})[k] || 0),
+      color: colorFor(COLOR_NATURE, k, i),
+    })),
+    [], { rotate: 0 }
+  );
+  setTotal("totalDeviceNature", "总计：", s.total);
+
   drawDoughnut("status", "chartStatus", sortedPairs(s.status));
   drawBar("medium", "chartMedium", sortedPairs(s.medium, 12), { horizontal: true, color: "#9b51e0" });
 }
 
 function renderScene(s) {
+  const effScene = sortedPairs(s.effectiveScene);
+  drawDoughnut("effScene", "chartEffScene", effScene);
+  setTotal("totalEffScene", "有效会话：", effScene.reduce((a, p) => a + p[1], 0));
+
+  drawDoughnut("nature2", "chartNature2", sortedPairs(s.nature));
+  setTotal("totalNature2", "记录数量：", s.total);
+
   drawBar("scene", "chartScene", sortedPairs(s.scene), { horizontal: true, color: "#2f80ed" });
   drawDoughnut("plan", "chartPlan", sortedPairs(s.plan));
   drawDoughnut("xj", "chartXj", sortedPairs(s.xjCategory));
@@ -410,48 +638,49 @@ function renderScene(s) {
 }
 
 function renderCost(s) {
-  drawDoughnut("nature", "chartNature", sortedPairs(s.nature));
+  const weeks = sortedKeys(s.byWeek);
+  const weekB = weeks.map((w) => s.byWeek[w]);
+  const days = sortedKeys(s.byDay);
+  const dayB = days.map((d) => s.byDay[d]);
 
-  const days = Object.keys(s.dailyCost || {})
-    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
-    .sort();
-  const cost = days.map((d) => s.dailyCost[d]);
+  // 会话接待分布（按周）：会话数柱 + 人工总时长 / 转人工次数双折线
+  drawCombo(
+    "weekRecept", "chartWeekRecept", weeks,
+    [{ label: "会话数", data: weekB.map((b) => b.total), color: "#3aa0e8" }],
+    [
+      { label: "人工接待总时长（小时）", data: weekB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f2c94c", axis: "y1" },
+      { label: "转人工会话接待次数", data: weekB.map((b) => b.transfer), color: "#7f8c9b", axis: "y1" },
+    ],
+    { rotate: 0, showStackTotal: false }
+  );
+  setTotal("totalWeekRecept", "总计：", weekB.reduce((a, b) => a + b.total, 0));
 
-  drawMultiLine("dailyCost", "chartDailyCost", days, [
-    {
-      label: "人工接待总时长（小时）",
-      data: cost.map((c) => Number((c.dur / 3600).toFixed(2))),
-      color: "rgb(47, 128, 237)",
-      axis: "y",
-      axisLabel: "小时",
-      fill: true,
-    },
-    {
-      label: "平均单会话时长（分钟）",
-      data: cost.map((c) => (c.n ? Number((c.dur / c.n / 60).toFixed(1)) : 0)),
-      color: "rgb(242, 153, 74)",
+  // 会话时长（按周）：会话性质堆叠 + 单会话平均时长折线
+  const natKeys = bucketKeys(weekB, "nat");
+  drawCombo(
+    "weekDur", "chartWeekDur", weeks,
+    natKeys.map((k, i) => ({ label: k, data: weekB.map((b) => b.nat[k] || 0), color: colorFor(COLOR_NATURE, k, i) })),
+    [{
+      label: "单会话平均时长（分钟）",
+      data: weekB.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(2)) : 0)),
+      color: "#f2c94c",
       axis: "y1",
-      axisLabel: "分钟",
-    },
-  ]);
+    }],
+    { rotate: 0 }
+  );
+  setTotal("totalWeekDur", "人工接待总时长：", Number((weekB.reduce((a, b) => a + b.dur, 0) / 3600).toFixed(1)));
 
-  drawMultiLine("dailyTransfer", "chartDailyTransfer", days, [
-    {
-      label: "转人工会话数",
-      data: cost.map((c) => c.transfer),
-      color: "rgb(235, 87, 87)",
-      axis: "y",
-      axisLabel: "会话数",
-      fill: true,
-    },
-    {
-      label: "人工接待轮次",
-      data: cost.map((c) => c.turns),
-      color: "rgb(39, 174, 96)",
-      axis: "y1",
-      axisLabel: "轮次",
-    },
-  ]);
+  // 每日人工成本
+  drawCombo(
+    "dayCost", "chartDayCost", days,
+    [{ label: "转人工会话数", data: dayB.map((b) => b.transfer), color: "#a8cff0" }],
+    [
+      { label: "人工接待总时长（小时）", data: dayB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f2c94c", axis: "y1" },
+      { label: "单会话平均时长（分钟）", data: dayB.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(1)) : 0)), color: "#eb5757", axis: "y1" },
+    ],
+    { rotate: 60, maxLabels: 40, showStackTotal: false }
+  );
+  setTotal("totalDayCost", "人工接待总时长：", Number((dayB.reduce((a, b) => a + b.dur, 0) / 3600).toFixed(1)));
 }
 
 // ============== 交互 ==============
