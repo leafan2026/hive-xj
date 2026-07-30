@@ -15,7 +15,7 @@ const charts = {};
 const DIM_SELECTS = {
   fChannel: { dim: "channel", placeholder: "全部渠道" },
   fDevice: { dim: "device", placeholder: "全部设备" },
-  fStatus: { dim: "status", placeholder: "全部处理状态" },
+  fStatus: { dim: "status", placeholder: "全部接待对象" },
   fScene: { dim: "scene", placeholder: "全部业务场景" },
   fNature: { dim: "nature", placeholder: "全部会话性质" },
   fPlan: { dim: "plan", placeholder: "全部套餐" },
@@ -240,6 +240,17 @@ const valueLabels = {
           return;
         }
         if (typeof el.base !== "number") return;
+
+        // 横向条形图：数值标在条的右端，不参与堆叠合计
+        if (chart.options.indexAxis === "y") {
+          ctx.textAlign = "left";
+          ctx.fillStyle = "#3b475c";
+          ctx.font = '11.5px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+          ctx.fillText(fmtNum(v), el.x + 6, el.y + 4);
+          ctx.textAlign = "center";
+          return;
+        }
+
         // 堆叠柱：段内标数值（高度够才标），顶部标合计
         const h = Math.abs(el.base - el.y);
         if (h >= 15) {
@@ -564,9 +575,7 @@ function renderAI(s) {
   const d = s.derived;
   const top = sortedPairs(s.reason, 1)[0];
   $("noteAvoidable").innerHTML =
-    "本板块口径：已人工质检的 <b>" + d.labeledCount + "</b> 条会话（占全部 " + d.labeledRate + "%），" +
-    "未打标的 " + (s.jiri["未标记"] || 0) + " 条不参与计算。<br>" +
-    "其中转人工 <b>" + s.transferred + "</b> 次，<b>" + d.avoidableCount + "</b> 次（" +
+    "转人工 <b>" + s.transferred + "</b> 次，<b>" + d.avoidableCount + "</b> 次（" +
     d.avoidableRate + "%）属于可避免类型（AI 能答没给机会 / 没等答完顺手转 / 可自助 / 答对仍要人）。" +
     (top ? " 最主要原因是 <b>" + top[0] + "</b>（" + top[1] + " 次）。" : "");
 }
@@ -700,7 +709,10 @@ function renderScene(s) {
 
   drawBar("scene", "chartScene", sortedPairs(s.scene), { horizontal: true, color: "#2f80ed" });
   drawDoughnut("plan", "chartPlan", sortedPairs(s.plan));
-  drawDoughnut("xj", "chartXj", sortedPairs(s.xjCategory));
+  // 「无关」占九成以上，会把其他分类压成一条线，剔除后只看真正相关的会话
+  const xj = sortedPairs(s.xjCategory).filter((p) => p[0] !== "无关");
+  drawDoughnut("xj", "chartXj", xj);
+  setTotal("totalXj", "相关会话：", xj.reduce((a, p) => a + p[1], 0));
 
   const plans = sortedPairs(s.plan).map((p) => p[0]);
   const scenes = sortedPairs(s.scene).map((p) => p[0]);

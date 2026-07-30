@@ -420,21 +420,45 @@ function latestDayOf(stats) {
   return days.length ? days[days.length - 1] : "";
 }
 
-// range=N（近 N 天）在服务端换算成起止日期，前端不需要先知道最新日期
-function resolveRange(q, stats) {
-  const n = parseInt(q.get("range") || "", 10);
-  let from = q.get("from") || "";
-  let to = q.get("to") || "";
-  if (n > 0 && !from && !to) {
-    const latest = latestDayOf(stats);
-    if (latest) {
-      to = latest;
-      const start = new Date(latest + "T00:00:00Z");
-      start.setUTCDate(start.getUTCDate() - (n - 1));
-      from = start.toISOString().slice(0, 10);
+// 时间区间在服务端换算，按东八区的「今天」为基准
+const iso = (dt) => dt.toISOString().slice(0, 10);
+const mkUTC = (y, m, d) => new Date(Date.UTC(y, m, d));
+const shift = (dt, n) => mkUTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate() + n);
+
+function resolveNamedRange(key) {
+  if (!key) return { from: "", to: "" };
+  const now = new Date(Date.now() + 8 * 3600000);
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth();
+  const today = mkUTC(y, m, now.getUTCDate());
+  const dow = (today.getUTCDay() + 6) % 7; // 周一 = 0
+  const q0 = Math.floor(m / 3) * 3;
+
+  switch (key) {
+    case "this_week": return { from: iso(shift(today, -dow)), to: iso(today) };
+    case "last_week": {
+      const s = shift(today, -dow - 7);
+      return { from: iso(s), to: iso(shift(s, 6)) };
+    }
+    case "this_month": return { from: iso(mkUTC(y, m, 1)), to: iso(today) };
+    case "last_month": return { from: iso(mkUTC(y, m - 1, 1)), to: iso(mkUTC(y, m, 0)) };
+    case "this_quarter": return { from: iso(mkUTC(y, q0, 1)), to: iso(today) };
+    case "last_quarter": return { from: iso(mkUTC(y, q0 - 3, 1)), to: iso(mkUTC(y, q0, 0)) };
+    case "this_year": return { from: iso(mkUTC(y, 0, 1)), to: iso(today) };
+    case "last_year": return { from: iso(mkUTC(y - 1, 0, 1)), to: iso(mkUTC(y - 1, 11, 31)) };
+    default: {
+      const n = parseInt(key, 10); // 过去 N 天，含今天
+      if (n > 0) return { from: iso(shift(today, -(n - 1))), to: iso(today) };
+      return { from: "", to: "" };
     }
   }
-  return { from, to };
+}
+
+function resolveRange(q) {
+  const from = q.get("from") || "";
+  const to = q.get("to") || "";
+  if (from || to) return { from, to };
+  return resolveNamedRange(q.get("range") || "");
 }
 
 function facetsOf(stats) {
@@ -525,9 +549,24 @@ async function renderPage(env) {
     <div class="filter-row">
       <select id="fRange" title="时间范围">
         <option value="">全部时间</option>
-        <option value="7">近 7 天</option>
-        <option value="14" selected>近 2 周</option>
-        <option value="30">近 30 天</option>
+        <optgroup label="相对区间">
+          <option value="7">过去 7 天</option>
+          <option value="14" selected>过去 14 天</option>
+          <option value="30">过去 30 天</option>
+          <option value="60">过去 60 天</option>
+          <option value="90">过去 90 天</option>
+          <option value="365">过去 365 天</option>
+        </optgroup>
+        <optgroup label="自然周期">
+          <option value="this_week">本周</option>
+          <option value="last_week">上周</option>
+          <option value="this_month">本月</option>
+          <option value="last_month">上个月</option>
+          <option value="this_quarter">本季度</option>
+          <option value="last_quarter">上季度</option>
+          <option value="this_year">本年</option>
+          <option value="last_year">去年</option>
+        </optgroup>
         <option value="custom">自定义</option>
       </select>
       <input type="date" id="fFrom" title="起始日期">
@@ -597,7 +636,7 @@ async function renderPage(env) {
     <div class="grid">
       <div class="chart-card"><h3>Jiri 是否能解答</h3><canvas id="chartJiri"></canvas></div>
       <div class="chart-card"><h3>转人工方式</h3><canvas id="chartWay"></canvas></div>
-      <div class="chart-card"><h3>处理状态（仅人工 / 仅 Jiri）</h3><canvas id="chartStatus"></canvas></div>
+      <div class="chart-card"><h3>最后接待对象（仅人工 / 仅 Jiri）</h3><canvas id="chartStatus"></canvas></div>
       <div class="chart-card wide"><h3>转人工原因分布</h3><canvas id="chartReason"></canvas></div>
     </div>
     <div class="note" id="noteAvoidable"></div>
@@ -636,7 +675,10 @@ async function renderPage(env) {
         <canvas id="chartNature2"></canvas>
       </div>
       <div class="chart-card"><h3>当前套餐分布</h3><canvas id="chartPlan"></canvas></div>
-      <div class="chart-card"><h3>小金商户分类</h3><canvas id="chartXj"></canvas></div>
+      <div class="chart-card">
+        <div class="chart-head"><h3>小金商户分类</h3><span class="chart-total" id="totalXj"></span></div>
+        <canvas id="chartXj"></canvas>
+      </div>
       <div class="chart-card wide"><h3>业务场景分布（全部会话）</h3><canvas id="chartScene"></canvas></div>
       <div class="chart-card wide">
         <h3>业务场景 × 套餐</h3>
@@ -752,7 +794,7 @@ export default {
         kickoff(env, ctx, meta);
         return json({ success: true, building: true, meta: await readMeta(env) });
       }
-      const range = resolveRange(q, full);
+      const range = resolveRange(q);
       const filtered = applyFilters(rows, q, range);
       return json({
         success: true,
