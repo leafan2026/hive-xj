@@ -1,4 +1,4 @@
-# hive — AI 会话质检看板
+# hive 服务看板
 
 线上地址：https://lf.run.jinapp.net/hive/
 

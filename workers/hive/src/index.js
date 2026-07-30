@@ -1,4 +1,4 @@
-// AI 会话质检看板 — 数据源：金数据表单 EQca39
+// hive 服务看板 — 数据源：金数据表单 EQca39
 const FORM_TOKEN = "EQca39";
 const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 const JSJ_TABLE_URL = `https://next.jinshuju.net/tables/${FORM_TOKEN}`;
@@ -527,14 +527,14 @@ async function renderPage(env) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI 会话质检看板</title>
+<title>hive 服务看板</title>
 <link rel="stylesheet" href="${cssUrl}">
 <link rel="preload" as="script" href="${chartUrl}">
 </head>
 <body>
 <header class="header">
   <div class="header-inner">
-    <h1>AI 会话质检看板</h1>
+    <h1>hive 服务看板</h1>
     <div class="header-meta">
       <span id="updatedAt">—</span>
       <button class="btn" id="refreshBtn">重新拉取数据</button>
@@ -747,7 +747,7 @@ export default {
       return new Response("需要登录", {
         status: 401,
         headers: {
-          "WWW-Authenticate": 'Basic realm="Hive QC Dashboard", charset="UTF-8"',
+          "WWW-Authenticate": 'Basic realm="hive Dashboard", charset="UTF-8"',
           "content-type": "text/plain; charset=utf-8",
         },
       });
