@@ -572,17 +572,9 @@ async function renderPage(env) {
       <input type="date" id="fFrom" title="起始日期">
       <span class="dash">至</span>
       <input type="date" id="fTo" title="截止日期">
-      <select id="fQc" title="质检状态">
-        <option value="">全部（含未质检）</option>
-        <option value="labeled">仅已人工质检</option>
-        <option value="unlabeled">仅未质检</option>
-      </select>
-      <select id="fChannel" data-dim="channel"></select>
       <select id="fDevice" data-dim="device"></select>
-      <select id="fStatus" data-dim="status"></select>
       <select id="fScene" data-dim="scene"></select>
       <select id="fNature" data-dim="nature"></select>
-      <select id="fPlan" data-dim="plan"></select>
       <button class="btn-ghost" id="resetBtn">重置筛选</button>
       <span class="match-info" id="matchInfo"></span>
     </div>

@@ -13,12 +13,9 @@ const charts = {};
 
 // 筛选项 → 接口参数名；选项值来自首次全量结果，筛选后不再改动
 const DIM_SELECTS = {
-  fChannel: { dim: "channel", placeholder: "全部渠道" },
   fDevice: { dim: "device", placeholder: "全部设备" },
-  fStatus: { dim: "status", placeholder: "全部接待对象" },
   fScene: { dim: "scene", placeholder: "全部业务场景" },
   fNature: { dim: "nature", placeholder: "全部会话性质" },
-  fPlan: { dim: "plan", placeholder: "全部套餐" },
 };
 
 // ============== 工具 ==============
@@ -642,7 +639,6 @@ function currentQuery() {
     if (from) p.set("from", from);
     if (to) p.set("to", to);
   }
-  if ($("fQc").value) p.set("qc", $("fQc").value);
   for (const [id, cfg] of Object.entries(DIM_SELECTS)) {
     if ($(id).value) p.set(cfg.dim, $(id).value);
   }
@@ -666,7 +662,7 @@ function fillFacets(facets) {
 
 // 高亮生效中的筛选项
 function markActive() {
-  const ids = ["fRange", "fFrom", "fTo", "fQc", ...Object.keys(DIM_SELECTS)];
+  const ids = ["fRange", "fFrom", "fTo", ...Object.keys(DIM_SELECTS)];
   ids.forEach((id) => {
     const el = $(id);
     el.classList.toggle("active", !!el.value);
@@ -1189,7 +1185,7 @@ function initActions() {
   $("refreshBtn").addEventListener("click", hardRefresh);
 
   // 维度下拉 + 质检状态：改动即重算
-  [...Object.keys(DIM_SELECTS), "fQc"].forEach((id) => {
+  Object.keys(DIM_SELECTS).forEach((id) => {
     $(id).addEventListener("change", reload);
   });
 
@@ -1198,7 +1194,7 @@ function initActions() {
   $("fTo").addEventListener("change", reload);
 
   $("resetBtn").addEventListener("click", () => {
-    ["fRange", "fQc", ...Object.keys(DIM_SELECTS)].forEach((id) => { $(id).value = ""; });
+    ["fRange", ...Object.keys(DIM_SELECTS)].forEach((id) => { $(id).value = ""; });
     applyRangePreset();
     reload();
   });
