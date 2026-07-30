@@ -129,7 +129,7 @@ let chartsInited = false;
 function chartReady() {
   if (typeof Chart === "undefined") return false;
   if (!chartsInited) {
-    Chart.register(valueLabels, centerText, hoverGuide, arcShadow);
+    Chart.register(valueLabels, centerText, hoverGuide, ribbonArcs);
     Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
     Chart.defaults.font.size = 11.5;
     Chart.defaults.color = "#8b90a7";
@@ -196,9 +196,9 @@ function drawDoughnut(key, canvasId, pairs, opts) {
         data: pairs2.map((p) => p[1]),
         backgroundColor: colors,
         borderWidth: 0,
-        borderRadius: 30,      // 弧两端做满圆头
-        spacing: 1,            // 分类之间只留一条细缝，靠阴影分层
-        hoverOffset: 10,
+        borderRadius: 0,
+        spacing: 0,
+        hoverOffset: 0,
         hoverBorderWidth: 0,
       }],
     },
@@ -209,7 +209,7 @@ function drawDoughnut(key, canvasId, pairs, opts) {
       layout: { padding: { top: 6, bottom: 2 } },
       plugins: {
         valueLabels: { enabled: false },
-        arcShadow: { enabled: true },
+        ribbonArcs: { enabled: true },
         centerText: {
           value: top && sum ? ((top[1] / sum) * 100).toFixed(1) + "%" : "—",
           label: top ? top[0] : "",
@@ -252,22 +252,65 @@ function drawDoughnut(key, canvasId, pairs, opts) {
   });
 }
 
-// 环形图的层叠效果：绘制弧之前给 canvas 打上柔和阴影，
-// 圆头弧就会在相邻弧上投影，呈现「一段压着一段」的观感（参考稿里的处理）
-const arcShadow = {
-  id: "arcShadow",
-  beforeDatasetDraw(chart, args) {
-    if (!chart.options.plugins?.arcShadow?.enabled) return;
-    const { ctx } = chart;
-    ctx.save();
-    ctx.shadowColor = "rgba(31, 35, 64, .22)";
-    ctx.shadowBlur = 9;
-    ctx.shadowOffsetX = -1;
-    ctx.shadowOffsetY = 3;
+// 环形图的层叠效果：Chart.js 的 borderRadius 会把圆头内缩进扇区角度里，必然留缝。
+// 这里让它自带的弧透明，改用「圆头描边弧」自己画 —— 圆头溢出扇区边界压到相邻弧上，
+// 配合柔和阴影就是参考稿里一段搭一段的观感。
+const ribbonArcs = {
+  id: "ribbonArcs",
+  // 让 Chart.js 自己画的扇区隐形（几何仍在，tooltip/图例的命中判定照常）
+  beforeDatasetDraw(chart) {
+    if (!chart.options.plugins?.ribbonArcs?.enabled) return;
+    chart.ctx.save();
+    chart.ctx.globalAlpha = 0;
   },
   afterDatasetDraw(chart) {
-    if (!chart.options.plugins?.arcShadow?.enabled) return;
+    if (!chart.options.plugins?.ribbonArcs?.enabled) return;
     chart.ctx.restore();
+  },
+
+  afterDatasetsDraw(chart) {
+    if (!chart.options.plugins?.ribbonArcs?.enabled) return;
+    const meta = chart.getDatasetMeta(0);
+    const ds = chart.data.datasets[0];
+    const first = meta.data[0];
+    if (!first) return;
+
+    const { ctx } = chart;
+    const cx = first.x;
+    const cy = first.y;
+    const width = first.outerRadius - first.innerRadius;
+    const radius = (first.outerRadius + first.innerRadius) / 2;
+    const active = (chart.tooltip?.getActiveElements?.() || []).map((a) => a.index);
+
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.shadowColor = "rgba(31, 35, 64, .2)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 3;
+
+    // 圆头会往两侧各溢出半个线宽，全额溢出会把小占比的段吃掉：
+    // 把两端各内收一点，重叠量压到半个圆头以内，且不超过该段自身跨度的三成
+    const capAngle = (width / 2) / radius;
+
+    // 正序绘制：占比大的先画落在底层，小的后画压在上面，保证都看得见
+    for (let i = 0; i < meta.data.length; i++) {
+      if (!chart.getDataVisibility(i)) continue;
+      const arc = meta.data[i];
+      if (!arc) continue;
+      const span = arc.endAngle - arc.startAngle;
+      if (span <= 0) continue;
+      const inset = Math.min(capAngle * 0.5, span * 0.3);
+      const hot = active.includes(i);
+      // 跨度小于一个圆头时按比例收细，否则 0.2% 的段会被撑成和 6% 一样大的圆点
+      const minSpan = capAngle * 0.9;
+      const lw = span >= minSpan ? width : Math.max(width * 0.36, width * (span / minSpan));
+      ctx.lineWidth = hot ? lw + 5 : lw;
+      ctx.strokeStyle = Array.isArray(ds.backgroundColor) ? ds.backgroundColor[i] : ds.backgroundColor;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, arc.startAngle + inset, arc.endAngle - inset);
+      ctx.stroke();
+    }
+    ctx.restore();
   },
 };
 
