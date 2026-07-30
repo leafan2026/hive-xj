@@ -123,6 +123,7 @@ body {
 .chart-head h3 { margin: 0; }
 .chart-total { color: var(--muted); font-size: 12.5px; }
 .chart-total b { color: var(--ink); font-size: 17px; font-weight: 650; margin-left: 3px; }
+.chart-hint { color: #9aa5b6; font-size: 12px; margin-left: auto; }
 
 .note {
   margin-top: 16px;
@@ -274,3 +275,47 @@ tr.loading-row td { text-align: center; color: #8c97a8; padding: 28px; }
 .match-info { margin-left: auto; color: var(--muted); font-size: 12.5px; }
 .match-info b { color: var(--accent); }
 .filterbar.busy { opacity: .6; pointer-events: none; }
+
+/* 周报 */
+.report-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+.report-bar label { color: var(--muted); font-size: 13px; }
+.report-bar select {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+  color: var(--ink);
+}
+.report-hint { color: var(--muted); font-size: 12.5px; }
+
+.report-block { margin-bottom: 26px; }
+.report-block > h3 {
+  font-size: 15px;
+  margin: 0 0 10px;
+  padding-left: 9px;
+  border-left: 3px solid var(--brand);
+}
+.report-table { font-size: 13px; }
+.report-table th { white-space: nowrap; }
+.report-table td { white-space: nowrap; }
+.report-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.report-table td.strong { font-weight: 650; }
+.report-table td.dim { color: var(--muted); white-space: normal; min-width: 260px; }
+.report-table tr.hl { background: #f2f8ff; }
+.report-table tr.warn-row { background: #fff8ec; }
+.report-table tr.sum { background: #f8fafc; font-weight: 650; }
+.report-table tr.sum td { border-top: 2px solid var(--line); }
+
+.dl { font-size: 12px; padding: 1px 6px; border-radius: 10px; }
+.dl.up { background: #fdeaea; color: #b53535; }
+.dl.down { background: #e7f7ee; color: #1c7a45; }
+.dl.flat { background: #eef2f7; color: #6b7688; }
+
+.dim-note { color: #9aa5b6; font-size: 12px; line-height: 1.6; }

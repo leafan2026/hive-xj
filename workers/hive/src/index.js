@@ -5,6 +5,7 @@ const JSJ_TABLE_URL = `https://next.jinshuju.net/tables/${FORM_TOKEN}`;
 
 const K_STATS = "hive:stats:v1";
 const K_ENTRIES = "hive:entries:v1";
+const K_WEEKLY = "hive:weekly:v1";
 const K_META = "hive:meta:v1";
 
 // 金数据 per_page 实际封顶 50；next 是 serial_number 偏移，可并行取页
@@ -83,12 +84,18 @@ async function fetchAllEntries(env) {
   return { rows, total };
 }
 
-// 精简条目：只留看板/明细要用的字段，控制 KV value 体积
+function numOf(v) {
+  const n = Number(String(v ?? "").trim());
+  return isFinite(n) ? n : 0;
+}
+
+// 精简条目：只留看板/周报要用的字段，控制 KV value 体积
 function trim(e) {
   return {
     sn: e.serial_number,
     t: e.field_1 || "",
     url: e.field_2 || "",
+    uid: e.field_8 || "",
     ch: e.field_4 || "未知",
     dev: e.field_5 || "未知",
     med: e.field_6 || "未知",
@@ -231,6 +238,133 @@ function buildStats(rows) {
   return s;
 }
 
+// ============== 周报 ==============
+
+const PCT = (n, d) => (d ? Number(((n / d) * 100).toFixed(1)) : 0);
+
+// 人工必处理场景：目标值 = 第 21 周中位数下降 30% 后的值
+const MUST_HUMAN = [
+  { scene: "故障/技术", label: "故障", target: 9 },
+  { scene: "账务", label: "财务", target: 6 },
+  { scene: "违规/申诉/举报", label: "申诉", target: 4 },
+  { scene: "小金商户/在线收款", label: "收款", target: 5 },
+  { scene: "实名认证/资质", label: "实名", target: 2 },
+];
+
+const GUIDE_SCENE = "操作引导/功能咨询";
+const GUIDE_TARGET = 10; // 操作引导类人工时长占比目标 ≤10%
+
+// 接待次数取 field_13（转人工会话接待次数）—— field_20/21 在这张表里全为空
+// 单次中位 = 每场「时长 ÷ 接待次数」的中位数；单次平均 = 总时长 ÷ 接待次数
+function perReception(rows) {
+  return rows.filter((r) => r.turns > 0 && r.dur > 0).map((r) => r.dur / r.turns);
+}
+
+function mean(nums) {
+  return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0;
+}
+
+function groupStats(rows) {
+  const durSec = rows.reduce((a, r) => a + (r.dur || 0), 0);
+  const receptions = rows.reduce((a, r) => a + (r.turns || 0), 0);
+  return {
+    sessions: rows.length,
+    users: new Set(rows.map((r) => r.uid).filter(Boolean)).size,
+    receptions,
+    durHours: Number((durSec / 3600).toFixed(1)),
+    durMin: Math.round(durSec / 60),
+    medianMin: Number((median(perReception(rows)) / 60).toFixed(1)),
+    avgMin: receptions ? Number((durSec / receptions / 60).toFixed(1)) : 0,
+  };
+}
+
+function buildWeekly(rows) {
+  const grouped = {};
+  for (const r of rows) {
+    const day = (r.t || "").slice(0, 10);
+    if (!day) continue;
+    const w = isoWeek(day);
+    if (!w) continue;
+    (grouped[w] || (grouped[w] = [])).push(r);
+  }
+
+  return Object.keys(grouped).sort().map((week) => {
+    const all = grouped[week];
+    const days = new Set(all.map((r) => r.t.slice(0, 10)));
+    const manual = all.filter((r) => r.st === "仅人工");
+    const jiri = all.filter((r) => r.st === "仅 Jiri");
+    const effManual = manual.filter((r) => r.nat === "有效");
+    const effJiri = jiri.filter((r) => r.nat === "有效");
+    const users = new Set(all.map((r) => r.uid).filter(Boolean)).size;
+
+    const eff = groupStats(effManual);
+    const allManual = groupStats(manual);
+
+    // 有效人工场景 × 工作量（占比按时长）
+    const sceneAgg = {};
+    for (const r of effManual) {
+      const a = sceneAgg[r.scene] || (sceneAgg[r.scene] = { receptions: 0, durSec: 0, rows: [] });
+      a.receptions += r.turns || 0;
+      a.durSec += r.dur || 0;
+      a.rows.push(r);
+    }
+    const totalDurSec = effManual.reduce((a, r) => a + (r.dur || 0), 0);
+    const scenes = Object.entries(sceneAgg).map(([scene, a]) => ({
+      scene,
+      receptions: a.receptions,
+      durMin: Math.round(a.durSec / 60),
+      share: totalDurSec ? Number(((a.durSec / totalDurSec) * 100).toFixed(0)) : 0,
+      medianMin: Number((median(perReception(a.rows)) / 60).toFixed(1)),
+      avgMin: Number((mean(perReception(a.rows)) / 60).toFixed(1)),
+    })).sort((x, y) => y.durMin - x.durMin);
+
+    // 仅 Jiri 有效场景
+    const jiriScenes = {};
+    for (const r of effJiri) jiriScenes[r.scene] = (jiriScenes[r.scene] || 0) + 1;
+
+    const direct = effManual.filter((r) => r.way === "直接转").length;
+    const guide = scenes.find((s) => s.scene === GUIDE_SCENE);
+
+    return {
+      week,
+      dayCount: days.size,
+      firstDay: [...days].sort()[0],
+      lastDay: [...days].sort().pop(),
+      total: all.length,
+      users,
+      perUser: users ? Number((all.length / users).toFixed(2)) : 0,
+      aiOnly: jiri.length,
+      aiRate: PCT(jiri.length, all.length),
+      manualOnline: manual.length,
+      manualRate: PCT(manual.length, all.length),
+      formFillers: all.filter((r) => r.nat === "填表人").length,
+      productSessions: all.filter((r) => r.nat === "有效").length,
+      eff,
+      allManual,
+      directTransfer: direct,
+      directRate: eff.sessions ? Number(((direct / eff.sessions) * 100).toFixed(1)) : 0,
+      scenes,
+      jiriSceneTotal: effJiri.length,
+      jiriScenes: Object.entries(jiriScenes).sort((a, b) => b[1] - a[1]),
+      goals: {
+        guideShare: guide ? guide.share : 0,
+        guideTarget: GUIDE_TARGET,
+        mustHuman: MUST_HUMAN.map((m) => {
+          const hit = scenes.find((s) => s.scene === m.scene);
+          return {
+            label: m.label,
+            scene: m.scene,
+            target: m.target,
+            value: hit ? Math.round(hit.medianMin) : null,
+            raw: hit ? hit.medianMin : null,
+            receptions: hit ? hit.receptions : 0,
+          };
+        }),
+      },
+    };
+  });
+}
+
 // ============== 缓存 ==============
 
 async function readMeta(env) {
@@ -258,6 +392,7 @@ async function refreshCache(env) {
     await Promise.all([
       env.CACHE.put(K_STATS, JSON.stringify(stats)),
       env.CACHE.put(K_ENTRIES, JSON.stringify(rows)),
+      env.CACHE.put(K_WEEKLY, JSON.stringify(buildWeekly(rows))),
       env.CACHE.put(K_META, JSON.stringify(meta)),
     ]);
     console.log("[refresh] ok", JSON.stringify(meta));
@@ -277,11 +412,42 @@ async function refreshCache(env) {
 
 // ============== 筛选 ==============
 
-const FILTER_KEYS = ["from", "to", "channel", "device", "status", "scene", "nature", "plan", "qc"];
+const FILTER_KEYS = ["range", "from", "to", "channel", "device", "status", "scene", "nature", "plan", "qc"];
 
-function applyFilters(rows, q) {
-  const from = q.get("from") || "";
-  const to = q.get("to") || "";
+// 数据里最新的一天，用它当「近 N 天」的基准（数据可能滞后，按今天算容易算空）
+function latestDayOf(stats) {
+  const days = Object.keys(stats?.daily || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  return days.length ? days[days.length - 1] : "";
+}
+
+// range=N（近 N 天）在服务端换算成起止日期，前端不需要先知道最新日期
+function resolveRange(q, stats) {
+  const n = parseInt(q.get("range") || "", 10);
+  let from = q.get("from") || "";
+  let to = q.get("to") || "";
+  if (n > 0 && !from && !to) {
+    const latest = latestDayOf(stats);
+    if (latest) {
+      to = latest;
+      const start = new Date(latest + "T00:00:00Z");
+      start.setUTCDate(start.getUTCDate() - (n - 1));
+      from = start.toISOString().slice(0, 10);
+    }
+  }
+  return { from, to };
+}
+
+function facetsOf(stats) {
+  if (!stats) return null;
+  return {
+    channel: stats.channel, device: stats.device, status: stats.status,
+    scene: stats.scene, nature: stats.nature, plan: stats.plan,
+  };
+}
+
+function applyFilters(rows, q, range) {
+  const from = (range && range.from) || q.get("from") || "";
+  const to = (range && range.to) || q.get("to") || "";
   const ch = q.get("channel") || "";
   const dev = q.get("device") || "";
   const st = q.get("status") || "";
@@ -360,7 +526,7 @@ async function renderPage(env) {
       <select id="fRange" title="时间范围">
         <option value="">全部时间</option>
         <option value="7">近 7 天</option>
-        <option value="14">近 14 天</option>
+        <option value="14" selected>近 2 周</option>
         <option value="30">近 30 天</option>
         <option value="custom">自定义</option>
       </select>
@@ -386,13 +552,48 @@ async function renderPage(env) {
   <section class="cards" id="cards"></section>
 
   <nav class="tabs">
-    <button class="tab active" data-tab="ai">AI 能力与转人工</button>
+    <button class="tab active" data-tab="weekly">周报</button>
+    <button class="tab" data-tab="ai">AI 能力与转人工</button>
     <button class="tab" data-tab="trend">会话量趋势与来源</button>
     <button class="tab" data-tab="scene">业务场景与套餐</button>
     <button class="tab" data-tab="cost">人工成本</button>
   </nav>
 
-  <section class="panel active" id="panel-ai">
+  <section class="panel active" id="panel-weekly">
+    <div class="report-bar">
+      <label>统计周</label>
+      <select id="wkSelect"></select>
+      <span class="report-hint" id="wkHint"></span>
+    </div>
+
+    <div class="report-block">
+      <h3>一、目标追踪</h3>
+      <div class="table-wrapper"><table class="report-table" id="tblGoals"></table></div>
+    </div>
+
+    <div class="report-block">
+      <h3>二、周度接待概览</h3>
+      <div class="table-wrapper"><table class="report-table" id="tblOverview"></table></div>
+    </div>
+
+    <div class="report-block">
+      <h3>三、人工接待现状</h3>
+      <div class="table-wrapper"><table class="report-table" id="tblManual"></table></div>
+      <div class="note" id="manualNote"></div>
+    </div>
+
+    <div class="report-block">
+      <h3>四、有效人工场景 × 工作量（占比按时长）</h3>
+      <div class="table-wrapper"><table class="report-table" id="tblScenes"></table></div>
+    </div>
+
+    <div class="report-block">
+      <h3>五、仅 Jiri 有效场景</h3>
+      <div class="table-wrapper"><table class="report-table" id="tblJiriScenes"></table></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-ai">
     <div class="grid">
       <div class="chart-card"><h3>Jiri 是否能解答</h3><canvas id="chartJiri"></canvas></div>
       <div class="chart-card"><h3>转人工方式</h3><canvas id="chartWay"></canvas></div>
@@ -464,6 +665,7 @@ async function renderPage(env) {
         <div class="chart-head">
           <h3>每日人工接待时长与转人工次数</h3>
           <span class="chart-total" id="totalDayCost"></span>
+          <span class="chart-hint" id="hintDayCost"></span>
         </div>
         <canvas id="chartDayCost"></canvas>
       </div>
@@ -534,18 +736,24 @@ export default {
           kickoff(env, ctx, meta);
           return json({ success: true, building: true, meta: await readMeta(env) });
         }
-        return json({ success: true, stats, meta, filtered: false, matched: stats.total, fullTotal: stats.total });
+        return json({
+          success: true, stats, meta, filtered: false,
+          matched: stats.total, fullTotal: stats.total,
+          facets: facetsOf(stats), latestDay: latestDayOf(stats),
+        });
       }
 
-      const [rows, meta] = await Promise.all([
+      const [rows, full, meta] = await Promise.all([
         env.CACHE.get(K_ENTRIES, { type: "json" }),
+        env.CACHE.get(K_STATS, { type: "json" }),
         readMeta(env),
       ]);
       if (!rows) {
         kickoff(env, ctx, meta);
         return json({ success: true, building: true, meta: await readMeta(env) });
       }
-      const filtered = applyFilters(rows, q);
+      const range = resolveRange(q, full);
+      const filtered = applyFilters(rows, q, range);
       return json({
         success: true,
         stats: buildStats(filtered),
@@ -553,7 +761,23 @@ export default {
         filtered: true,
         matched: filtered.length,
         fullTotal: rows.length,
+        facets: facetsOf(full),
+        latestDay: latestDayOf(full),
+        resolvedFrom: range.from,
+        resolvedTo: range.to,
       });
+    }
+
+    if (path === "/api/weekly") {
+      const [weekly, meta] = await Promise.all([
+        env.CACHE.get(K_WEEKLY, { type: "json" }),
+        readMeta(env),
+      ]);
+      if (!weekly) {
+        kickoff(env, ctx, meta);
+        return json({ success: true, building: true, meta: await readMeta(env) });
+      }
+      return json({ success: true, weeks: weekly, meta });
     }
 
     if (path === "/api/entries") {

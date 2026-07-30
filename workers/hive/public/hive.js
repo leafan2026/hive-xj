@@ -8,7 +8,7 @@ const PALETTE = [
   "#4f8ef7", "#6fcf97", "#f7a55b", "#a889d6", "#7f8c9b",
 ];
 
-const state = { stats: null, facets: null, refreshing: false, polling: false };
+const state = { stats: null, facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null };
 const charts = {};
 
 // 筛选项 → 接口参数名；选项值来自首次全量结果，筛选后不再改动
@@ -390,10 +390,16 @@ function pollUntilReady() {
 
 function currentQuery() {
   const p = new URLSearchParams();
-  const from = $("fFrom").value;
-  const to = $("fTo").value;
-  if (from) p.set("from", from);
-  if (to) p.set("to", to);
+  const range = $("fRange").value;
+  if (range && range !== "custom") {
+    // 「近 N 天」交给服务端按数据里最新日期换算，前端不必先知道最新日期
+    p.set("range", range);
+  } else if (range === "custom") {
+    const from = $("fFrom").value;
+    const to = $("fTo").value;
+    if (from) p.set("from", from);
+    if (to) p.set("to", to);
+  }
   if ($("fQc").value) p.set("qc", $("fQc").value);
   for (const [id, cfg] of Object.entries(DIM_SELECTS)) {
     if ($(id).value) p.set(cfg.dim, $(id).value);
@@ -401,16 +407,18 @@ function currentQuery() {
   return p;
 }
 
-// 选项只在拿到全量结果时填一次，否则筛完选项会跟着缩水
-function fillFacets(stats) {
-  if (state.facets) return;
+// 选项来自全量口径（facets），筛选后不跟着缩水
+function fillFacets(facets) {
+  if (state.facets || !facets) return;
   state.facets = true;
   for (const [id, cfg] of Object.entries(DIM_SELECTS)) {
     const el = $(id);
+    const current = el.value;
     el.innerHTML = '<option value="">' + cfg.placeholder + "</option>" +
-      sortedPairs(stats[cfg.dim]).map((p) =>
+      sortedPairs(facets[cfg.dim]).map((p) =>
         '<option value="' + p[0] + '">' + p[0] + "（" + p[1] + "）</option>"
       ).join("");
+    el.value = current;
   }
 }
 
@@ -427,21 +435,12 @@ function applyRangePreset() {
   const v = $("fRange").value;
   const from = $("fFrom");
   const to = $("fTo");
-  if (v === "") {
-    from.value = "";
-    to.value = "";
-    from.disabled = to.disabled = true;
-  } else if (v === "custom") {
+  if (v === "custom") {
     from.disabled = to.disabled = false;
   } else {
-    const days = Number(v);
-    // 以数据里的最新日期为基准，而不是今天 —— 数据可能滞后
-    const latest = state.latestDay || new Date().toISOString().slice(0, 10);
-    const end = new Date(latest + "T00:00:00");
-    const start = new Date(end.getTime() - (days - 1) * 86400000);
-    from.value = start.toISOString().slice(0, 10);
-    to.value = latest;
+    // 预设区间由服务端换算，日期框只做回显
     from.disabled = to.disabled = true;
+    if (v === "") { from.value = ""; to.value = ""; }
   }
 }
 
@@ -466,20 +465,15 @@ async function loadDashboard() {
       return;
     }
     state.stats = json.stats;
-    if (!json.filtered) {
-      fillFacets(json.stats);
-      const days = Object.keys(json.stats.daily || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
-      state.latestDay = days[days.length - 1] || null;
-      if (state.latestDay) {
-        $("fFrom").max = $("fTo").max = state.latestDay;
-        $("fFrom").min = $("fTo").min = days[0];
-      }
+    fillFacets(json.facets);
+    if (json.latestDay) state.latestDay = json.latestDay;
+    // 预设区间回显服务端换算出的起止日期
+    if ($("fRange").value && $("fRange").value !== "custom") {
+      $("fFrom").value = json.resolvedFrom || "";
+      $("fTo").value = json.resolvedTo || "";
     }
     renderCards(json.stats);
-    renderAI(json.stats);
-    renderTrend(json.stats);
-    renderScene(json.stats);
-    renderCost(json.stats);
+    renderCharts(json.stats);
     markActive();
     $("matchInfo").innerHTML = json.filtered
       ? "筛选后 <b>" + json.matched + "</b> / " + json.fullTotal + " 条会话参与统计"
@@ -496,6 +490,13 @@ async function loadDashboard() {
   } catch (err) {
     banner("看板数据加载失败：" + err.message);
   }
+}
+
+function renderCharts(s) {
+  renderAI(s);
+  renderTrend(s);
+  renderScene(s);
+  renderCost(s);
 }
 
 function renderCards(s) {
@@ -545,6 +546,45 @@ function bucketKeys(buckets, field, order) {
 function sortedKeys(obj, asc) {
   return Object.keys(obj || {}).filter((k) => /^\d{4}(-\d{2}-\d{2}|W\d{2})$/.test(k))
     .sort((a, b) => (asc === false ? b.localeCompare(a) : a.localeCompare(b)));
+}
+
+// 2026-07-28 → 26/07/28
+function dayLabel(d) {
+  return d.slice(2).replace(/-/g, "/");
+}
+
+// 同月：26/07/05～06；跨月：26/07/31～08/01
+function rangeLabel(a, b) {
+  if (a === b) return dayLabel(a);
+  return dayLabel(a) + "～" + (a.slice(0, 7) === b.slice(0, 7) ? b.slice(8) : b.slice(5).replace("-", "/"));
+}
+
+// 把连续的空白日期（无人工接待）合并成一格，省掉整片空柱子
+function compressEmptyDays(days, buckets, isEmpty) {
+  const labels = [];
+  const out = [];
+  let i = 0;
+  while (i < days.length) {
+    if (!isEmpty(buckets[i])) {
+      labels.push(dayLabel(days[i]));
+      out.push(buckets[i]);
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j + 1 < days.length && isEmpty(buckets[j + 1])) j++;
+    labels.push(rangeLabel(days[i], days[j]));
+    out.push(buckets.slice(i, j + 1).reduce((acc, b) => ({
+      total: acc.total + b.total,
+      dur: acc.dur + b.dur,
+      durCount: acc.durCount + b.durCount,
+      transfer: acc.transfer + b.transfer,
+      turns: acc.turns + b.turns,
+      dev: {}, ch: {}, nat: {},
+    }), { total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0 }));
+    i = j + 1;
+  }
+  return { labels, buckets: out, merged: days.length - labels.length };
 }
 
 function setTotal(id, label, value) {
@@ -670,17 +710,180 @@ function renderCost(s) {
   );
   setTotal("totalWeekDur", "人工接待总时长：", Number((weekB.reduce((a, b) => a + b.dur, 0) / 3600).toFixed(1)));
 
-  // 每日人工成本
+  // 每日人工成本：只看最近 30 天，无人工接待的连续日期合并成一格
+  const recentDays = days.slice(-30);
+  const recentB = recentDays.map((d) => s.byDay[d]);
+  const noManual = (b) => !b || (b.dur === 0 && b.transfer === 0);
+  const cz = compressEmptyDays(recentDays, recentB, noManual);
+
   drawCombo(
-    "dayCost", "chartDayCost", days,
-    [{ label: "转人工会话数", data: dayB.map((b) => b.transfer), color: "#a8cff0" }],
+    "dayCost", "chartDayCost", cz.labels,
+    [{ label: "转人工会话数", data: cz.buckets.map((b) => b.transfer), color: "#a8cff0" }],
     [
-      { label: "人工接待总时长（小时）", data: dayB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f2c94c", axis: "y1" },
-      { label: "单会话平均时长（分钟）", data: dayB.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(1)) : 0)), color: "#eb5757", axis: "y1" },
+      { label: "人工接待总时长（小时）", data: cz.buckets.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f2c94c", axis: "y1" },
+      { label: "单会话平均时长（分钟）", data: cz.buckets.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(1)) : 0)), color: "#eb5757", axis: "y1" },
     ],
     { rotate: 60, maxLabels: 40, showStackTotal: false }
   );
-  setTotal("totalDayCost", "人工接待总时长：", Number((dayB.reduce((a, b) => a + b.dur, 0) / 3600).toFixed(1)));
+  setTotal("totalDayCost", "人工接待总时长：", Number((recentB.reduce((a, b) => a + b.dur, 0) / 3600).toFixed(1)));
+  const hint = $("hintDayCost");
+  if (hint) {
+    hint.textContent = "最近 " + recentDays.length + " 天" +
+      (cz.merged > 0 ? "，其中 " + cz.merged + " 个无人工接待的日期已与相邻空档合并" : "");
+  }
+}
+
+// ============== 周报 ==============
+
+function weekLabel(w) {
+  return "第 " + Number(w.slice(5)) + " 周（" + w + "）";
+}
+
+function delta(cur, prev, unit, invert) {
+  if (prev === null || prev === undefined || prev === 0) return "";
+  const d = cur - prev;
+  if (Math.abs(d) < 0.05) return '<span class="dl flat">持平</span>';
+  const good = invert ? d < 0 : d > 0;
+  const sign = d > 0 ? "+" : "";
+  return '<span class="dl ' + (good ? "up" : "down") + '">' + sign + Number(d.toFixed(1)) + (unit || "") + "</span>";
+}
+
+async function loadWeekly() {
+  if (state.weeklyLoaded) return;
+  try {
+    const json = await api("/api/weekly");
+    if (!json.success) throw new Error(json.error || "未知错误");
+    if (json.building) {
+      $("wkHint").textContent = "周报数据正在构建，稍后重开此页签。";
+      return;
+    }
+    state.weeks = json.weeks || [];
+    state.weeklyLoaded = true;
+
+    const sel = $("wkSelect");
+    sel.innerHTML = state.weeks.slice().reverse().map((w) =>
+      '<option value="' + w.week + '">' + weekLabel(w.week) +
+      (w.dayCount < 7 ? "（不完整）" : "") + "</option>"
+    ).join("");
+    // 默认选最近一个完整周 —— 周报看的是已结束的那一周
+    const complete = state.weeks.filter((w) => w.dayCount >= 7);
+    sel.value = (complete.length ? complete[complete.length - 1] : state.weeks[state.weeks.length - 1]).week;
+    sel.addEventListener("change", () => renderWeekly(sel.value));
+    renderWeekly(sel.value);
+  } catch (err) {
+    $("wkHint").textContent = "周报加载失败：" + err.message;
+  }
+}
+
+function renderWeekly(week) {
+  const i = state.weeks.findIndex((w) => w.week === week);
+  if (i < 0) return;
+  const w = state.weeks[i];
+  const p = i > 0 ? state.weeks[i - 1] : null;
+
+  $("wkHint").textContent = w.firstDay + " ~ " + w.lastDay + "（" + w.dayCount + " 天）" +
+    (w.dayCount < 7 ? " · 本周数据尚不完整" : "") +
+    (p ? " · 对比第 " + Number(p.week.slice(5)) + " 周" : "");
+
+  // 一、目标追踪
+  const g = w.goals;
+  const pg = p ? p.goals : null;
+  const rows = [
+    {
+      name: "操作引导类人工时长占比",
+      target: "≤ " + g.guideTarget + "%",
+      value: g.guideShare + "%",
+      ok: g.guideShare <= g.guideTarget,
+      delta: pg ? delta(g.guideShare, pg.guideShare, "pp", true) : "",
+      note: "目标把操作引导类问题交给 Jiri，人工时长占比压到 10% 以内",
+    },
+    ...g.mustHuman.map((m, k) => {
+      const prev = pg ? pg.mustHuman[k] : null;
+      return {
+        name: "单次接待时长中位数 · " + m.label + "（" + m.scene + "）",
+        target: "≤ " + m.target + " 分",
+        value: m.value === null ? "—" : m.value + " 分",
+        ok: m.value !== null && m.value <= m.target,
+        delta: prev && prev.raw !== null && m.raw !== null ? delta(m.raw, prev.raw, " 分", true) : "",
+        note: m.receptions ? m.receptions + " 次接待" : "本周无接待",
+      };
+    }),
+  ];
+  $("tblGoals").innerHTML =
+    "<thead><tr><th>目标</th><th>目标值</th><th>本周</th><th>达成</th><th>环比</th><th>说明</th></tr></thead><tbody>" +
+    rows.map((r) =>
+      "<tr><td>" + r.name + "</td><td>" + r.target + "</td>" +
+      '<td class="num strong">' + r.value + "</td>" +
+      '<td><span class="pill ' + (r.ok ? "good" : "bad") + '">' + (r.ok ? "达成" : "未达成") + "</span></td>" +
+      '<td class="num">' + (r.delta || "—") + "</td>" +
+      '<td class="dim">' + r.note + "</td></tr>"
+    ).join("") + "</tbody>";
+
+  // 二、周度接待概览（全部周）
+  $("tblOverview").innerHTML =
+    "<thead><tr><th>周</th><th>会话总量</th><th>对话人数</th><th>人均会话</th>" +
+    "<th>AI 独立接待 / 独立率</th><th>人工在线 / 占比</th><th>填表人</th><th>有效会话</th></tr></thead><tbody>" +
+    state.weeks.slice().reverse().map((x) =>
+      "<tr" + (x.week === week ? ' class="hl"' : "") + "><td>第 " + Number(x.week.slice(5)) + " 周</td>" +
+      '<td class="num">' + x.total + "</td>" +
+      '<td class="num">' + x.users + "</td>" +
+      '<td class="num">' + x.perUser + "</td>" +
+      '<td class="num">' + x.aiOnly + " / " + x.aiRate + "%</td>" +
+      '<td class="num">' + x.manualOnline + " / " + x.manualRate + "%</td>" +
+      '<td class="num">' + x.formFillers + "</td>" +
+      '<td class="num">' + x.productSessions + "</td></tr>"
+    ).join("") + "</tbody>";
+
+  // 三、人工接待现状
+  const line = (label, s) =>
+    "<tr><td>" + label + "</td>" +
+    '<td class="num">' + s.receptions + "</td>" +
+    '<td class="num">' + s.durHours + " h</td>" +
+    '<td class="num">' + s.medianMin + " 分</td>" +
+    '<td class="num">' + s.avgMin + " 分</td>" +
+    '<td class="num">' + s.sessions + "</td>" +
+    '<td class="num">' + s.users + "</td></tr>";
+  $("tblManual").innerHTML =
+    "<thead><tr><th>口径</th><th>接待次数</th><th>总工时</th><th>单次中位</th><th>单次平均</th><th>会话数</th><th>用户数</th></tr></thead><tbody>" +
+    line("有效人工", w.eff) + line("全部仅人工", w.allManual) + "</tbody>";
+
+  const prevEff = p ? p.eff : null;
+  $("manualNote").innerHTML =
+    "有效人工 <b>" + w.eff.sessions + "</b> 场会话（去重用户 " + w.eff.users + " 人）/ <b>" + w.eff.receptions + "</b> 次接待，总工时 <b>" +
+    w.eff.durHours + " h</b>" +
+    (prevEff ? "（上周 " + prevEff.durHours + " h，" +
+      (w.eff.durHours >= prevEff.durHours ? "+" : "") +
+      Number((w.eff.durHours - prevEff.durHours).toFixed(1)) + " h）" : "") + "。<br>" +
+    "不愿和 Jiri 沟通率 <b>" + w.directTransfer + " / " + w.eff.sessions + " = " + w.directRate + "%</b>" +
+    (p ? "（上周 " + p.directRate + "%）" : "") +
+    " —— 有效人工里「直接转」的场次占比。<br>" +
+    '<span class="dim-note">口径：有效人工 = 处理状态「仅人工」且会话性质「有效」；接待次数取「转人工会话接待次数」' +
+    '（表单里「人工接待次数」两个字段全为空）；单次中位 = 每场「时长 ÷ 接待次数」的中位数。</span>';
+
+  // 四、有效人工场景 × 工作量
+  $("tblScenes").innerHTML =
+    "<thead><tr><th>场景</th><th>接待次数</th><th>总时长（分）</th><th>占总时长</th><th>单次中位</th><th>单次平均</th></tr></thead><tbody>" +
+    w.scenes.map((s) => {
+      const isGuide = s.scene === "操作引导/功能咨询";
+      return "<tr" + (isGuide ? ' class="warn-row"' : "") + "><td>" + s.scene + "</td>" +
+        '<td class="num">' + s.receptions + "</td>" +
+        '<td class="num">' + s.durMin + "</td>" +
+        '<td class="num strong">' + s.share + "%" + (isGuide ? "（目标 ≤ 10%）" : "") + "</td>" +
+        '<td class="num">' + s.medianMin + "</td>" +
+        '<td class="num">' + s.avgMin + "</td></tr>";
+    }).join("") +
+    '<tr class="sum"><td>合计</td><td class="num">' + w.eff.receptions + '</td><td class="num">' +
+    w.eff.durMin + '</td><td class="num">100%</td><td class="num">' + w.eff.medianMin +
+    '</td><td class="num">' + w.eff.avgMin + "</td></tr></tbody>";
+
+  // 五、仅 Jiri 有效场景
+  $("tblJiriScenes").innerHTML =
+    "<thead><tr><th>场景</th><th>场次</th><th>占比</th></tr></thead><tbody>" +
+    w.jiriScenes.map((s) =>
+      "<tr><td>" + s[0] + '</td><td class="num">' + s[1] + '</td><td class="num">' +
+      (w.jiriSceneTotal ? ((s[1] / w.jiriSceneTotal) * 100).toFixed(1) : 0) + "%</td></tr>"
+    ).join("") +
+    '<tr class="sum"><td>合计</td><td class="num">' + w.jiriSceneTotal + '</td><td class="num">100%</td></tr></tbody>';
 }
 
 // ============== 交互 ==============
@@ -732,6 +935,9 @@ function initTabs() {
       document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
       tab.classList.add("active");
       $("panel-" + tab.dataset.tab).classList.add("active");
+      if (tab.dataset.tab === "weekly") loadWeekly();
+      // 切回图表页签时重绘，避免 canvas 在隐藏状态下算错尺寸
+      else if (state.stats) requestAnimationFrame(() => renderCharts(state.stats));
     });
   });
 }
@@ -762,6 +968,7 @@ const T0 = performance.now();
 initTabs();
 initActions();
 renderSkeleton();
+loadWeekly();
 
 loadDashboard().then(() => {
   try {
