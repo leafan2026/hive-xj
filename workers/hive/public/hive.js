@@ -3,9 +3,9 @@
 const BASE = "/hive";
 
 const PALETTE = [
-  "#2f80ed", "#27ae60", "#f2994a", "#9b51e0", "#eb5757",
-  "#56ccf2", "#219653", "#f2c94c", "#bb6bd9", "#e57373",
-  "#4f8ef7", "#6fcf97", "#f7a55b", "#a889d6", "#7f8c9b",
+  "#4f7cf7", "#2fbf71", "#fbbf24", "#8b5cf6", "#f4726c",
+  "#38bdf8", "#14b8a6", "#f59e0b", "#c084fc", "#fb7185",
+  "#6366f1", "#34d399", "#fdba74", "#a78bfa", "#94a3b8",
 ];
 
 const state = { stats: null, facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null };
@@ -27,7 +27,7 @@ function $(id) { return document.getElementById(id); }
 
 // 首屏先占位，避免大片空白
 function renderSkeleton() {
-  const labels = ["会话总数", "已人工质检", "Jiri 可解答率", "可避免转人工", "人工接待总时长", "接待轮次总计"];
+  const labels = ["会话总数", "Jiri 可解答率", "可避免转人工", "人工接待总时长", "接待轮次总计"];
   $("cards").innerHTML = labels.map((l) =>
     '<div class="card skeleton"><div class="card-label">' + l + '</div>' +
     '<div class="card-value">—</div><div class="card-sub">加载中…</div></div>'
@@ -84,7 +84,20 @@ function destroyChart(key) {
 let labelsRegistered = false;
 function chartReady() {
   if (typeof Chart === "undefined") return false;
-  if (!labelsRegistered) { Chart.register(valueLabels); labelsRegistered = true; }
+  if (!labelsRegistered) {
+    Chart.register(valueLabels);
+    // 轴线、刻度文字、图例统一走页面的灰阶，避免图表比页面重
+    Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
+    Chart.defaults.font.size = 11.5;
+    Chart.defaults.color = "#8b90a7";
+    Chart.defaults.borderColor = "#eceef6";
+    Chart.defaults.plugins.tooltip.backgroundColor = "rgba(31,35,64,.92)";
+    Chart.defaults.plugins.tooltip.padding = 10;
+    Chart.defaults.plugins.tooltip.cornerRadius = 8;
+    Chart.defaults.plugins.tooltip.titleFont = { size: 12, weight: "600" };
+    Chart.defaults.plugins.tooltip.bodyFont = { size: 12 };
+    labelsRegistered = true;
+  }
   return true;
 }
 
@@ -101,7 +114,7 @@ function drawBar(key, canvasId, pairs, opts) {
       datasets: [{
         label: o.label || "会话数",
         data: pairs.map((p) => p[1]),
-        backgroundColor: o.color || "#2f80ed",
+        backgroundColor: o.color || "#4f7cf7",
         borderRadius: 4,
       }],
     },
@@ -171,8 +184,8 @@ function drawLine(key, canvasId, pairs) {
       datasets: [{
         label: "会话数",
         data: pairs.map((p) => p[1]),
-        borderColor: "#2f80ed",
-        backgroundColor: "rgba(47,128,237,.14)",
+        borderColor: "#4f7cf7",
+        backgroundColor: "rgba(79,124,247,.13)",
         fill: true,
         tension: .3,
         pointRadius: 2,
@@ -234,7 +247,7 @@ const valueLabels = {
         if (v === null || v === undefined || v === 0) return;
 
         if (kind === "line") {
-          ctx.fillStyle = "#5a6678";
+          ctx.fillStyle = "#5b6180";
           ctx.font = '11px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
           ctx.fillText(fmtNum(v), el.x, el.y - 7);
           return;
@@ -244,7 +257,7 @@ const valueLabels = {
         // 横向条形图：数值标在条的右端，不参与堆叠合计
         if (chart.options.indexAxis === "y") {
           ctx.textAlign = "left";
-          ctx.fillStyle = "#3b475c";
+          ctx.fillStyle = "#454b69";
           ctx.font = '11.5px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
           ctx.fillText(fmtNum(v), el.x + 6, el.y + 4);
           ctx.textAlign = "center";
@@ -264,7 +277,7 @@ const valueLabels = {
     });
 
     if (opt.showStackTotal !== false) {
-      ctx.fillStyle = "#3b475c";
+      ctx.fillStyle = "#454b69";
       ctx.font = '11.5px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
       Object.keys(stackTotals).forEach((i) => {
         const meta = chart.getDatasetMeta(0);
@@ -286,16 +299,16 @@ function fmtNum(v) {
 
 // 分类固定配色，跨图表保持一致
 const COLOR_NATURE = {
-  "有效": "#7eb6e8", "填表人": "#8fdcd0", "无效": "#b4e197",
-  "转接未应答": "#f6a6a6", "电话引导·发链接图片": "#2f80ed",
-  "内部测试": "#f6d47a", "未标记": "#c9d1dd",
+  "有效": "#93b4fb", "填表人": "#5ed3c3", "无效": "#8fe0a6",
+  "转接未应答": "#fca5a5", "电话引导·发链接图片": "#4f7cf7",
+  "内部测试": "#fcd34d", "未标记": "#d3d8e6",
 };
 const COLOR_CHANNEL = {
-  gd_next: "#f2994a", gd4: "#b07a4f", gd_app: "#9b51e0",
-  wechat_miniapp: "#27ae60", wechat_official: "#eb5757",
-  trade_weixin_app: "#2f80ed", "未知": "#9aa5b6",
+  gd_next: "#fb923c", gd4: "#c2854a", gd_app: "#8b5cf6",
+  wechat_miniapp: "#2fbf71", wechat_official: "#f4726c",
+  trade_weixin_app: "#4f7cf7", "未知": "#a8adc0",
 };
-const COLOR_DEVICE = { pc: "#2f80ed", mobile: "#27ae60", "未知": "#b0b8c4" };
+const COLOR_DEVICE = { pc: "#4f7cf7", mobile: "#2fbf71", "未知": "#d3d8e6" };
 
 function colorFor(map, key, i) {
   return map[key] || PALETTE[i % PALETTE.length];
@@ -553,7 +566,6 @@ function renderCards(s) {
   const d = s.derived;
   const cards = [
     { label: "会话总数", value: s.total, sub: "有效会话 " + d.effectiveCount + " 条 · " + d.effectiveRate + "%" },
-    { label: "已人工质检", value: d.labeledCount, sub: "占全部会话 " + d.labeledRate + "%（AI 指标口径）" },
     { label: "Jiri 可解答率", value: d.resolveRate + "%", sub: "不能 " + d.cannotRate + "% · 部分 " + d.partialRate + "%（已质检内）" },
     { label: "可避免转人工", value: d.avoidableRate + "%", sub: d.avoidableCount + " / " + s.transferred + " 次本可由 AI 承接" },
     { label: "人工接待总时长", value: d.durSumHours + " 小时", sub: "均 " + fmtDuration(d.durAvg) + " · 中位 " + fmtDuration(d.durMedian) },
@@ -570,7 +582,7 @@ function renderAI(s) {
   // 只画已质检的部分，未标记会淹没分布
   drawDoughnut("jiri", "chartJiri", sortedPairs(s.jiri).filter((p) => p[0] !== "未标记"));
   drawDoughnut("way", "chartWay", sortedPairs(s.way));
-  drawBar("reason", "chartReason", sortedPairs(s.reason), { horizontal: true, color: "#eb5757" });
+  drawBar("reason", "chartReason", sortedPairs(s.reason), { horizontal: true, color: "#f4726c" });
 
   const d = s.derived;
   const top = sortedPairs(s.reason, 1)[0];
@@ -652,8 +664,8 @@ function renderTrend(s) {
     "dayRecept", "chartDayRecept", days,
     devKeys.map((k, i) => ({ label: k, data: dayB.map((b) => b.dev[k] || 0), color: colorFor(COLOR_DEVICE, k, i) })),
     [
-      { label: "人工接待总时长（小时）", data: dayB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f2c94c", axis: "y1" },
-      { label: "转人工会话接待次数", data: dayB.map((b) => b.transfer), color: "#7f8c9b", axis: "y1" },
+      { label: "人工接待总时长（小时）", data: dayB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#fbbf24", axis: "y1" },
+      { label: "转人工会话接待次数", data: dayB.map((b) => b.transfer), color: "#94a3b8", axis: "y1" },
     ],
     { maxLabels: 40, rotate: 60 }
   );
@@ -696,7 +708,7 @@ function renderTrend(s) {
   setTotal("totalDeviceNature", "总计：", s.total);
 
   drawDoughnut("status", "chartStatus", sortedPairs(s.status));
-  drawBar("medium", "chartMedium", sortedPairs(s.medium, 12), { horizontal: true, color: "#9b51e0" });
+  drawBar("medium", "chartMedium", sortedPairs(s.medium, 12), { horizontal: true, color: "#8b5cf6" });
 }
 
 function renderScene(s) {
@@ -707,7 +719,7 @@ function renderScene(s) {
   drawDoughnut("nature2", "chartNature2", sortedPairs(s.nature));
   setTotal("totalNature2", "记录数量：", s.total);
 
-  drawBar("scene", "chartScene", sortedPairs(s.scene), { horizontal: true, color: "#2f80ed" });
+  drawBar("scene", "chartScene", sortedPairs(s.scene), { horizontal: true, color: "#4f7cf7" });
   drawDoughnut("plan", "chartPlan", sortedPairs(s.plan));
   // 「无关」占九成以上，会把其他分类压成一条线，剔除后只看真正相关的会话
   const xj = sortedPairs(s.xjCategory).filter((p) => p[0] !== "无关");
@@ -737,10 +749,10 @@ function renderCost(s) {
   // 会话接待分布（按周）：会话数柱 + 人工总时长 / 转人工次数双折线
   drawCombo(
     "weekRecept", "chartWeekRecept", weeks,
-    [{ label: "会话数", data: weekB.map((b) => b.total), color: "#3aa0e8" }],
+    [{ label: "会话数", data: weekB.map((b) => b.total), color: "#4f7cf7" }],
     [
-      { label: "人工接待总时长（小时）", data: weekB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f2c94c", axis: "y1" },
-      { label: "转人工会话接待次数", data: weekB.map((b) => b.transfer), color: "#7f8c9b", axis: "y1" },
+      { label: "人工接待总时长（小时）", data: weekB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#fbbf24", axis: "y1" },
+      { label: "转人工会话接待次数", data: weekB.map((b) => b.transfer), color: "#94a3b8", axis: "y1" },
     ],
     { rotate: 0, showStackTotal: false }
   );
@@ -769,10 +781,10 @@ function renderCost(s) {
 
   drawCombo(
     "dayCost", "chartDayCost", cz.labels,
-    [{ label: "转人工会话数", data: cz.buckets.map((b) => b.transfer), color: "#a8cff0" }],
+    [{ label: "转人工会话数", data: cz.buckets.map((b) => b.transfer), color: "#bcd3fb" }],
     [
-      { label: "人工接待总时长（小时）", data: cz.buckets.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f2c94c", axis: "y1" },
-      { label: "单会话平均时长（分钟）", data: cz.buckets.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(1)) : 0)), color: "#eb5757", axis: "y1" },
+      { label: "人工接待总时长（小时）", data: cz.buckets.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#fbbf24", axis: "y1" },
+      { label: "单会话平均时长（分钟）", data: cz.buckets.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(1)) : 0)), color: "#f4726c", axis: "y1" },
     ],
     { rotate: 60, maxLabels: 40, showStackTotal: false }
   );
