@@ -1188,8 +1188,11 @@ function initActions() {
 
   const out = $("logoutBtn");
   if (out) out.addEventListener("click", async () => {
+    out.disabled = true;
+    out.textContent = "退出中…";
     try { await fetch(BASE + "/api/logout", { method: "POST" }); } catch (e) { /* 忽略 */ }
-    location.href = BASE + "/";
+    // replace + 时间戳：不留历史记录，也绕开缓存
+    location.replace(BASE + "/?t=" + Date.now());
   });
 
   // 维度下拉 + 质检状态：改动即重算

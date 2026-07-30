@@ -72,9 +72,12 @@
 签名密钥由 `AUTH_USERS` 派生 —— **改动账号会让所有已有会话失效**。顶栏显示当前账号，
 「退出」调 `POST /api/logout` 清 Cookie。
 
-接口仍接受 `Authorization: Basic`（方便 curl 调试），但不再返回 `WWW-Authenticate`，
-所以浏览器不会弹原生登录框；接口未登录统一返回 `401 {success:false, login:true}`，
-前端收到后自动跳登录页。
+**页面只认会话 Cookie**，`Authorization: Basic` 只对 `/api/*` 生效（方便 curl 调试）。
+这一点是必须的：浏览器会把曾经在原生登录框里输过的 Basic 凭证一直自动带上，如果页面
+也认 Basic，「退出」清掉 Cookie 后仍会被放进来，表现就是点了退出没反应。
+
+服务端不返回 `WWW-Authenticate`，所以浏览器不会弹原生登录框；接口未登录统一返回
+`401 {success:false, login:true}`，前端收到后自动跳登录页。
 
 ## 部署
 

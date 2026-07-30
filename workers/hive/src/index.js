@@ -916,11 +916,19 @@ export default {
       });
     }
 
-    // 其余请求都要有会话（或带 Basic 头，方便接口调试）
-    const user = await currentUser(request, env);
+    // 页面只认会话 Cookie；接口额外接受 Basic 头（方便 curl 调试）。
+    // 浏览器会把曾经输入过的 Basic 凭证一直自动带上，如果页面也认 Basic，
+    // 「退出」清掉 Cookie 后仍会被放进来，表现就是点了没反应。
+    const session = authEnabled(env)
+      ? await readSession(env, cookieValue(request, COOKIE_NAME))
+      : "访客";
+    const user = session || basicUser(request, env);
+
+    if (path === "/") {
+      if (!session) return renderLogin(env);
+      return renderPage(env, session);
+    }
     if (!user) {
-      // 页面直接给登录页；接口返回 401 JSON，前端自己跳登录
-      if (path === "/") return renderLogin(env);
       return json({ success: false, error: "未登录", login: true }, 401);
     }
 
@@ -1034,7 +1042,6 @@ export default {
 
     if (path === "/api/status") return json({ success: true, meta: await readMeta(env) });
 
-    if (path === "/") return renderPage(env, user);
 
     return new Response("Not Found", { status: 404 });
   },
