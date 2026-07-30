@@ -95,9 +95,10 @@ body {
 .panel { display: none; }
 .panel.active { display: block; }
 
+/* 用弹性布局而不是栅格：栅格会把整行切成固定列数，一行只放 2 张卡时右侧留死白 */
 .grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 16px;
 }
 .chart-card {
@@ -106,8 +107,10 @@ body {
   border-radius: 10px;
   padding: 16px 18px 20px;
   min-height: 300px;
+  flex: 1 1 340px;
+  min-width: min(340px, 100%);
 }
-.chart-card.wide { grid-column: 1 / -1; }
+.chart-card.wide { flex: 1 1 100%; min-width: 100%; }
 .chart-card.tall { min-height: 440px; }
 .chart-card.tall canvas { max-height: 400px; }
 .chart-card h3 { margin: 0 0 14px; font-size: 14px; font-weight: 600; }

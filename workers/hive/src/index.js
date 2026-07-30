@@ -597,6 +597,7 @@ async function renderPage(env) {
     <div class="grid">
       <div class="chart-card"><h3>Jiri 是否能解答</h3><canvas id="chartJiri"></canvas></div>
       <div class="chart-card"><h3>转人工方式</h3><canvas id="chartWay"></canvas></div>
+      <div class="chart-card"><h3>处理状态（仅人工 / 仅 Jiri）</h3><canvas id="chartStatus"></canvas></div>
       <div class="chart-card wide"><h3>转人工原因分布</h3><canvas id="chartReason"></canvas></div>
     </div>
     <div class="note" id="noteAvoidable"></div>
@@ -620,8 +621,7 @@ async function renderPage(env) {
         <div class="chart-head"><h3>设备 × 会话性质</h3><span class="chart-total" id="totalDeviceNature"></span></div>
         <canvas id="chartDeviceNature"></canvas>
       </div>
-      <div class="chart-card"><h3>处理状态（仅人工 / 仅 Jiri）</h3><canvas id="chartStatus"></canvas></div>
-      <div class="chart-card wide"><h3>入口媒介 Top 12</h3><canvas id="chartMedium"></canvas></div>
+      <div class="chart-card"><h3>入口媒介 Top 12</h3><canvas id="chartMedium"></canvas></div>
     </div>
   </section>
 
@@ -635,9 +635,9 @@ async function renderPage(env) {
         <div class="chart-head"><h3>会话性质</h3><span class="chart-total" id="totalNature2"></span></div>
         <canvas id="chartNature2"></canvas>
       </div>
-      <div class="chart-card wide"><h3>业务场景分布（全部会话）</h3><canvas id="chartScene"></canvas></div>
       <div class="chart-card"><h3>当前套餐分布</h3><canvas id="chartPlan"></canvas></div>
       <div class="chart-card"><h3>小金商户分类</h3><canvas id="chartXj"></canvas></div>
+      <div class="chart-card wide"><h3>业务场景分布（全部会话）</h3><canvas id="chartScene"></canvas></div>
       <div class="chart-card wide">
         <h3>业务场景 × 套餐</h3>
         <div class="table-wrapper compact"><table id="crossTable"></table></div>
