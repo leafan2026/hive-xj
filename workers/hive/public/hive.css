@@ -303,8 +303,10 @@ tr.loading-row td { text-align: center; color: #8c97a8; padding: 28px; }
   border-left: 3px solid var(--brand);
 }
 .report-table { font-size: 13px; }
-.report-table th { white-space: nowrap; }
-.report-table td { white-space: nowrap; }
+.report-table th, .report-table td { white-space: nowrap; }
+/* 首列吃掉多余宽度，数字列收紧到内容宽度，表头与数值同为右对齐 */
+.report-table th:first-child, .report-table td:first-child { width: 100%; }
+.report-table th.num { text-align: right; }
 .report-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .report-table td.strong { font-weight: 650; }
 .report-table td.dim { color: var(--muted); white-space: normal; min-width: 260px; }

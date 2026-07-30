@@ -137,8 +137,24 @@ function drawDoughnut(key, canvasId, pairs) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      cutout: "52%",
-      plugins: { legend: { position: "right", labels: { boxWidth: 12, font: { size: 12 } } } },
+      cutout: "48%",
+      layout: { padding: { top: 4, bottom: 2 } },
+      plugins: {
+        // 图例放底部横排：右侧竖排会把大半张卡片留白，环也被压小
+        legend: {
+          position: "bottom",
+          labels: { boxWidth: 11, boxHeight: 11, padding: 9, font: { size: 11.5 } },
+        },
+        tooltip: {
+          callbacks: {
+            label(c) {
+              const sum = c.dataset.data.reduce((a, b) => a + (Number(b) || 0), 0);
+              const pctVal = sum ? ((c.parsed / sum) * 100).toFixed(1) : 0;
+              return " " + c.label + "：" + c.parsed + "（" + pctVal + "%）";
+            },
+          },
+        },
+      },
     },
   });
 }
@@ -193,19 +209,42 @@ const valueLabels = {
     chart.data.datasets.forEach((ds, di) => {
       const meta = chart.getDatasetMeta(di);
       if (meta.hidden) return;
+      const kind = ds.type || meta.type || chart.config.type;
+
+      // 环形/饼图：扇区内标「数值 · 占比」，太窄的扇区跳过
+      if (kind === "doughnut" || kind === "pie") {
+        const sum = ds.data.reduce((a, b) => a + (Number(b) || 0), 0);
+        meta.data.forEach((el, i) => {
+          const v = Number(ds.data[i]) || 0;
+          if (!v || !sum) return;
+          const share = v / sum;
+          if (share < 0.055) return;
+          const p = el.getCenterPoint();
+          ctx.fillStyle = "#fff";
+          ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+          ctx.fillText(fmtNum(v), p.x, p.y - 1);
+          ctx.font = '10px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+          ctx.fillText((share * 100).toFixed(1) + "%", p.x, p.y + 11);
+        });
+        return;
+      }
+
       meta.data.forEach((el, i) => {
         const v = ds.data[i];
         if (v === null || v === undefined || v === 0) return;
 
-        if (meta.type === "line" || ds.type === "line") {
+        if (kind === "line") {
           ctx.fillStyle = "#5a6678";
+          ctx.font = '11px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
           ctx.fillText(fmtNum(v), el.x, el.y - 7);
           return;
         }
+        if (typeof el.base !== "number") return;
         // 堆叠柱：段内标数值（高度够才标），顶部标合计
         const h = Math.abs(el.base - el.y);
         if (h >= 15) {
           ctx.fillStyle = "#fff";
+          ctx.font = '11px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
           ctx.fillText(fmtNum(v), el.x, (el.y + el.base) / 2 + 4);
         }
         stackTotals[i] = (stackTotals[i] || 0) + v;
@@ -802,7 +841,7 @@ function renderWeekly(week) {
       return {
         name: "单次接待时长中位数 · " + m.label + "（" + m.scene + "）",
         target: "≤ " + m.target + " 分",
-        value: m.value === null ? "—" : m.value + " 分",
+        value: m.raw === null ? "—" : Number(m.raw).toFixed(1) + " 分",
         ok: m.value !== null && m.value <= m.target,
         delta: prev && prev.raw !== null && m.raw !== null ? delta(m.raw, prev.raw, " 分", true) : "",
         note: m.receptions ? m.receptions + " 次接待" : "本周无接待",
@@ -810,19 +849,19 @@ function renderWeekly(week) {
     }),
   ];
   $("tblGoals").innerHTML =
-    "<thead><tr><th>目标</th><th>目标值</th><th>本周</th><th>达成</th><th>环比</th><th>说明</th></tr></thead><tbody>" +
+    '<thead><tr><th>目标</th><th class="num">目标值</th><th class="num">本周</th><th class="num">达成</th><th class="num">环比</th><th>说明</th></tr></thead><tbody>' +
     rows.map((r) =>
-      "<tr><td>" + r.name + "</td><td>" + r.target + "</td>" +
+      "<tr><td>" + r.name + '</td><td class="num">' + r.target + "</td>" +
       '<td class="num strong">' + r.value + "</td>" +
-      '<td><span class="pill ' + (r.ok ? "good" : "bad") + '">' + (r.ok ? "达成" : "未达成") + "</span></td>" +
+      '<td class="num"><span class="pill ' + (r.ok ? "good" : "bad") + '">' + (r.ok ? "达成" : "未达成") + "</span></td>" +
       '<td class="num">' + (r.delta || "—") + "</td>" +
       '<td class="dim">' + r.note + "</td></tr>"
     ).join("") + "</tbody>";
 
   // 二、周度接待概览（全部周）
   $("tblOverview").innerHTML =
-    "<thead><tr><th>周</th><th>会话总量</th><th>对话人数</th><th>人均会话</th>" +
-    "<th>AI 独立接待 / 独立率</th><th>人工在线 / 占比</th><th>填表人</th><th>有效会话</th></tr></thead><tbody>" +
+    '<thead><tr><th>周</th><th class="num">会话总量</th><th class="num">对话人数</th><th class="num">人均会话</th>' +
+    '<th class="num">AI 独立接待 / 独立率</th><th class="num">人工在线 / 占比</th><th class="num">填表人</th><th class="num">有效会话</th></tr></thead><tbody>' +
     state.weeks.slice().reverse().map((x) =>
       "<tr" + (x.week === week ? ' class="hl"' : "") + "><td>第 " + Number(x.week.slice(5)) + " 周</td>" +
       '<td class="num">' + x.total + "</td>" +
@@ -835,16 +874,17 @@ function renderWeekly(week) {
     ).join("") + "</tbody>";
 
   // 三、人工接待现状
+  const d1 = (v) => Number(v).toFixed(1);
   const line = (label, s) =>
     "<tr><td>" + label + "</td>" +
     '<td class="num">' + s.receptions + "</td>" +
-    '<td class="num">' + s.durHours + " h</td>" +
-    '<td class="num">' + s.medianMin + " 分</td>" +
-    '<td class="num">' + s.avgMin + " 分</td>" +
+    '<td class="num">' + d1(s.durHours) + " h</td>" +
+    '<td class="num">' + d1(s.medianMin) + " 分</td>" +
+    '<td class="num">' + d1(s.avgMin) + " 分</td>" +
     '<td class="num">' + s.sessions + "</td>" +
     '<td class="num">' + s.users + "</td></tr>";
   $("tblManual").innerHTML =
-    "<thead><tr><th>口径</th><th>接待次数</th><th>总工时</th><th>单次中位</th><th>单次平均</th><th>会话数</th><th>用户数</th></tr></thead><tbody>" +
+    '<thead><tr><th>口径</th><th class="num">接待次数</th><th class="num">总工时</th><th class="num">单次中位</th><th class="num">单次平均</th><th class="num">会话数</th><th class="num">去重用户</th></tr></thead><tbody>' +
     line("有效人工", w.eff) + line("全部仅人工", w.allManual) + "</tbody>";
 
   const prevEff = p ? p.eff : null;
@@ -862,23 +902,23 @@ function renderWeekly(week) {
 
   // 四、有效人工场景 × 工作量
   $("tblScenes").innerHTML =
-    "<thead><tr><th>场景</th><th>接待次数</th><th>总时长（分）</th><th>占总时长</th><th>单次中位</th><th>单次平均</th></tr></thead><tbody>" +
+    '<thead><tr><th>场景</th><th class="num">接待次数</th><th class="num">总时长（分）</th><th class="num">占总时长</th><th class="num">单次中位</th><th class="num">单次平均</th></tr></thead><tbody>' +
     w.scenes.map((s) => {
       const isGuide = s.scene === "操作引导/功能咨询";
       return "<tr" + (isGuide ? ' class="warn-row"' : "") + "><td>" + s.scene + "</td>" +
         '<td class="num">' + s.receptions + "</td>" +
         '<td class="num">' + s.durMin + "</td>" +
         '<td class="num strong">' + s.share + "%" + (isGuide ? "（目标 ≤ 10%）" : "") + "</td>" +
-        '<td class="num">' + s.medianMin + "</td>" +
-        '<td class="num">' + s.avgMin + "</td></tr>";
+        '<td class="num">' + Number(s.medianMin).toFixed(1) + "</td>" +
+        '<td class="num">' + Number(s.avgMin).toFixed(1) + "</td></tr>";
     }).join("") +
     '<tr class="sum"><td>合计</td><td class="num">' + w.eff.receptions + '</td><td class="num">' +
-    w.eff.durMin + '</td><td class="num">100%</td><td class="num">' + w.eff.medianMin +
-    '</td><td class="num">' + w.eff.avgMin + "</td></tr></tbody>";
+    w.eff.durMin + '</td><td class="num">100%</td><td class="num">' + Number(w.eff.medianMin).toFixed(1) +
+    '</td><td class="num">' + Number(w.eff.avgMin).toFixed(1) + "</td></tr></tbody>";
 
   // 五、仅 Jiri 有效场景
   $("tblJiriScenes").innerHTML =
-    "<thead><tr><th>场景</th><th>场次</th><th>占比</th></tr></thead><tbody>" +
+    '<thead><tr><th>场景</th><th class="num">场次</th><th class="num">占比</th></tr></thead><tbody>' +
     w.jiriScenes.map((s) =>
       "<tr><td>" + s[0] + '</td><td class="num">' + s[1] + '</td><td class="num">' +
       (w.jiriSceneTotal ? ((s[1] / w.jiriSceneTotal) * 100).toFixed(1) : 0) + "%</td></tr>"
