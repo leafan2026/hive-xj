@@ -2,10 +2,11 @@
 // worker 挂在 /hive/ 下，所有请求必须带前缀
 const BASE = "/hive";
 
+// 统一的低饱和调色板：饱和度约 55%、明度约 70%，同色系跨图表复用
 const PALETTE = [
-  "#4f7cf7", "#2fbf71", "#fbbf24", "#8b5cf6", "#f4726c",
-  "#38bdf8", "#14b8a6", "#f59e0b", "#c084fc", "#fb7185",
-  "#6366f1", "#34d399", "#fdba74", "#a78bfa", "#94a3b8",
+  "#6f9bec", "#5cc191", "#f0b64f", "#a08ae6", "#ef8f8a",
+  "#68c3dd", "#5ec8c0", "#eaa96b", "#c39ae0", "#f0a3a8",
+  "#8a9bef", "#7fd3a8", "#f2bd8e", "#b6a5ee", "#a9b1c4",
 ];
 
 const state = { stats: null, facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null };
@@ -79,6 +80,15 @@ function destroyChart(key) {
   if (charts[key]) { charts[key].destroy(); charts[key] = null; }
 }
 
+// 底色偏亮时改用深色字，浅色柱上的白字会看不清
+function readableInk(color) {
+  const m = String(color).match(/^#([0-9a-f]{6})$/i);
+  if (!m) return "#fff";
+  const n = parseInt(m[1], 16);
+  const lum = (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+  return lum > 0.62 ? "#2a3050" : "#fff";
+}
+
 function fmtNum(v) {
   const n = Number(v);
   if (!isFinite(n)) return String(v);
@@ -88,23 +98,23 @@ function fmtNum(v) {
 
 // 分类固定配色，跨图表保持一致
 const COLOR_NATURE = {
-  "有效": "#93b4fb", "填表人": "#5ed3c3", "无效": "#8fe0a6",
-  "转接未应答": "#fca5a5", "电话引导·发链接图片": "#4f7cf7",
-  "内部测试": "#fcd34d", "未标记": "#d3d8e6",
+  "有效": "#8fb2f2", "填表人": "#6fcfc6", "无效": "#8fdcaa",
+  "转接未应答": "#f4a8a4", "电话引导·发链接图片": "#6f9bec",
+  "内部测试": "#f3d07a", "未标记": "#d3d8e6",
 };
 const COLOR_CHANNEL = {
-  gd_next: "#fb923c", gd4: "#c2854a", gd_app: "#8b5cf6",
-  wechat_miniapp: "#2fbf71", wechat_official: "#f4726c",
-  trade_weixin_app: "#4f7cf7", "未知": "#a8adc0",
+  gd_next: "#eaa96b", gd4: "#c0a07a", gd_app: "#a08ae6",
+  wechat_miniapp: "#5cc191", wechat_official: "#ef8f8a",
+  trade_weixin_app: "#6f9bec", "未知": "#bcc2d1",
 };
-const COLOR_DEVICE = { pc: "#4f7cf7", mobile: "#2fbf71", "未知": "#d3d8e6" };
+const COLOR_DEVICE = { pc: "#6f9bec", mobile: "#5cc191", "未知": "#d3d8e6" };
 
 function colorFor(map, key, i) {
   return map[key] || PALETTE[i % PALETTE.length];
 }
 
 // 折线用的横向渐变（蓝 → 紫 → 粉），面积用纵向渐隐
-const LINE_GRADIENT = ["#4bb4f8", "#6b7cf6", "#a855f7", "#e879b9"];
+const LINE_GRADIENT = ["#74c2f5", "#8194f2", "#b183ee", "#e79ecb"];
 
 function strokeGradient(chart, colors) {
   const { ctx, chartArea } = chart;
@@ -345,7 +355,7 @@ function drawBar(key, canvasId, pairs, opts) {
   const ctx = $(canvasId);
   if (!ctx) return;
 
-  const alt = o.colors || ["#4f7cf7", "#fb8a6b"];
+  const alt = o.colors || ["#6f9bec", "#f0a385"];
   const colors = o.color ? pairs.map(() => o.color) : pairs.map((_, i) => alt[i % alt.length]);
 
   charts[key] = new Chart(ctx, {
@@ -398,13 +408,13 @@ function drawLine(key, canvasId, pairs) {
         label: "会话数",
         data: pairs.map((p) => p[1]),
         borderColor: (c) => strokeGradient(c.chart, LINE_GRADIENT),
-        backgroundColor: (c) => areaGradient(c.chart, "#7c8df8"),
+        backgroundColor: (c) => areaGradient(c.chart, "#8194f2"),
         borderWidth: 3,
         fill: true,
         tension: .42,
         pointRadius: 3,
         pointBackgroundColor: "#fff",
-        pointBorderColor: "#7c8df8",
+        pointBorderColor: "#8194f2",
         pointBorderWidth: 2,
         pointHoverRadius: 6,
         pointHoverBorderWidth: 3,
@@ -521,7 +531,7 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
           labels: { usePointStyle: true, pointStyle: "circle", boxWidth: 8, boxHeight: 8, padding: 14, font: { size: 12 } },
         },
         hoverGuide: { enabled: true },
-        valueLabels: { maxLabels: o.maxLabels ?? 40, showStackTotal: o.showStackTotal !== false },
+        valueLabels: { maxLabels: o.maxLabels ?? 40, showStackTotal: o.showStackTotal !== false, lineLabels: false },
         tooltip: { displayColors: true, bodyFont: { size: 12.5, weight: "500" } },
       },
       scales,
@@ -541,10 +551,12 @@ const valueLabels = {
     if (count > (opt.maxLabels || 40)) return;
 
     const { ctx } = chart;
-    ctx.save();
-    ctx.font = '11px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
-    ctx.textAlign = "center";
+    const horizontal = chart.options.indexAxis === "y";
+    const F = (w, size) => w + " " + size + 'px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
 
+    // 先收集候选标签再统一画：合计 > 折线值 > 柱内分段值，
+    // 位置冲突时丢掉优先级低的，避免数字叠在一起
+    const items = [];
     const stackTotals = {};
     const stackTop = {};
 
@@ -559,29 +571,21 @@ const valueLabels = {
         if (v === null || v === undefined || v === 0) return;
 
         if (kind === "line") {
-          ctx.fillStyle = "#5b6180";
-          ctx.font = '11px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
-          ctx.fillText(fmtNum(v), el.x, el.y - 9);
+          // 柱线组合图里折线值会落进柱子内部，标出来会被误读成柱子的数值，
+          // 所以组合图关掉它，交给悬停 tooltip
+          if (opt.lineLabels === false) return;
+          items.push({ p: 1, text: fmtNum(v), x: el.x, y: el.y - 9, font: F(600, 11), fill: "#5b6180", halo: true, align: "center" });
           return;
         }
         if (typeof el.base !== "number") return;
 
-        // 横向条形图：数值标在条的右端
-        if (chart.options.indexAxis === "y") {
-          ctx.textAlign = "left";
-          ctx.fillStyle = "#454b69";
-          ctx.font = '600 12px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
-          ctx.fillText(fmtNum(v), el.x + 8, el.y + 4);
-          ctx.textAlign = "center";
+        const color = Array.isArray(ds.backgroundColor) ? ds.backgroundColor[i] : ds.backgroundColor;
+        if (horizontal) {
+          items.push({ p: 1, text: fmtNum(v), x: el.x + 8, y: el.y + 4, font: F(600, 12), fill: "#454b69", align: "left" });
           return;
         }
-
-        // 堆叠柱：段内标数值（高度够才标），顶部标合计
-        const h = Math.abs(el.base - el.y);
-        if (h >= 16) {
-          ctx.fillStyle = "#fff";
-          ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
-          ctx.fillText(fmtNum(v), el.x, (el.y + el.base) / 2 + 4);
+        if (Math.abs(el.base - el.y) >= 16) {
+          items.push({ p: 2, text: fmtNum(v), x: el.x, y: (el.y + el.base) / 2 + 4, font: F(600, 11), fill: readableInk(color), align: "center" });
         }
         stackTotals[i] = (stackTotals[i] || 0) + v;
         stackTop[i] = stackTop[i] === undefined ? el.y : Math.min(stackTop[i], el.y);
@@ -589,13 +593,33 @@ const valueLabels = {
     });
 
     if (opt.showStackTotal !== false) {
-      ctx.fillStyle = "#1f2340";
-      ctx.font = '700 11.5px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
       Object.keys(stackTotals).forEach((i) => {
         const el = chart.getDatasetMeta(0).data[i];
         if (!el) return;
-        ctx.fillText(fmtNum(stackTotals[i]), el.x, stackTop[i] - 7);
+        items.push({ p: 0, text: fmtNum(stackTotals[i]), x: el.x, y: stackTop[i] - 7, font: F(700, 11.5), fill: "#1f2340", halo: true, align: "center" });
       });
+    }
+
+    ctx.save();
+    ctx.lineJoin = "round";
+    const boxes = [];
+    const hits = (b) => boxes.some((o) => b.x1 < o.x2 && b.x2 > o.x1 && b.y1 < o.y2 && b.y2 > o.y1);
+
+    for (const it of items.sort((a, b) => a.p - b.p)) {
+      ctx.font = it.font;
+      const w = ctx.measureText(it.text).width;
+      const left = it.align === "left" ? it.x : it.x - w / 2;
+      const box = { x1: left - 2, x2: left + w + 2, y1: it.y - 11, y2: it.y + 4 };
+      if (hits(box)) continue;
+      boxes.push(box);
+      ctx.textAlign = it.align;
+      if (it.halo) {
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(255, 255, 255, .92)";
+        ctx.strokeText(it.text, it.x, it.y);
+      }
+      ctx.fillStyle = it.fill;
+      ctx.fillText(it.text, it.x, it.y);
     }
     ctx.restore();
   },
@@ -759,7 +783,7 @@ function renderAI(s) {
   // 只画已质检的部分，未标记会淹没分布
   drawDoughnut("jiri", "chartJiri", sortedPairs(s.jiri).filter((p) => p[0] !== "未标记"));
   drawDoughnut("way", "chartWay", sortedPairs(s.way));
-  drawBar("reason", "chartReason", sortedPairs(s.reason), { horizontal: true, colors: ["#fb8a6b", "#4f7cf7"] });
+  drawBar("reason", "chartReason", sortedPairs(s.reason), { horizontal: true, colors: ["#f0a385", "#6f9bec"] });
 
   const d = s.derived;
   const top = sortedPairs(s.reason, 1)[0];
@@ -841,8 +865,8 @@ function renderTrend(s) {
     "dayRecept", "chartDayRecept", days,
     devKeys.map((k, i) => ({ label: k, data: dayB.map((b) => b.dev[k] || 0), color: colorFor(COLOR_DEVICE, k, i) })),
     [
-      { label: "人工接待总时长（小时）", data: dayB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#fbbf24", axis: "y1" },
-      { label: "转人工会话接待次数", data: dayB.map((b) => b.transfer), color: "#94a3b8", axis: "y1" },
+      { label: "人工接待总时长（小时）", data: dayB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f0b64f", axis: "y1" },
+      { label: "转人工会话接待次数", data: dayB.map((b) => b.transfer), color: "#a9b1c4", axis: "y1" },
     ],
     { maxLabels: 40, rotate: 60 }
   );
@@ -885,14 +909,14 @@ function renderTrend(s) {
   setTotal("totalDeviceNature", "总计：", s.total);
 
   drawDoughnut("status", "chartStatus", sortedPairs(s.status));
-  drawBar("medium", "chartMedium", sortedPairs(s.medium, 12), { horizontal: true, colors: ["#8b5cf6", "#38bdf8"] });
+  drawBar("medium", "chartMedium", sortedPairs(s.medium, 12), { horizontal: true, colors: ["#a08ae6", "#68c3dd"] });
 }
 
 function renderScene(s) {
   drawDoughnut("nature2", "chartNature2", sortedPairs(s.nature), { colorMap: COLOR_NATURE });
   setTotal("totalNature2", "记录数量：", s.total);
 
-  drawBar("scene", "chartScene", sortedPairs(s.effectiveScene), { horizontal: true, colors: ["#4f7cf7", "#fb8a6b"] });
+  drawBar("scene", "chartScene", sortedPairs(s.effectiveScene), { horizontal: true, colors: ["#6f9bec", "#f0a385"] });
   drawDoughnut("plan", "chartPlan", sortedPairs(s.plan));
   // 「无关」占九成以上，会把其他分类压成一条线，剔除后只看真正相关的会话
   const xj = sortedPairs(s.xjCategory).filter((p) => p[0] !== "无关");
@@ -933,10 +957,10 @@ function renderCost(s) {
   // 会话接待分布（按周）：会话数柱 + 人工总时长 / 转人工次数双折线
   drawCombo(
     "weekRecept", "chartWeekRecept", weeks,
-    [{ label: "会话数", data: weekB.map((b) => b.total), color: "#4f7cf7" }],
+    [{ label: "会话数", data: weekB.map((b) => b.total), color: "#6f9bec" }],
     [
-      { label: "人工接待总时长（小时）", data: weekB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#fbbf24", axis: "y1" },
-      { label: "转人工会话接待次数", data: weekB.map((b) => b.transfer), color: "#94a3b8", axis: "y1" },
+      { label: "人工接待总时长（小时）", data: weekB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f0b64f", axis: "y1" },
+      { label: "转人工会话接待次数", data: weekB.map((b) => b.transfer), color: "#a9b1c4", axis: "y1" },
     ],
     { rotate: 0, showStackTotal: false }
   );
@@ -965,10 +989,10 @@ function renderCost(s) {
 
   drawCombo(
     "dayCost", "chartDayCost", cz.labels,
-    [{ label: "转人工会话数", data: cz.buckets.map((b) => b.transfer), color: "#bcd3fb" }],
+    [{ label: "转人工会话数", data: cz.buckets.map((b) => b.transfer), color: "#c3d7f7" }],
     [
-      { label: "人工接待总时长（小时）", data: cz.buckets.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#fbbf24", axis: "y1" },
-      { label: "单会话平均时长（分钟）", data: cz.buckets.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(1)) : 0)), color: "#f4726c", axis: "y1" },
+      { label: "人工接待总时长（小时）", data: cz.buckets.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f0b64f", axis: "y1" },
+      { label: "单会话平均时长（分钟）", data: cz.buckets.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(1)) : 0)), color: "#ef8f8a", axis: "y1" },
     ],
     { rotate: 60, maxLabels: 40, showStackTotal: false }
   );
