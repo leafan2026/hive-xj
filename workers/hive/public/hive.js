@@ -1182,30 +1182,34 @@ function renderWeekly(week) {
   $("tblScenes").innerHTML =
     '<thead><tr><th>场景</th><th class="num">接待次数</th><th class="num">总时长（分）</th>' +
     '<th class="num">占总时长</th><th class="num">单次中位</th><th class="num">单次平均</th>' +
-    '<th class="num">时长环比 / 同比</th></tr></thead><tbody>' +
+    '<th class="num">时长环比</th><th class="num">时长同比</th></tr></thead><tbody>' +
     w.scenes.map((x) => {
       const isGuide = x.scene === "操作引导/功能咨询";
       return "<tr" + (isGuide ? ' class="warn-row"' : "") + "><td>" + x.scene + "</td>" +
         num(x.receptions) + num(x.durMin) +
         '<td class="num strong">' + x.share + "%" + (isGuide ? "（目标 ≤ 10%）" : "") + "</td>" +
         num(Number(x.medianMin).toFixed(1)) + num(Number(x.avgMin).toFixed(1)) +
-        (cmp ? dual(x.durMin, sceneVal(cmp.prev, x.scene, "durMin"), sceneVal(cmp.yoy, x.scene, "durMin")) : num("—")) + "</tr>";
+        (cmp ? ratio(x.durMin, sceneVal(cmp.prev, x.scene, "durMin")) : num("—")) +
+        (cmp && cmp.yoy ? ratio(x.durMin, sceneVal(cmp.yoy, x.scene, "durMin")) : num("—")) + "</tr>";
     }).join("") +
     '<tr class="sum"><td>合计</td>' + num(w.eff.receptions) + num(w.eff.durMin) +
     num("100%") + num(Number(w.eff.medianMin).toFixed(1)) + num(Number(w.eff.avgMin).toFixed(1)) +
-    (cmp ? dual(w.eff.durMin, cmp.prev.eff.durMin, cmp.yoy ? cmp.yoy.eff.durMin : null) : num("—")) + "</tr></tbody>";
+    (cmp ? ratio(w.eff.durMin, cmp.prev.eff.durMin) : num("—")) +
+    (cmp && cmp.yoy ? ratio(w.eff.durMin, cmp.yoy.eff.durMin) : num("—")) + "</tr></tbody>";
 
   // 五、仅 Jiri 有效场景
   $("tblJiriScenes").innerHTML =
     '<thead><tr><th>场景</th><th class="num">场次</th><th class="num">占比</th>' +
-    '<th class="num">环比 / 同比</th></tr></thead><tbody>' +
+    '<th class="num">环比</th><th class="num">同比</th></tr></thead><tbody>' +
     w.jiriScenes.map((x) =>
       "<tr><td>" + x[0] + "</td>" + num(x[1]) +
       num((w.jiriSceneTotal ? ((x[1] / w.jiriSceneTotal) * 100).toFixed(1) : 0) + "%") +
-      (cmp ? dual(x[1], (cmp.prev.jiriScenes || {})[x[0]] || 0, cmp.yoy ? (cmp.yoy.jiriScenes || {})[x[0]] || 0 : null) : num("—")) + "</tr>"
+      (cmp ? ratio(x[1], (cmp.prev.jiriScenes || {})[x[0]] || 0) : num("—")) +
+      (cmp && cmp.yoy ? ratio(x[1], (cmp.yoy.jiriScenes || {})[x[0]] || 0) : num("—")) + "</tr>"
     ).join("") +
     '<tr class="sum"><td>合计</td>' + num(w.jiriSceneTotal) + num("100%") +
-    (cmp ? dual(w.jiriSceneTotal, cmp.prev.jiriSceneTotal, cmp.yoy ? cmp.yoy.jiriSceneTotal : null) : num("—")) + "</tr></tbody>";
+    (cmp ? ratio(w.jiriSceneTotal, cmp.prev.jiriSceneTotal) : num("—")) +
+    (cmp && cmp.yoy ? ratio(w.jiriSceneTotal, cmp.yoy.jiriSceneTotal) : num("—")) + "</tr></tbody>";
 }
 
 // ============== 交互 ==============
