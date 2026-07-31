@@ -100,7 +100,7 @@ function trim(e) {
     dev: e.field_5 || "未知",
     med: e.field_6 || "未知",
     st: e.field_7 || "未标记",
-    plan: e.field_10 || "未知",
+    plan: e.field_10 || "免费版",   // 套餐为空即未付费，归入免费版
     sm: e.field_11 || "",
     dur: typeof e.field_12 === "number" ? e.field_12 : null,
     turns: typeof e.field_13 === "number" ? e.field_13 : null,
