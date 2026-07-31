@@ -899,8 +899,13 @@ function renderScene(s) {
   drawDoughnut("xj", "chartXj", xj);
   setTotal("totalXj", "相关会话：", xj.reduce((a, p) => a + p[1], 0));
 
-  const plans = sortedPairs(s.plan).map((p) => p[0]);
-  const scenes = sortedPairs(s.scene).map((p) => p[0]);
+  // 行列都按有效会话口径，避免出现全零的行/列
+  const planTotals = {};
+  for (const row of Object.values(s.sceneByPlan || {})) {
+    for (const [k, v] of Object.entries(row)) planTotals[k] = (planTotals[k] || 0) + v;
+  }
+  const plans = sortedPairs(planTotals).map((p) => p[0]);
+  const scenes = sortedPairs(s.effectiveScene).map((p) => p[0]);
   let html = "<thead><tr><th>业务场景</th>" +
     plans.map((p) => "<th>" + p + "</th>").join("") + "<th>合计</th></tr></thead><tbody>";
   for (const sc of scenes) {
@@ -1012,9 +1017,9 @@ async function loadWeekly() {
       '<option value="' + w.week + '">' + weekLabel(w.week) +
       (w.dayCount < 7 ? "（不完整）" : "") + "</option>"
     ).join("");
-    // 默认选最近一个完整周 —— 周报看的是已结束的那一周
-    const complete = state.weeks.filter((w) => w.dayCount >= 7);
-    sel.value = (complete.length ? complete[complete.length - 1] : state.weeks[state.weeks.length - 1]).week;
+    // 默认本周：weeks 里只有有数据的周，所以最后一项就是本周；
+    // 本周还没数据时最后一项自然是上周
+    sel.value = state.weeks[state.weeks.length - 1].week;
     sel.addEventListener("change", () => renderWeekly(sel.value));
     renderWeekly(sel.value);
   } catch (err) {

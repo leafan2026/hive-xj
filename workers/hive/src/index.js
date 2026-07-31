@@ -202,8 +202,12 @@ function buildStats(rows) {
       if (AVOIDABLE_REASONS.has(r.reason)) s.avoidable++;
     }
 
-    if (!s.sceneByPlan[r.scene]) s.sceneByPlan[r.scene] = {};
-    s.sceneByPlan[r.scene][r.plan] = (s.sceneByPlan[r.scene][r.plan] || 0) + 1;
+    // 交叉表只算有效会话，和「业务场景分布（有效会话）」对齐，
+    // 否则未质检的「未分类」会占掉一整行
+    if (r.nat === "有效") {
+      if (!s.sceneByPlan[r.scene]) s.sceneByPlan[r.scene] = {};
+      s.sceneByPlan[r.scene][r.plan] = (s.sceneByPlan[r.scene][r.plan] || 0) + 1;
+    }
 
     if (typeof r.dur === "number" && r.dur > 0) {
       s.durSum += r.dur;
@@ -718,7 +722,7 @@ async function renderPage(env, user) {
       </div>
       <div class="chart-card wide"><h3>业务场景分布（有效会话）</h3><canvas id="chartScene"></canvas></div>
       <div class="chart-card wide">
-        <h3>业务场景 × 套餐</h3>
+        <h3>业务场景 × 套餐（有效会话）</h3>
         <div class="table-wrapper compact"><table id="crossTable"></table></div>
       </div>
     </div>
