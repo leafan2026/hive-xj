@@ -1081,14 +1081,22 @@ function renderWeekly(week) {
   const cmp = w.compare;
   const scope = cmp ? dowLabel(cmp.dows) : "";
   const num = (v) => '<td class="num">' + v + "</td>";
-  const ratio = (cur, prev, suffix, invert) => {
-    if (prev === null || prev === undefined || prev === 0) return num("—");
+  // 单个百分比药丸
+  const pct1 = (cur, prev, invert) => {
+    if (prev === null || prev === undefined || prev === 0) return '<span class="dl flat">—</span>';
     const d = ((cur - prev) / prev) * 100;
-    if (Math.abs(d) < 0.05) return num('<span class="dl flat">持平</span>');
+    if (Math.abs(d) < 0.05) return '<span class="dl flat">持平</span>';
     const good = invert ? d < 0 : d > 0;
-    return num('<span class="dl ' + (good ? "up" : "down") + '">' +
-      (d > 0 ? "+" : "") + d.toFixed(1) + "%</span>");
+    return '<span class="dl ' + (good ? "up" : "down") + '">' + (d > 0 ? "+" : "") + d.toFixed(1) + "%</span>";
   };
+  const ratio = (cur, prev, suffix, invert) => num(pct1(cur, prev, invert));
+  // 环比与同比合并成一格，省掉两行同期原始值
+  const dual = (cur, prev, yoy, invert) =>
+    '<td class="num dual">' +
+    '<span class="dl-row"><i>环</i>' + pct1(cur, prev, invert) + "</span>" +
+    (yoy === null || yoy === undefined ? "" :
+      '<span class="dl-row"><i>同</i>' + pct1(cur, yoy, invert) + "</span>") +
+    "</td>";
 
   let html =
     '<thead><tr><th>周</th><th class="num">会话总量</th><th class="num">对话人数</th><th class="num">人均会话</th>' +
@@ -1103,32 +1111,19 @@ function renderWeekly(week) {
 
   if (cmp) {
     const p2 = cmp.prev;
+    const y2 = cmp.yoy || null;
+    const yNo = cmp.yoyWeek ? Number(cmp.yoyWeek.slice(5)) : null;
+    const g = (k) => (y2 ? y2[k] : null);
     html +=
-      '<tr class="sum"><td>上周同期（' + scope + "）</td>" +
-      num(p2.total) + num(p2.users) + num(p2.perUser) +
-      num(p2.aiOnly + " / " + p2.aiRate + "%") +
-      num(p2.manualOnline + " / " + p2.manualRate + "%") +
-      num(p2.formFillers) + num(p2.productSessions) + "</tr>" +
-      '<tr class="sum"><td>环比（对比上周同期）</td>' +
-      ratio(w.total, p2.total) + ratio(w.users, p2.users) + ratio(w.perUser, p2.perUser) +
-      ratio(w.aiRate, p2.aiRate) + ratio(w.manualRate, p2.manualRate, "", true) +
-      ratio(w.formFillers, p2.formFillers) + ratio(w.productSessions, p2.productSessions) + "</tr>";
-
-    // 同比：数据不足一年，口径用 4 周前的同一批星期
-    if (cmp.yoy) {
-      const y = cmp.yoy;
-      const yNo = Number(cmp.yoyWeek.slice(5));
-      html +=
-        '<tr class="sum"><td>4 周前同期（第 ' + yNo + " 周 · " + scope + "）</td>" +
-        num(y.total) + num(y.users) + num(y.perUser) +
-        num(y.aiOnly + " / " + y.aiRate + "%") +
-        num(y.manualOnline + " / " + y.manualRate + "%") +
-        num(y.formFillers) + num(y.productSessions) + "</tr>" +
-        '<tr class="sum"><td>同比（对比第 ' + yNo + " 周同期）</td>" +
-        ratio(w.total, y.total) + ratio(w.users, y.users) + ratio(w.perUser, y.perUser) +
-        ratio(w.aiRate, y.aiRate) + ratio(w.manualRate, y.manualRate, "", true) +
-        ratio(w.formFillers, y.formFillers) + ratio(w.productSessions, y.productSessions) + "</tr>";
-    }
+      '<tr class="sum"><td>环比 / 同比<span class="cmp-note">环＝上周同期（' + scope + "）" +
+      (yNo ? " · 同＝第 " + yNo + " 周同期" : "") + "</span></td>" +
+      dual(w.total, p2.total, g("total")) +
+      dual(w.users, p2.users, g("users")) +
+      dual(w.perUser, p2.perUser, g("perUser")) +
+      dual(w.aiRate, p2.aiRate, g("aiRate")) +
+      dual(w.manualRate, p2.manualRate, g("manualRate"), true) +
+      dual(w.formFillers, p2.formFillers, g("formFillers")) +
+      dual(w.productSessions, p2.productSessions, g("productSessions")) + "</tr>";
   }
   $("tblOverview").innerHTML = html + "</tbody>";
 
@@ -1139,26 +1134,28 @@ function renderWeekly(week) {
   const statCells = (g) =>
     num(g.receptions) + num(d1(g.durHours) + " h") + num(d1(g.medianMin) + " 分") +
     num(d1(g.avgMin) + " 分") + num(g.sessions) + num(g.users);
-  const statRatio = (a, b) =>
-    ratio(a.receptions, b.receptions) + ratio(a.durHours, b.durHours) +
-    ratio(a.medianMin, b.medianMin, "", true) + ratio(a.avgMin, b.avgMin, "", true) +
-    ratio(a.sessions, b.sessions) + ratio(a.users, b.users);
 
   const groupRows = (label, key) => {
-    let out = '<tr><td><b>' + label + "</b> · 本周</td>" + statCells(w[key]) + "</tr>";
-    if (cmp) {
-      out += '<tr class="sub"><td>' + label + " · 上周同期（" + scope + "）</td>" + statCells(cmp.prev[key]) + "</tr>" +
-             '<tr class="sum"><td>' + label + " · 环比</td>" + statRatio(w[key], cmp.prev[key]) + "</tr>";
-      if (cmp.yoy) {
-        out += '<tr class="sub"><td>' + label + " · 第 " + yoyNo + " 周同期</td>" + statCells(cmp.yoy[key]) + "</tr>" +
-               '<tr class="sum"><td>' + label + " · 同比</td>" + statRatio(w[key], cmp.yoy[key]) + "</tr>";
-      }
-    }
+    let out = "<tr><td><b>" + label + "</b></td>" + statCells(w[key]) + "</tr>";
+    if (!cmp) return out;
+    const a = w[key];
+    const b = cmp.prev[key];
+    const c = cmp.yoy ? cmp.yoy[key] : null;
+    const g = (k) => (c ? c[k] : null);
+    out += '<tr class="sum"><td>' + label + " · 环比 / 同比" +
+      '<span class="cmp-note">环＝上周同期（' + scope + "）" +
+      (yoyNo ? " · 同＝第 " + yoyNo + " 周同期" : "") + "</span></td>" +
+      dual(a.receptions, b.receptions, g("receptions")) +
+      dual(a.durHours, b.durHours, g("durHours")) +
+      dual(a.medianMin, b.medianMin, g("medianMin"), true) +
+      dual(a.avgMin, b.avgMin, g("avgMin"), true) +
+      dual(a.sessions, b.sessions, g("sessions")) +
+      dual(a.users, b.users, g("users")) + "</tr>";
     return out;
   };
 
   $("tblManual").innerHTML =
-    '<thead><tr><th>口径 / 期间</th><th class="num">接待次数</th><th class="num">总工时</th>' +
+    '<thead><tr><th>口径</th><th class="num">接待次数</th><th class="num">总工时</th>' +
     '<th class="num">单次中位</th><th class="num">单次平均</th><th class="num">会话数</th>' +
     '<th class="num">去重用户</th></tr></thead><tbody>' +
     groupRows("有效人工", "eff") + groupRows("全部仅人工", "allManual") + "</tbody>";
@@ -1178,42 +1175,37 @@ function renderWeekly(week) {
     '环比对比上周同期，同比对比 4 周前同期，都按相同星期对齐。</span>';
 
   // 四、有效人工场景 × 工作量
-  const sceneCmp = (scene, field, src) => {
-    const hit = src ? src.scenes[scene] : null;
-    return hit ? ratio(w.scenes.find((x) => x.scene === scene)[field], hit[field]) : num("—");
+  const sceneVal = (src, scene, field) => {
+    const hit = src && src.scenes ? src.scenes[scene] : null;
+    return hit ? hit[field] : null;
   };
   $("tblScenes").innerHTML =
     '<thead><tr><th>场景</th><th class="num">接待次数</th><th class="num">总时长（分）</th>' +
     '<th class="num">占总时长</th><th class="num">单次中位</th><th class="num">单次平均</th>' +
-    '<th class="num">时长环比</th><th class="num">时长同比</th></tr></thead><tbody>' +
+    '<th class="num">时长环比 / 同比</th></tr></thead><tbody>' +
     w.scenes.map((x) => {
       const isGuide = x.scene === "操作引导/功能咨询";
       return "<tr" + (isGuide ? ' class="warn-row"' : "") + "><td>" + x.scene + "</td>" +
         num(x.receptions) + num(x.durMin) +
         '<td class="num strong">' + x.share + "%" + (isGuide ? "（目标 ≤ 10%）" : "") + "</td>" +
         num(Number(x.medianMin).toFixed(1)) + num(Number(x.avgMin).toFixed(1)) +
-        (cmp ? sceneCmp(x.scene, "durMin", cmp.prev) : num("—")) +
-        (cmp && cmp.yoy ? sceneCmp(x.scene, "durMin", cmp.yoy) : num("—")) + "</tr>";
+        (cmp ? dual(x.durMin, sceneVal(cmp.prev, x.scene, "durMin"), sceneVal(cmp.yoy, x.scene, "durMin")) : num("—")) + "</tr>";
     }).join("") +
     '<tr class="sum"><td>合计</td>' + num(w.eff.receptions) + num(w.eff.durMin) +
     num("100%") + num(Number(w.eff.medianMin).toFixed(1)) + num(Number(w.eff.avgMin).toFixed(1)) +
-    (cmp ? ratio(w.eff.durMin, cmp.prev.eff.durMin) : num("—")) +
-    (cmp && cmp.yoy ? ratio(w.eff.durMin, cmp.yoy.eff.durMin) : num("—")) + "</tr></tbody>";
+    (cmp ? dual(w.eff.durMin, cmp.prev.eff.durMin, cmp.yoy ? cmp.yoy.eff.durMin : null) : num("—")) + "</tr></tbody>";
 
   // 五、仅 Jiri 有效场景
-  const jiriCmp = (scene, src) => (src ? ratio(sceneCount(w.jiriScenes, scene), src.jiriScenes[scene] || 0) : num("—"));
   $("tblJiriScenes").innerHTML =
     '<thead><tr><th>场景</th><th class="num">场次</th><th class="num">占比</th>' +
-    '<th class="num">环比</th><th class="num">同比</th></tr></thead><tbody>' +
+    '<th class="num">环比 / 同比</th></tr></thead><tbody>' +
     w.jiriScenes.map((x) =>
       "<tr><td>" + x[0] + "</td>" + num(x[1]) +
       num((w.jiriSceneTotal ? ((x[1] / w.jiriSceneTotal) * 100).toFixed(1) : 0) + "%") +
-      (cmp ? jiriCmp(x[0], cmp.prev) : num("—")) +
-      (cmp && cmp.yoy ? jiriCmp(x[0], cmp.yoy) : num("—")) + "</tr>"
+      (cmp ? dual(x[1], (cmp.prev.jiriScenes || {})[x[0]] || 0, cmp.yoy ? (cmp.yoy.jiriScenes || {})[x[0]] || 0 : null) : num("—")) + "</tr>"
     ).join("") +
     '<tr class="sum"><td>合计</td>' + num(w.jiriSceneTotal) + num("100%") +
-    (cmp ? ratio(w.jiriSceneTotal, cmp.prev.jiriSceneTotal) : num("—")) +
-    (cmp && cmp.yoy ? ratio(w.jiriSceneTotal, cmp.yoy.jiriSceneTotal) : num("—")) + "</tr></tbody>";
+    (cmp ? dual(w.jiriSceneTotal, cmp.prev.jiriSceneTotal, cmp.yoy ? cmp.yoy.jiriSceneTotal : null) : num("—")) + "</tr></tbody>";
 }
 
 // ============== 交互 ==============

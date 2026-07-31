@@ -678,10 +678,9 @@ async function renderPage(env, user) {
 
   <nav class="tabs">
     <button class="tab active" data-tab="weekly">周报</button>
-    <button class="tab" data-tab="ai">AI 能力与转人工</button>
+    <button class="tab" data-tab="service">服务概览</button>
     <button class="tab" data-tab="trend">会话量趋势与来源</button>
     <button class="tab" data-tab="scene">业务场景与套餐</button>
-    <button class="tab" data-tab="cost">人工成本</button>
   </nav>
 
   <section class="panel active" id="panel-weekly">
@@ -718,7 +717,7 @@ async function renderPage(env, user) {
     </div>
   </section>
 
-  <section class="panel" id="panel-ai">
+  <section class="panel" id="panel-service">
     <div class="grid">
       <div class="chart-card"><h3>Jiri 是否能解答</h3><canvas id="chartJiri"></canvas></div>
       <div class="chart-card"><h3>转人工方式</h3><canvas id="chartWay"></canvas></div>
@@ -726,6 +725,32 @@ async function renderPage(env, user) {
       <div class="chart-card wide"><h3>转人工原因分布</h3><canvas id="chartReason"></canvas></div>
     </div>
     <div class="note" id="noteAvoidable"></div>
+  
+
+    <div class="grid">
+      <div class="chart-card wide">
+        <div class="chart-head">
+          <h3>会话接待分布（按周）</h3>
+          <span class="chart-total" id="totalWeekRecept"></span>
+        </div>
+        <canvas id="chartWeekRecept"></canvas>
+      </div>
+      <div class="chart-card wide">
+        <div class="chart-head">
+          <h3>会话时长（按周 · 会话性质堆叠 + 单会话平均时长）</h3>
+          <span class="chart-total" id="totalWeekDur"></span>
+        </div>
+        <canvas id="chartWeekDur"></canvas>
+      </div>
+      <div class="chart-card wide tall">
+        <div class="chart-head">
+          <h3>每日人工接待时长与转人工次数</h3>
+          <span class="chart-total" id="totalDayCost"></span>
+          <span class="chart-hint" id="hintDayCost"></span>
+        </div>
+        <canvas id="chartDayCost"></canvas>
+      </div>
+    </div>
   </section>
 
   <section class="panel" id="panel-trend">
@@ -765,33 +790,6 @@ async function renderPage(env, user) {
       <div class="chart-card wide">
         <h3>业务场景 × 套餐（有效会话）</h3>
         <div class="table-wrapper compact"><table id="crossTable"></table></div>
-      </div>
-    </div>
-  </section>
-
-  <section class="panel" id="panel-cost">
-    <div class="grid">
-      <div class="chart-card wide">
-        <div class="chart-head">
-          <h3>会话接待分布（按周）</h3>
-          <span class="chart-total" id="totalWeekRecept"></span>
-        </div>
-        <canvas id="chartWeekRecept"></canvas>
-      </div>
-      <div class="chart-card wide">
-        <div class="chart-head">
-          <h3>会话时长（按周 · 会话性质堆叠 + 单会话平均时长）</h3>
-          <span class="chart-total" id="totalWeekDur"></span>
-        </div>
-        <canvas id="chartWeekDur"></canvas>
-      </div>
-      <div class="chart-card wide tall">
-        <div class="chart-head">
-          <h3>每日人工接待时长与转人工次数</h3>
-          <span class="chart-total" id="totalDayCost"></span>
-          <span class="chart-hint" id="hintDayCost"></span>
-        </div>
-        <canvas id="chartDayCost"></canvas>
       </div>
     </div>
   </section>
