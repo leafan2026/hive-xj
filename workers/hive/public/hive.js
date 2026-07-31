@@ -24,7 +24,7 @@ function $(id) { return document.getElementById(id); }
 
 // 首屏先占位，避免大片空白
 function renderSkeleton() {
-  const labels = ["会话总数", "Jiri 可解答率", "可避免转人工", "人工接待总时长", "接待轮次总计"];
+  const labels = ["会话总数", "AI 独立率", "可避免转人工", "人工接待总时长", "接待轮次总计"];
   $("cards").innerHTML = labels.map((l) =>
     '<div class="card skeleton"><div class="card-label">' + l + '</div>' +
     '<div class="card-value">—</div><div class="card-sub">加载中…</div></div>'
@@ -743,7 +743,7 @@ function renderCards(s) {
   const d = s.derived;
   const cards = [
     { label: "会话总数", value: s.total, sub: "有效会话 " + d.effectiveCount + " 条 · " + d.effectiveRate + "%" },
-    { label: "Jiri 可解答率", value: d.resolveRate + "%", sub: "不能 " + d.cannotRate + "% · 部分 " + d.partialRate + "%（已质检内）" },
+    { label: "AI 独立率", value: d.aiRate + "%", sub: "AI 独立接待 " + d.aiOnlyCount + " 条 · 人工在线 " + d.manualCount + " 条 / " + d.manualRate + "%" },
     { label: "可避免转人工", value: d.avoidableRate + "%", sub: d.avoidableCount + " / " + s.transferred + " 次本可由 AI 承接" },
     { label: "人工接待总时长", value: d.durSumHours + " 小时", sub: "均 " + fmtDuration(d.durAvg) + " · 中位 " + fmtDuration(d.durMedian) },
     { label: "接待轮次总计", value: s.turnsSum, sub: "有时长记录会话 " + s.durCount + " 条" },
@@ -889,14 +889,10 @@ function renderTrend(s) {
 }
 
 function renderScene(s) {
-  const effScene = sortedPairs(s.effectiveScene);
-  drawDoughnut("effScene", "chartEffScene", effScene);
-  setTotal("totalEffScene", "有效会话：", effScene.reduce((a, p) => a + p[1], 0));
-
   drawDoughnut("nature2", "chartNature2", sortedPairs(s.nature), { colorMap: COLOR_NATURE });
   setTotal("totalNature2", "记录数量：", s.total);
 
-  drawBar("scene", "chartScene", sortedPairs(s.scene), { horizontal: true, colors: ["#4f7cf7", "#fb8a6b"] });
+  drawBar("scene", "chartScene", sortedPairs(s.effectiveScene), { horizontal: true, colors: ["#4f7cf7", "#fb8a6b"] });
   drawDoughnut("plan", "chartPlan", sortedPairs(s.plan));
   // 「无关」占九成以上，会把其他分类压成一条线，剔除后只看真正相关的会话
   const xj = sortedPairs(s.xjCategory).filter((p) => p[0] !== "无关");
@@ -1103,10 +1099,26 @@ function renderWeekly(week) {
       num(p2.aiOnly + " / " + p2.aiRate + "%") +
       num(p2.manualOnline + " / " + p2.manualRate + "%") +
       num(p2.formFillers) + num(p2.productSessions) + "</tr>" +
-      '<tr class="sum"><td>环比</td>' +
+      '<tr class="sum"><td>环比（对比上周同期）</td>' +
       ratio(w.total, p2.total) + ratio(w.users, p2.users) + ratio(w.perUser, p2.perUser) +
       ratio(w.aiRate, p2.aiRate) + ratio(w.manualRate, p2.manualRate, "", true) +
       ratio(w.formFillers, p2.formFillers) + ratio(w.productSessions, p2.productSessions) + "</tr>";
+
+    // 同比：数据不足一年，口径用 4 周前的同一批星期
+    if (cmp.yoy) {
+      const y = cmp.yoy;
+      const yNo = Number(cmp.yoyWeek.slice(5));
+      html +=
+        '<tr class="sum"><td>4 周前同期（第 ' + yNo + " 周 · " + scope + "）</td>" +
+        num(y.total) + num(y.users) + num(y.perUser) +
+        num(y.aiOnly + " / " + y.aiRate + "%") +
+        num(y.manualOnline + " / " + y.manualRate + "%") +
+        num(y.formFillers) + num(y.productSessions) + "</tr>" +
+        '<tr class="sum"><td>同比（对比第 ' + yNo + " 周同期）</td>" +
+        ratio(w.total, y.total) + ratio(w.users, y.users) + ratio(w.perUser, y.perUser) +
+        ratio(w.aiRate, y.aiRate) + ratio(w.manualRate, y.manualRate, "", true) +
+        ratio(w.formFillers, y.formFillers) + ratio(w.productSessions, y.productSessions) + "</tr>";
+    }
   }
   $("tblOverview").innerHTML = html + "</tbody>";
 

@@ -218,7 +218,14 @@ function buildStats(rows) {
   // 「Jiri 是否能解答」等字段只在人工质检过的会话上有值，AI 指标按这批口径算
   const labeled = s.total - (s.jiri["未标记"] || 0);
 
+  const aiOnly = s.status["仅 Jiri"] || 0;
+  const manualOnly = s.status["仅人工"] || 0;
+
   s.derived = {
+    aiOnlyCount: aiOnly,
+    aiRate: pct(aiOnly, s.total),
+    manualCount: manualOnly,
+    manualRate: pct(manualOnly, s.total),
     labeledCount: labeled,
     labeledRate: pct(labeled, s.total),
     effectiveCount: effective,
@@ -392,6 +399,14 @@ function buildWeekly(rows) {
       truncated: aligned.length !== grouped[prevKey].length,
       prev: overview(aligned),
     };
+
+    // 同比取 4 周前的同一批星期（数据不足一年，用 4 周前代替去年同周）
+    const yoyIdx = i - 4;
+    if (yoyIdx >= 0) {
+      const yKey = weekKeys[yoyIdx];
+      w.compare.yoyWeek = yKey;
+      w.compare.yoy = overview(grouped[yKey].filter((r) => dows.has(dowOf(r.t.slice(0, 10)))));
+    }
   });
 
   return built;
@@ -693,10 +708,6 @@ async function renderPage(env, user) {
   <section class="panel" id="panel-scene">
     <div class="grid">
       <div class="chart-card">
-        <div class="chart-head"><h3>有效会话场景</h3><span class="chart-total" id="totalEffScene"></span></div>
-        <canvas id="chartEffScene"></canvas>
-      </div>
-      <div class="chart-card">
         <div class="chart-head"><h3>会话性质</h3><span class="chart-total" id="totalNature2"></span></div>
         <canvas id="chartNature2"></canvas>
       </div>
@@ -705,7 +716,7 @@ async function renderPage(env, user) {
         <div class="chart-head"><h3>小金商户分类</h3><span class="chart-total" id="totalXj"></span></div>
         <canvas id="chartXj"></canvas>
       </div>
-      <div class="chart-card wide"><h3>业务场景分布（全部会话）</h3><canvas id="chartScene"></canvas></div>
+      <div class="chart-card wide"><h3>业务场景分布（有效会话）</h3><canvas id="chartScene"></canvas></div>
       <div class="chart-card wide">
         <h3>业务场景 × 套餐</h3>
         <div class="table-wrapper compact"><table id="crossTable"></table></div>
