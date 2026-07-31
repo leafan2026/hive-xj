@@ -979,6 +979,11 @@ function renderCost(s) {
 const DOW_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
 // [0,1,2,3] → 周一~周四；不连续则逐个列出
+function sceneCount(pairs, scene) {
+  const hit = (pairs || []).find((p) => p[0] === scene);
+  return hit ? hit[1] : 0;
+}
+
 function dowLabel(dows) {
   if (!dows || !dows.length) return "同期";
   const names = dows.map((d) => DOW_CN[d] || "?");
@@ -1074,6 +1079,7 @@ function renderWeekly(week) {
   // 二、周度接待概览：只看到所选周为止的最近 5 周，底部附同期对齐的环比
   const recent = state.weeks.slice(Math.max(0, i - 4), i + 1);
   const cmp = w.compare;
+  const scope = cmp ? dowLabel(cmp.dows) : "";
   const num = (v) => '<td class="num">' + v + "</td>";
   const ratio = (cur, prev, suffix, invert) => {
     if (prev === null || prev === undefined || prev === 0) return num("—");
@@ -1097,7 +1103,6 @@ function renderWeekly(week) {
 
   if (cmp) {
     const p2 = cmp.prev;
-    const scope = dowLabel(cmp.dows);
     html +=
       '<tr class="sum"><td>上周同期（' + scope + "）</td>" +
       num(p2.total) + num(p2.users) + num(p2.perUser) +
@@ -1127,57 +1132,88 @@ function renderWeekly(week) {
   }
   $("tblOverview").innerHTML = html + "</tbody>";
 
-  // 三、人工接待现状
+  // 三、人工接待现状：每个口径都给本周 / 上周同期 / 环比 / 4 周前同期 / 同比
   const d1 = (v) => Number(v).toFixed(1);
-  const line = (label, s) =>
-    "<tr><td>" + label + "</td>" +
-    '<td class="num">' + s.receptions + "</td>" +
-    '<td class="num">' + d1(s.durHours) + " h</td>" +
-    '<td class="num">' + d1(s.medianMin) + " 分</td>" +
-    '<td class="num">' + d1(s.avgMin) + " 分</td>" +
-    '<td class="num">' + s.sessions + "</td>" +
-    '<td class="num">' + s.users + "</td></tr>";
-  $("tblManual").innerHTML =
-    '<thead><tr><th>口径</th><th class="num">接待次数</th><th class="num">总工时</th><th class="num">单次中位</th><th class="num">单次平均</th><th class="num">会话数</th><th class="num">去重用户</th></tr></thead><tbody>' +
-    line("有效人工", w.eff) + line("全部仅人工", w.allManual) + "</tbody>";
+  const yoyNo = cmp && cmp.yoyWeek ? Number(cmp.yoyWeek.slice(5)) : null;
 
-  const prevEff = p ? p.eff : null;
+  const statCells = (g) =>
+    num(g.receptions) + num(d1(g.durHours) + " h") + num(d1(g.medianMin) + " 分") +
+    num(d1(g.avgMin) + " 分") + num(g.sessions) + num(g.users);
+  const statRatio = (a, b) =>
+    ratio(a.receptions, b.receptions) + ratio(a.durHours, b.durHours) +
+    ratio(a.medianMin, b.medianMin, "", true) + ratio(a.avgMin, b.avgMin, "", true) +
+    ratio(a.sessions, b.sessions) + ratio(a.users, b.users);
+
+  const groupRows = (label, key) => {
+    let out = '<tr><td><b>' + label + "</b> · 本周</td>" + statCells(w[key]) + "</tr>";
+    if (cmp) {
+      out += '<tr class="sub"><td>' + label + " · 上周同期（" + scope + "）</td>" + statCells(cmp.prev[key]) + "</tr>" +
+             '<tr class="sum"><td>' + label + " · 环比</td>" + statRatio(w[key], cmp.prev[key]) + "</tr>";
+      if (cmp.yoy) {
+        out += '<tr class="sub"><td>' + label + " · 第 " + yoyNo + " 周同期</td>" + statCells(cmp.yoy[key]) + "</tr>" +
+               '<tr class="sum"><td>' + label + " · 同比</td>" + statRatio(w[key], cmp.yoy[key]) + "</tr>";
+      }
+    }
+    return out;
+  };
+
+  $("tblManual").innerHTML =
+    '<thead><tr><th>口径 / 期间</th><th class="num">接待次数</th><th class="num">总工时</th>' +
+    '<th class="num">单次中位</th><th class="num">单次平均</th><th class="num">会话数</th>' +
+    '<th class="num">去重用户</th></tr></thead><tbody>' +
+    groupRows("有效人工", "eff") + groupRows("全部仅人工", "allManual") + "</tbody>";
+
+  const prevEff = cmp ? cmp.prev.eff : null;
   $("manualNote").innerHTML =
-    "有效人工 <b>" + w.eff.sessions + "</b> 场会话（去重用户 " + w.eff.users + " 人）/ <b>" + w.eff.receptions + "</b> 次接待，总工时 <b>" +
-    w.eff.durHours + " h</b>" +
-    (prevEff ? "（上周 " + prevEff.durHours + " h，" +
+    "有效人工 <b>" + w.eff.sessions + "</b> 场会话（去重用户 " + w.eff.users + " 人）/ <b>" +
+    w.eff.receptions + "</b> 次接待，总工时 <b>" + w.eff.durHours + " h</b>" +
+    (prevEff ? "（上周同期 " + prevEff.durHours + " h，" +
       (w.eff.durHours >= prevEff.durHours ? "+" : "") +
       Number((w.eff.durHours - prevEff.durHours).toFixed(1)) + " h）" : "") + "。<br>" +
     "不愿和 Jiri 沟通率 <b>" + w.directTransfer + " / " + w.eff.sessions + " = " + w.directRate + "%</b>" +
-    (p ? "（上周 " + p.directRate + "%）" : "") +
+    (cmp ? "（上周同期 " + cmp.prev.directTransfer + " / " + cmp.prev.eff.sessions + "）" : "") +
     " —— 有效人工里「直接转」的场次占比。<br>" +
     '<span class="dim-note">口径：有效人工 = 处理状态「仅人工」且会话性质「有效」；接待次数取「转人工会话接待次数」' +
-    '（表单里「人工接待次数」两个字段全为空）；单次中位 = 每场「时长 ÷ 接待次数」的中位数。</span>';
+    '（表单里「人工接待次数」两个字段全为空）；单次中位 = 每场「时长 ÷ 接待次数」的中位数。' +
+    '环比对比上周同期，同比对比 4 周前同期，都按相同星期对齐。</span>';
 
   // 四、有效人工场景 × 工作量
+  const sceneCmp = (scene, field, src) => {
+    const hit = src ? src.scenes[scene] : null;
+    return hit ? ratio(w.scenes.find((x) => x.scene === scene)[field], hit[field]) : num("—");
+  };
   $("tblScenes").innerHTML =
-    '<thead><tr><th>场景</th><th class="num">接待次数</th><th class="num">总时长（分）</th><th class="num">占总时长</th><th class="num">单次中位</th><th class="num">单次平均</th></tr></thead><tbody>' +
-    w.scenes.map((s) => {
-      const isGuide = s.scene === "操作引导/功能咨询";
-      return "<tr" + (isGuide ? ' class="warn-row"' : "") + "><td>" + s.scene + "</td>" +
-        '<td class="num">' + s.receptions + "</td>" +
-        '<td class="num">' + s.durMin + "</td>" +
-        '<td class="num strong">' + s.share + "%" + (isGuide ? "（目标 ≤ 10%）" : "") + "</td>" +
-        '<td class="num">' + Number(s.medianMin).toFixed(1) + "</td>" +
-        '<td class="num">' + Number(s.avgMin).toFixed(1) + "</td></tr>";
+    '<thead><tr><th>场景</th><th class="num">接待次数</th><th class="num">总时长（分）</th>' +
+    '<th class="num">占总时长</th><th class="num">单次中位</th><th class="num">单次平均</th>' +
+    '<th class="num">时长环比</th><th class="num">时长同比</th></tr></thead><tbody>' +
+    w.scenes.map((x) => {
+      const isGuide = x.scene === "操作引导/功能咨询";
+      return "<tr" + (isGuide ? ' class="warn-row"' : "") + "><td>" + x.scene + "</td>" +
+        num(x.receptions) + num(x.durMin) +
+        '<td class="num strong">' + x.share + "%" + (isGuide ? "（目标 ≤ 10%）" : "") + "</td>" +
+        num(Number(x.medianMin).toFixed(1)) + num(Number(x.avgMin).toFixed(1)) +
+        (cmp ? sceneCmp(x.scene, "durMin", cmp.prev) : num("—")) +
+        (cmp && cmp.yoy ? sceneCmp(x.scene, "durMin", cmp.yoy) : num("—")) + "</tr>";
     }).join("") +
-    '<tr class="sum"><td>合计</td><td class="num">' + w.eff.receptions + '</td><td class="num">' +
-    w.eff.durMin + '</td><td class="num">100%</td><td class="num">' + Number(w.eff.medianMin).toFixed(1) +
-    '</td><td class="num">' + Number(w.eff.avgMin).toFixed(1) + "</td></tr></tbody>";
+    '<tr class="sum"><td>合计</td>' + num(w.eff.receptions) + num(w.eff.durMin) +
+    num("100%") + num(Number(w.eff.medianMin).toFixed(1)) + num(Number(w.eff.avgMin).toFixed(1)) +
+    (cmp ? ratio(w.eff.durMin, cmp.prev.eff.durMin) : num("—")) +
+    (cmp && cmp.yoy ? ratio(w.eff.durMin, cmp.yoy.eff.durMin) : num("—")) + "</tr></tbody>";
 
   // 五、仅 Jiri 有效场景
+  const jiriCmp = (scene, src) => (src ? ratio(sceneCount(w.jiriScenes, scene), src.jiriScenes[scene] || 0) : num("—"));
   $("tblJiriScenes").innerHTML =
-    '<thead><tr><th>场景</th><th class="num">场次</th><th class="num">占比</th></tr></thead><tbody>' +
-    w.jiriScenes.map((s) =>
-      "<tr><td>" + s[0] + '</td><td class="num">' + s[1] + '</td><td class="num">' +
-      (w.jiriSceneTotal ? ((s[1] / w.jiriSceneTotal) * 100).toFixed(1) : 0) + "%</td></tr>"
+    '<thead><tr><th>场景</th><th class="num">场次</th><th class="num">占比</th>' +
+    '<th class="num">环比</th><th class="num">同比</th></tr></thead><tbody>' +
+    w.jiriScenes.map((x) =>
+      "<tr><td>" + x[0] + "</td>" + num(x[1]) +
+      num((w.jiriSceneTotal ? ((x[1] / w.jiriSceneTotal) * 100).toFixed(1) : 0) + "%") +
+      (cmp ? jiriCmp(x[0], cmp.prev) : num("—")) +
+      (cmp && cmp.yoy ? jiriCmp(x[0], cmp.yoy) : num("—")) + "</tr>"
     ).join("") +
-    '<tr class="sum"><td>合计</td><td class="num">' + w.jiriSceneTotal + '</td><td class="num">100%</td></tr></tbody>';
+    '<tr class="sum"><td>合计</td>' + num(w.jiriSceneTotal) + num("100%") +
+    (cmp ? ratio(w.jiriSceneTotal, cmp.prev.jiriSceneTotal) : num("—")) +
+    (cmp && cmp.yoy ? ratio(w.jiriSceneTotal, cmp.yoy.jiriSceneTotal) : num("—")) + "</tr></tbody>";
 }
 
 // ============== 交互 ==============

@@ -313,6 +313,47 @@ function groupStats(rows) {
   };
 }
 
+// 场景 × 工作量（有效人工）
+function sceneWorkload(effManual) {
+  const agg = {};
+  for (const r of effManual) {
+    const a = agg[r.scene] || (agg[r.scene] = { receptions: 0, durSec: 0, rows: [] });
+    a.receptions += r.turns || 0;
+    a.durSec += r.dur || 0;
+    a.rows.push(r);
+  }
+  const totalSec = effManual.reduce((a, r) => a + (r.dur || 0), 0);
+  const out = {};
+  for (const [scene, a] of Object.entries(agg)) {
+    out[scene] = {
+      receptions: a.receptions,
+      durMin: Math.round(a.durSec / 60),
+      share: totalSec ? Number(((a.durSec / totalSec) * 100).toFixed(0)) : 0,
+      medianMin: Number((median(perReception(a.rows)) / 60).toFixed(1)),
+      avgMin: Number((mean(perReception(a.rows)) / 60).toFixed(1)),
+    };
+  }
+  return out;
+}
+
+// 一批会话 → 周报三/四/五要用的全部指标（同期对齐时在子集上重算）
+function weekMetrics(rows) {
+  const manual = rows.filter((r) => r.st === "仅人工");
+  const effManual = manual.filter((r) => r.nat === "有效");
+  const effJiri = rows.filter((r) => r.st === "仅 Jiri" && r.nat === "有效");
+  const jiriScenes = {};
+  for (const r of effJiri) jiriScenes[r.scene] = (jiriScenes[r.scene] || 0) + 1;
+  return {
+    ...overview(rows),
+    eff: groupStats(effManual),
+    allManual: groupStats(manual),
+    directTransfer: effManual.filter((r) => r.way === "直接转").length,
+    scenes: sceneWorkload(effManual),
+    jiriScenes,
+    jiriSceneTotal: effJiri.length,
+  };
+}
+
 function buildWeekly(rows) {
   const grouped = {};
   for (const r of rows) {
@@ -401,7 +442,7 @@ function buildWeekly(rows) {
       prevWeek: prevKey,
       dows: [...dows].sort((a, b) => a - b),
       truncated: aligned.length !== grouped[prevKey].length,
-      prev: overview(aligned),
+      prev: weekMetrics(aligned),
     };
 
     // 同比取 4 周前的同一批星期（数据不足一年，用 4 周前代替去年同周）
@@ -409,7 +450,7 @@ function buildWeekly(rows) {
     if (yoyIdx >= 0) {
       const yKey = weekKeys[yoyIdx];
       w.compare.yoyWeek = yKey;
-      w.compare.yoy = overview(grouped[yKey].filter((r) => dows.has(dowOf(r.t.slice(0, 10)))));
+      w.compare.yoy = weekMetrics(grouped[yKey].filter((r) => dows.has(dowOf(r.t.slice(0, 10)))));
     }
   });
 

@@ -311,6 +311,8 @@ td a:hover { text-decoration: underline; }
 .report-table td.dim { color: var(--muted); white-space: normal; min-width: 260px; }
 .report-table tr.hl { background: var(--primary-soft); }
 .report-table tr.hl:hover { background: #e7e7fb; }
+.report-table tr.sub { color: var(--muted); background: #fcfcfe; }
+.report-table tr.sub td:first-child { padding-left: 26px; }
 .report-table tr.warn-row { background: #fff9ed; }
 .report-table tr.sum { background: #fafbfe; font-weight: 650; }
 .report-table tr.sum td { border-top: 2px solid var(--line); }
