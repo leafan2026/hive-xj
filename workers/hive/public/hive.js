@@ -975,6 +975,17 @@ function renderCost(s) {
 
 // ============== 周报 ==============
 
+const DOW_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+// [0,1,2,3] → 周一~周四；不连续则逐个列出
+function dowLabel(dows) {
+  if (!dows || !dows.length) return "同期";
+  const names = dows.map((d) => DOW_CN[d] || "?");
+  const contiguous = dows.every((d, k) => k === 0 || d === dows[k - 1] + 1);
+  if (dows.length === 7) return "整周";
+  return contiguous && dows.length > 1 ? names[0] + "~" + names[names.length - 1] : names.join("、");
+}
+
 function weekLabel(w) {
   return "第 " + Number(w.slice(5)) + " 周（" + w + "）";
 }
@@ -1059,20 +1070,45 @@ function renderWeekly(week) {
       '<td class="dim">' + r.note + "</td></tr>"
     ).join("") + "</tbody>";
 
-  // 二、周度接待概览（全部周）
-  $("tblOverview").innerHTML =
+  // 二、周度接待概览：只看到所选周为止的最近 5 周，底部附同期对齐的环比
+  const recent = state.weeks.slice(Math.max(0, i - 4), i + 1);
+  const cmp = w.compare;
+  const num = (v) => '<td class="num">' + v + "</td>";
+  const ratio = (cur, prev, suffix, invert) => {
+    if (prev === null || prev === undefined || prev === 0) return num("—");
+    const d = ((cur - prev) / prev) * 100;
+    if (Math.abs(d) < 0.05) return num('<span class="dl flat">持平</span>');
+    const good = invert ? d < 0 : d > 0;
+    return num('<span class="dl ' + (good ? "up" : "down") + '">' +
+      (d > 0 ? "+" : "") + d.toFixed(1) + "%</span>");
+  };
+
+  let html =
     '<thead><tr><th>周</th><th class="num">会话总量</th><th class="num">对话人数</th><th class="num">人均会话</th>' +
     '<th class="num">AI 独立接待 / 独立率</th><th class="num">人工在线 / 占比</th><th class="num">填表人</th><th class="num">有效会话</th></tr></thead><tbody>' +
-    state.weeks.slice().reverse().map((x) =>
+    recent.slice().reverse().map((x) =>
       "<tr" + (x.week === week ? ' class="hl"' : "") + "><td>第 " + Number(x.week.slice(5)) + " 周</td>" +
-      '<td class="num">' + x.total + "</td>" +
-      '<td class="num">' + x.users + "</td>" +
-      '<td class="num">' + x.perUser + "</td>" +
-      '<td class="num">' + x.aiOnly + " / " + x.aiRate + "%</td>" +
-      '<td class="num">' + x.manualOnline + " / " + x.manualRate + "%</td>" +
-      '<td class="num">' + x.formFillers + "</td>" +
-      '<td class="num">' + x.productSessions + "</td></tr>"
-    ).join("") + "</tbody>";
+      num(x.total) + num(x.users) + num(x.perUser) +
+      num(x.aiOnly + " / " + x.aiRate + "%") +
+      num(x.manualOnline + " / " + x.manualRate + "%") +
+      num(x.formFillers) + num(x.productSessions) + "</tr>"
+    ).join("");
+
+  if (cmp) {
+    const p2 = cmp.prev;
+    const scope = dowLabel(cmp.dows);
+    html +=
+      '<tr class="sum"><td>上周同期（' + scope + "）</td>" +
+      num(p2.total) + num(p2.users) + num(p2.perUser) +
+      num(p2.aiOnly + " / " + p2.aiRate + "%") +
+      num(p2.manualOnline + " / " + p2.manualRate + "%") +
+      num(p2.formFillers) + num(p2.productSessions) + "</tr>" +
+      '<tr class="sum"><td>环比</td>' +
+      ratio(w.total, p2.total) + ratio(w.users, p2.users) + ratio(w.perUser, p2.perUser) +
+      ratio(w.aiRate, p2.aiRate) + ratio(w.manualRate, p2.manualRate, "", true) +
+      ratio(w.formFillers, p2.formFillers) + ratio(w.productSessions, p2.productSessions) + "</tr>";
+  }
+  $("tblOverview").innerHTML = html + "</tbody>";
 
   // 三、人工接待现状
   const d1 = (v) => Number(v).toFixed(1);

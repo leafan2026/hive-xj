@@ -254,6 +254,30 @@ const MUST_HUMAN = [
 const GUIDE_SCENE = "操作引导/功能咨询";
 const GUIDE_TARGET = 10; // 操作引导类人工时长占比目标 ≤10%
 
+// 星期序号，周一 = 0
+function dowOf(day) {
+  const d = new Date(day + "T00:00:00Z");
+  return isNaN(d) ? -1 : (d.getUTCDay() + 6) % 7;
+}
+
+// 周度接待概览的指标 —— 对齐同期时要在子集上重算（对话人数是去重值，不能按天相加）
+function overview(rows) {
+  const jiri = rows.filter((r) => r.st === "仅 Jiri");
+  const manual = rows.filter((r) => r.st === "仅人工");
+  const users = new Set(rows.map((r) => r.uid).filter(Boolean)).size;
+  return {
+    total: rows.length,
+    users,
+    perUser: users ? Number((rows.length / users).toFixed(2)) : 0,
+    aiOnly: jiri.length,
+    aiRate: PCT(jiri.length, rows.length),
+    manualOnline: manual.length,
+    manualRate: PCT(manual.length, rows.length),
+    formFillers: rows.filter((r) => r.nat === "填表人").length,
+    productSessions: rows.filter((r) => r.nat === "有效").length,
+  };
+}
+
 // 接待次数取 field_13（转人工会话接待次数）—— field_20/21 在这张表里全为空
 // 单次中位 = 每场「时长 ÷ 接待次数」的中位数；单次平均 = 总时长 ÷ 接待次数
 function perReception(rows) {
@@ -288,14 +312,14 @@ function buildWeekly(rows) {
     (grouped[w] || (grouped[w] = [])).push(r);
   }
 
-  return Object.keys(grouped).sort().map((week) => {
+  const weekKeys = Object.keys(grouped).sort();
+  const built = weekKeys.map((week) => {
     const all = grouped[week];
     const days = new Set(all.map((r) => r.t.slice(0, 10)));
     const manual = all.filter((r) => r.st === "仅人工");
     const jiri = all.filter((r) => r.st === "仅 Jiri");
     const effManual = manual.filter((r) => r.nat === "有效");
     const effJiri = jiri.filter((r) => r.nat === "有效");
-    const users = new Set(all.map((r) => r.uid).filter(Boolean)).size;
 
     const eff = groupStats(effManual);
     const allManual = groupStats(manual);
@@ -330,15 +354,7 @@ function buildWeekly(rows) {
       dayCount: days.size,
       firstDay: [...days].sort()[0],
       lastDay: [...days].sort().pop(),
-      total: all.length,
-      users,
-      perUser: users ? Number((all.length / users).toFixed(2)) : 0,
-      aiOnly: jiri.length,
-      aiRate: PCT(jiri.length, all.length),
-      manualOnline: manual.length,
-      manualRate: PCT(manual.length, all.length),
-      formFillers: all.filter((r) => r.nat === "填表人").length,
-      productSessions: all.filter((r) => r.nat === "有效").length,
+      ...overview(all),
       eff,
       allManual,
       directTransfer: direct,
@@ -363,6 +379,22 @@ function buildWeekly(rows) {
       },
     };
   });
+
+  // 本周可能只跑到周四，环比要拿上周的周一~周四对齐着比，天数不同没法比
+  built.forEach((w, i) => {
+    if (i === 0) return;
+    const prevKey = weekKeys[i - 1];
+    const dows = new Set(grouped[weekKeys[i]].map((r) => dowOf(r.t.slice(0, 10))).filter((d) => d >= 0));
+    const aligned = grouped[prevKey].filter((r) => dows.has(dowOf(r.t.slice(0, 10))));
+    w.compare = {
+      prevWeek: prevKey,
+      dows: [...dows].sort((a, b) => a - b),
+      truncated: aligned.length !== grouped[prevKey].length,
+      prev: overview(aligned),
+    };
+  });
+
+  return built;
 }
 
 // ============== 缓存 ==============
