@@ -904,7 +904,13 @@ function renderScene(s) {
   for (const row of Object.values(s.sceneByPlan || {})) {
     for (const [k, v] of Object.entries(row)) planTotals[k] = (planTotals[k] || 0) + v;
   }
-  const plans = sortedPairs(planTotals).map((p) => p[0]);
+  // 套餐按档位从低到高固定排序，不按数量排
+  const PLAN_ORDER = ["免费版", "专业版", "专业增强版", "企业基础版", "企业协作版", "企业高级版", "商业合作版"];
+  const plans = Object.keys(planTotals).sort((a, b) => {
+    const ia = PLAN_ORDER.indexOf(a);
+    const ib = PLAN_ORDER.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
   const scenes = sortedPairs(s.effectiveScene).map((p) => p[0]);
   let html = "<thead><tr><th>业务场景</th>" +
     plans.map((p) => "<th>" + p + "</th>").join("") + "<th>合计</th></tr></thead><tbody>";
