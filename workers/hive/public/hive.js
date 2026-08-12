@@ -1227,6 +1227,50 @@ function renderWeekly(week) {
     (cmp ? ratio(w.eff.durMin, cmp.prev.eff.durMin) : num("—")) +
     (cmp && cmp.yoy ? ratio(w.eff.durMin, cmp.yoy.eff.durMin) : num("—")) + "</tr></tbody>";
 
+  // 六、业务分型 × 建表转化（从有标注的那周起才有数据）
+  const bizBlock = $("blockBiz");
+  const bizRows = w.bizTypes || [];
+  bizBlock.hidden = bizRows.length === 0;
+  if (bizRows.length) {
+    const findBiz = (src, type) => (src && src.bizTypes ? src.bizTypes.find((x) => x.type === type) : null);
+    const bizCell = (x, field, prevRow, yoyRow, suffix) =>
+      '<td class="num dual"><span class="dl-strong">' + x[field] + (suffix || "") + "</span>" +
+      '<span class="dl-row"><i>环</i>' + pct1(x[field], prevRow ? prevRow[field] : null) + "</span>" +
+      (cmp && cmp.yoy ? '<span class="dl-row"><i>同</i>' + pct1(x[field], yoyRow ? yoyRow[field] : null) + "</span>" : "") +
+      "</td>";
+
+    $("tblBiz").innerHTML =
+      '<thead><tr><th>业务分型</th><th class="num">会话数</th><th class="num">建表率</th>' +
+      '<th class="num">对口</th><th class="num">建完收到数据</th><th class="num">Jiri 代建（MCP）</th>' +
+      "</tr></thead><tbody>" +
+      bizRows.map((x) => {
+        const p = cmp ? findBiz(cmp.prev, x.type) : null;
+        const y = cmp && cmp.yoy ? findBiz(cmp.yoy, x.type) : null;
+        return "<tr><td>" + x.type + "</td>" +
+          bizCell(x, "sessions", p, y) +
+          bizCell(x, "builtRate", p, y, "%") +
+          bizCell(x, "onTargetRate", p, y, "%") +
+          bizCell(x, "gotDataRate", p, y, "%") +
+          bizCell(x, "jiriBuiltRate", p, y, "%") + "</tr>";
+      }).join("") +
+      (() => {
+        const sum = (k) => bizRows.reduce((a, x) => a + x[k], 0);
+        const n = sum("sessions");
+        const r = (k) => (n ? ((sum(k) / n) * 100).toFixed(1) : 0);
+        return '<tr class="sum"><td>合计</td>' + num(n) + num(r("built") + "%") +
+          num(r("onTarget") + "%") + num(r("gotData") + "%") + num(r("jiriBuilt") + "%") + "</tr>";
+      })() + "</tbody>";
+
+    const pend = bizRows.reduce((a, x) => a + x.pending, 0);
+    $("bizNote").innerHTML =
+      "口径：分母是该分型的会话数；<b>建表率</b> = 「对口建表」标了是或否（都表示建了表，只是对不对口）；" +
+      "<b>对口</b> = 「对口建表 = 是」；<b>建完收到数据</b> = 「对口表单收数据 = 是」；" +
+      "<b>Jiri 代建</b> = 「Jiri代建表单 = 是」。<br>" +
+      "「只跟金数据打交道」「看不出用途」不是建表需求，未计入。" +
+      (pend ? " 当前还有 <b>" + pend + "</b> 条「对口建表」标记为待定（7 天窗口未到或待复核），会随标注推进变化。" : "") +
+      '<br><span class="dim-note">环比对比上周同期、同比对比 4 周前同期，都按相同星期对齐。</span>';
+  }
+
   // 五、仅 Jiri 有效场景
   $("tblJiriScenes").innerHTML =
     '<thead><tr><th>场景</th><th class="num">场次</th><th class="num">占比</th>' +

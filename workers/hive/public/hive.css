@@ -321,6 +321,7 @@ td a:hover { text-decoration: underline; }
 /* 环比 / 同比合并在同一格里，上下两行 */
 .report-table td.dual { line-height: 1.9; }
 .dl-row { display: block; white-space: nowrap; }
+.dl-strong { display: block; font-weight: 650; color: var(--ink); margin-bottom: 2px; }
 .dl-row i { color: #a7abbe; font-style: normal; font-size: 11px; margin-right: 5px; }
 .cmp-note { display: block; color: #a7abbe; font-size: 11.5px; font-weight: 400; margin-top: 3px; }
 .dl.up { background: #fdecee; color: #d9484d; }

@@ -110,6 +110,11 @@ function trim(e) {
     jiri: e.field_17 || "未标记",
     way: e.field_18 || "",
     reason: e.field_19 || "",
+    biz: e.field_22 || "",          // 业务分型
+    onTarget: e.field_23 || "",     // 对口建表
+    gotData: e.field_25 || "",      // 对口表单收数据
+    inWindow: e.field_26 || "",     // 窗口内收款
+    jiriBuilt: e.field_27 || "",    // Jiri 代建表单
     creator: e.creator_name || "未知",
   };
 }
@@ -336,6 +341,35 @@ function sceneWorkload(effManual) {
   return out;
 }
 
+// 业务分型 × 建表转化。「只跟金数据打交道」「看不出用途」不是建表需求，排除
+const BIZ_EXCLUDE = new Set(["只跟金数据打交道", "看不出用途"]);
+
+function bizTypeStats(rows) {
+  const g = {};
+  for (const r of rows) {
+    if (!r.biz || BIZ_EXCLUDE.has(r.biz)) continue;
+    (g[r.biz] || (g[r.biz] = [])).push(r);
+  }
+  return Object.entries(g).map(([type, rs]) => {
+    const n = rs.length;
+    // 「对口建表」= 是/否 都表示建了表（只是对不对口）；待定/不适用视为还没建
+    const built = rs.filter((r) => r.onTarget === "是" || r.onTarget === "否").length;
+    const onTarget = rs.filter((r) => r.onTarget === "是").length;
+    const gotData = rs.filter((r) => r.gotData === "是").length;
+    const jiriBuilt = rs.filter((r) => r.jiriBuilt === "是").length;
+    return {
+      type,
+      sessions: n,
+      built, onTarget, gotData, jiriBuilt,
+      pending: rs.filter((r) => r.onTarget === "待定").length,
+      builtRate: PCT(built, n),
+      onTargetRate: PCT(onTarget, n),
+      gotDataRate: PCT(gotData, n),
+      jiriBuiltRate: PCT(jiriBuilt, n),
+    };
+  }).sort((a, b) => b.sessions - a.sessions);
+}
+
 // 一批会话 → 周报三/四/五要用的全部指标（同期对齐时在子集上重算）
 function weekMetrics(rows) {
   const manual = rows.filter((r) => r.st === "仅人工");
@@ -349,6 +383,7 @@ function weekMetrics(rows) {
     allManual: groupStats(manual),
     directTransfer: effManual.filter((r) => r.way === "直接转").length,
     scenes: sceneWorkload(effManual),
+    bizTypes: bizTypeStats(rows),
     jiriScenes,
     jiriSceneTotal: effJiri.length,
   };
@@ -407,6 +442,7 @@ function buildWeekly(rows) {
       firstDay: [...days].sort()[0],
       lastDay: [...days].sort().pop(),
       ...overview(all),
+      bizTypes: bizTypeStats(all),
       eff,
       allManual,
       directTransfer: direct,
@@ -715,6 +751,13 @@ async function renderPage(env, user) {
       <h3>五、仅 Jiri 有效场景</h3>
       <div class="table-wrapper"><table class="report-table" id="tblJiriScenes"></table></div>
     </div>
+
+    <div class="report-block" id="blockBiz" hidden>
+      <h3>六、业务分型 × 建表转化</h3>
+      <div class="table-wrapper"><table class="report-table" id="tblBiz"></table></div>
+      <div class="note" id="bizNote"></div>
+    </div>
+
   </section>
 
   <section class="panel" id="panel-service">
