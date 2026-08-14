@@ -9,7 +9,7 @@ const PALETTE = [
   "#8a9bef", "#7fd3a8", "#f2bd8e", "#b6a5ee", "#a9b1c4",
 ];
 
-const state = { stats: null, facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null };
+const state = { stats: null, facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null, loop: null, loopLoaded: false };
 const charts = {};
 
 // 筛选项 → 接口参数名；选项值来自首次全量结果，筛选后不再改动
@@ -138,7 +138,7 @@ let chartsInited = false;
 function chartReady() {
   if (typeof Chart === "undefined") return false;
   if (!chartsInited) {
-    Chart.register(valueLabels, centerText, hoverGuide, ribbonArcs);
+    Chart.register(valueLabels, centerText, hoverGuide, ribbonArcs, refLine);
     Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
     Chart.defaults.font.size = 11.5;
     Chart.defaults.color = "#8b90a7";
@@ -434,6 +434,34 @@ function drawLine(key, canvasId, pairs) {
   });
 }
 
+// 竖向参考线（业务闭环图里标整体水平）
+const refLine = {
+  id: "refLine",
+  afterDatasetsDraw(chart) {
+    const o = chart.options.plugins?.refLine;
+    if (!o || o.value === null || o.value === undefined) return;
+    const { ctx, chartArea, scales } = chart;
+    const x = scales.x.getPixelForValue(o.value);
+    if (!isFinite(x)) return;
+    ctx.save();
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = o.color || "#8b90a7";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, chartArea.top);
+    ctx.lineTo(x, chartArea.bottom);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (o.label) {
+      ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
+      ctx.fillStyle = o.color || "#8b90a7";
+      ctx.textAlign = x > (chartArea.left + chartArea.right) / 2 ? "right" : "left";
+      ctx.fillText(o.label, x + (ctx.textAlign === "right" ? -6 : 6), chartArea.top + 12);
+    }
+    ctx.restore();
+  },
+};
+
 // 悬停时的竖向虚线（参考图里的定位线）
 const hoverGuide = {
   id: "hoverGuide",
@@ -581,7 +609,8 @@ const valueLabels = {
 
         const color = Array.isArray(ds.backgroundColor) ? ds.backgroundColor[i] : ds.backgroundColor;
         if (horizontal) {
-          items.push({ p: 1, text: fmtNum(v), x: el.x + 8, y: el.y + 4, font: F(600, 12), fill: "#454b69", align: "left" });
+          const txt = (ds.customLabels && ds.customLabels[i]) || fmtNum(v);
+          items.push({ p: 1, text: txt, x: el.x + 8, y: el.y + 4, font: F(600, 12), fill: (ds.labelInk && ds.labelInk[i]) || "#454b69", align: "left" });
           return;
         }
         if (Math.abs(el.base - el.y) >= 16) {
@@ -1004,6 +1033,148 @@ function renderCost(s) {
   }
 }
 
+// ============== 业务闭环 ==============
+
+async function loadLoop() {
+  if (state.loopLoaded) return;
+  try {
+    const json = await api("/api/loop");
+    if (!json.success) throw new Error(json.error || "未知错误");
+    if (json.building) {
+      $("hintLoopWeek").textContent = "数据正在构建，稍后重开此页签。";
+      return;
+    }
+    state.loop = json.loop;
+    state.loopLoaded = true;
+    renderLoop(json.loop);
+  } catch (err) {
+    $("hintLoopWeek").textContent = "加载失败：" + err.message;
+  }
+}
+
+function renderLoop(loop) {
+  const ws = loop.weeks || [];
+  const o = loop.overall || {};
+
+  // 图一：每周趋势 —— 是/否/待定 堆叠柱（合计即适用会话数）+ 闭环率折线
+  const labels = ws.map((x) => "第 " + Number(x.week.slice(5)) + " 周");
+  const unsettled = ws.map((x) => x.unsettled);
+  const rates = ws.map((x) => x.rate);
+
+  destroyChart("loopWeek");
+  if (chartReady()) {
+    const cv = $("chartLoopWeek");
+    charts.loopWeek = new Chart(cv, {
+      data: {
+        labels,
+        datasets: [
+          { type: "bar", label: "闭环 是", data: ws.map((x) => x.yes), backgroundColor: "#5cc191", stack: "s", borderColor: "#fff", borderWidth: { top: 2 }, borderRadius: 2, borderSkipped: false, barPercentage: .6, order: 3 },
+          { type: "bar", label: "未闭环 否", data: ws.map((x) => x.no), backgroundColor: "#ef8f8a", stack: "s", borderColor: "#fff", borderWidth: { top: 2 }, borderRadius: 2, borderSkipped: false, barPercentage: .6, order: 3 },
+          { type: "bar", label: "待定（窗口未满）", data: ws.map((x) => x.pending), backgroundColor: "#d3d8e6", stack: "s", borderColor: "#fff", borderWidth: { top: 2 }, borderRadius: { topLeft: 5, topRight: 5 }, borderSkipped: false, barPercentage: .6, order: 3 },
+          {
+            type: "line", label: "闭环率", data: rates, yAxisID: "y1",
+            borderColor: "#6f9bec", borderWidth: 2.5, tension: .35, spanGaps: false,
+            pointBackgroundColor: ws.map((x) => (x.unsettled ? "#eef1fe" : "#fff")),
+            pointBorderColor: ws.map((x) => (x.unsettled ? "#b9c7f5" : "#6f9bec")),
+            pointBorderWidth: 2, pointRadius: 4, pointHoverRadius: 6, order: 1,
+            // 待定占比 >30% 的周还会变，那一段画成虚线 + 浅色
+            segment: {
+              borderDash: (c) => (unsettled[c.p0DataIndex] || unsettled[c.p1DataIndex] ? [5, 4] : undefined),
+              borderColor: (c) => (unsettled[c.p0DataIndex] || unsettled[c.p1DataIndex] ? "#b9c7f5" : "#6f9bec"),
+            },
+          },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        layout: { padding: { top: 22 } },
+        plugins: {
+          legend: { position: "top", align: "start", labels: { usePointStyle: true, pointStyle: "circle", boxWidth: 8, boxHeight: 8, padding: 14, font: { size: 12 } } },
+          valueLabels: { maxLabels: 40, showStackTotal: true, lineLabels: false },
+          hoverGuide: { enabled: true },
+          tooltip: {
+            displayColors: true, bodyFont: { size: 12.5, weight: "500" },
+            callbacks: {
+              afterBody(items) {
+                const x = ws[items[0].dataIndex];
+                return ["适用会话 " + x.applicable + " · 待定占比 " + x.pendingRate + "%" +
+                  (x.rate === null ? " · 闭环率不可用（窗口未满）" : x.unsettled ? " · 闭环率还会变" : "")];
+              },
+            },
+          },
+        },
+        scales: {
+          x: { stacked: true, grid: { display: false }, border: { display: false }, ticks: { padding: 6 } },
+          y: { stacked: true, beginAtZero: true, grid: { color: "#f2f4fa", drawTicks: false }, border: { display: false }, ticks: { padding: 10, maxTicksLimit: 6 } },
+          y1: { position: "right", min: 0, max: 100, grid: { display: false }, border: { display: false }, ticks: { padding: 8, maxTicksLimit: 6, callback: (v) => v + "%" } },
+        },
+      },
+    });
+  }
+  setTotal("totalLoopWeek", "整体闭环率：", o.rate === null ? "—" : o.rate + "%");
+  const un = ws.filter((x) => x.unsettled).map((x) => "第 " + Number(x.week.slice(5)) + " 周");
+  $("hintLoopWeek").textContent = un.length ? un.join("、") + " 待定占比超 30%，闭环率还会变" : "各周窗口均已满";
+  $("loopWeekNote").innerHTML =
+    "口径：闭环 = 咨询后 7 天内该账户名下收到过填写数据；判的是<b>账户</b>不是某一张表，大账户会偏高。<br>" +
+    "适用会话 = 业务闭环标了是 / 否 / 待定（「不适用」和空已排除）；闭环率 = 是 ÷（是 + 否），分母不含待定。" +
+    '<span class="dim-note"><br>待定 = 咨询还没满 7 天、结论未定，窗口满了会自动变成是或否；' +
+    "待定占比超 30% 的周，折线画成浅色虚线，完全没有已判定样本的周直接断开。</span>";
+
+  // 图二：按业务分型（只用窗口已满的行），横向条形图 + 整体参考线
+  const types = loop.types || [];
+  destroyChart("loopType");
+  if (chartReady() && types.length) {
+    const cv = $("chartLoopType");
+    charts.loopType = new Chart(cv, {
+      type: "bar",
+      data: {
+        labels: types.map((x) => x.type + (x.small ? "（样本少）" : "")),
+        datasets: [{
+          label: "闭环率",
+          data: types.map((x) => x.rate),
+          backgroundColor: types.map((x) => (x.small ? "#d3d8e6" : "#6f9bec")),
+          hoverBackgroundColor: types.map((x) => (x.small ? "#c6ccdd" : "#5a8ae8")),
+          borderRadius: 20, borderSkipped: false, barPercentage: .58, categoryPercentage: .82,
+          customLabels: types.map((x) => "场次 " + x.sessions + " ｜ 闭环率 " + (x.rate === null ? "—" : x.rate.toFixed(1) + "%")),
+          labelInk: types.map((x) => (x.small ? "#9aa0b4" : "#454b69")),
+        }],
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true, maintainAspectRatio: false,
+        layout: { padding: { right: 190 } },
+        plugins: {
+          legend: { display: false },
+          valueLabels: { maxLabels: 40, showStackTotal: false },
+          refLine: { value: o.rate, label: "整体 " + (o.rate === null ? "—" : o.rate + "%"), color: "#8b90a7" },
+          tooltip: {
+            callbacks: {
+              title: (i) => types[i[0].dataIndex].type,
+              label: (c) => {
+                const x = types[c.dataIndex];
+                return "闭环 " + x.yes + " / 未闭环 " + x.no + " · 闭环率 " + x.rate + "%";
+              },
+            },
+          },
+        },
+        scales: {
+          x: { min: 0, max: 100, grid: { color: "#f2f4fa", drawTicks: false }, border: { display: false }, ticks: { callback: (v) => v + "%", maxTicksLimit: 6 } },
+          y: { grid: { display: false }, border: { display: false }, ticks: { padding: 8, font: { size: 12 } } },
+        },
+      },
+    });
+  }
+  const small = types.filter((x) => x.small);
+  setTotal("totalLoopType", "窗口已满：", o.closed + " 场");
+  $("hintLoopType").textContent = small.length ? "灰色为场次不足 10 的分型，样本太小" : "";
+  $("loopTypeNote").innerHTML =
+    "口径：闭环 = 咨询后 7 天内该账户名下收到过填写数据；判的是<b>账户</b>不是某一张表，大账户会偏高。<br>" +
+    "只统计窗口已满的会话（业务闭环 = 是或否），待定不参与；虚线为整体闭环率 <b>" +
+    (o.rate === null ? "—" : o.rate + "%") + "</b>（是 " + o.yes + " / 否 " + o.no + "）。" +
+    (small.length ? '<span class="dim-note"><br>' + small.map((x) => x.type + "（" + x.sessions + " 场）").join("、") + " 场次少于 10，仅作参考。</span>" : "");
+}
+
 // ============== 周报 ==============
 
 const DOW_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
@@ -1227,50 +1398,6 @@ function renderWeekly(week) {
     (cmp ? ratio(w.eff.durMin, cmp.prev.eff.durMin) : num("—")) +
     (cmp && cmp.yoy ? ratio(w.eff.durMin, cmp.yoy.eff.durMin) : num("—")) + "</tr></tbody>";
 
-  // 六、业务分型 × 建表转化（从有标注的那周起才有数据）
-  const bizBlock = $("blockBiz");
-  const bizRows = w.bizTypes || [];
-  bizBlock.hidden = bizRows.length === 0;
-  if (bizRows.length) {
-    const findBiz = (src, type) => (src && src.bizTypes ? src.bizTypes.find((x) => x.type === type) : null);
-    const bizCell = (x, field, prevRow, yoyRow, suffix) =>
-      '<td class="num dual"><span class="dl-strong">' + x[field] + (suffix || "") + "</span>" +
-      '<span class="dl-row"><i>环</i>' + pct1(x[field], prevRow ? prevRow[field] : null) + "</span>" +
-      (cmp && cmp.yoy ? '<span class="dl-row"><i>同</i>' + pct1(x[field], yoyRow ? yoyRow[field] : null) + "</span>" : "") +
-      "</td>";
-
-    $("tblBiz").innerHTML =
-      '<thead><tr><th>业务分型</th><th class="num">会话数</th><th class="num">建表率</th>' +
-      '<th class="num">对口</th><th class="num">建完收到数据</th><th class="num">Jiri 代建（MCP）</th>' +
-      "</tr></thead><tbody>" +
-      bizRows.map((x) => {
-        const p = cmp ? findBiz(cmp.prev, x.type) : null;
-        const y = cmp && cmp.yoy ? findBiz(cmp.yoy, x.type) : null;
-        return "<tr><td>" + x.type + "</td>" +
-          bizCell(x, "sessions", p, y) +
-          bizCell(x, "builtRate", p, y, "%") +
-          bizCell(x, "onTargetRate", p, y, "%") +
-          bizCell(x, "gotDataRate", p, y, "%") +
-          bizCell(x, "jiriBuiltRate", p, y, "%") + "</tr>";
-      }).join("") +
-      (() => {
-        const sum = (k) => bizRows.reduce((a, x) => a + x[k], 0);
-        const n = sum("sessions");
-        const r = (k) => (n ? ((sum(k) / n) * 100).toFixed(1) : 0);
-        return '<tr class="sum"><td>合计</td>' + num(n) + num(r("built") + "%") +
-          num(r("onTarget") + "%") + num(r("gotData") + "%") + num(r("jiriBuilt") + "%") + "</tr>";
-      })() + "</tbody>";
-
-    const pend = bizRows.reduce((a, x) => a + x.pending, 0);
-    $("bizNote").innerHTML =
-      "口径：分母是该分型的会话数；<b>建表率</b> = 「对口建表」标了是或否（都表示建了表，只是对不对口）；" +
-      "<b>对口</b> = 「对口建表 = 是」；<b>建完收到数据</b> = 「对口表单收数据 = 是」；" +
-      "<b>Jiri 代建</b> = 「Jiri代建表单 = 是」。<br>" +
-      "「只跟金数据打交道」「看不出用途」不是建表需求，未计入。" +
-      (pend ? " 当前还有 <b>" + pend + "</b> 条「对口建表」标记为待定（7 天窗口未到或待复核），会随标注推进变化。" : "") +
-      '<br><span class="dim-note">环比对比上周同期、同比对比 4 周前同期，都按相同星期对齐。</span>';
-  }
-
   // 五、仅 Jiri 有效场景
   $("tblJiriScenes").innerHTML =
     '<thead><tr><th>场景</th><th class="num">场次</th><th class="num">占比</th>' +
@@ -1336,6 +1463,7 @@ function initTabs() {
       tab.classList.add("active");
       $("panel-" + tab.dataset.tab).classList.add("active");
       if (tab.dataset.tab === "weekly") loadWeekly();
+      else if (tab.dataset.tab === "loop") loadLoop();
       // 切回图表页签时重绘，避免 canvas 在隐藏状态下算错尺寸
       else if (state.stats) requestAnimationFrame(() => renderCharts(state.stats));
     });

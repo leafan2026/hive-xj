@@ -6,6 +6,7 @@ const JSJ_TABLE_URL = `https://next.jinshuju.net/tables/${FORM_TOKEN}`;
 const K_STATS = "hive:stats:v1";
 const K_ENTRIES = "hive:entries:v1";
 const K_WEEKLY = "hive:weekly:v1";
+const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
 
 // 金数据 per_page 实际封顶 50；next 是 serial_number 偏移，可并行取页
@@ -115,6 +116,7 @@ function trim(e) {
     gotData: e.field_25 || "",      // 对口表单收数据
     inWindow: e.field_26 || "",     // 窗口内收款
     jiriBuilt: e.field_27 || "",    // Jiri 代建表单
+    loop: e.field_30 || "",         // 业务闭环
     creator: e.creator_name || "未知",
   };
 }
@@ -493,6 +495,70 @@ function buildWeekly(rows) {
   return built;
 }
 
+// ============== 业务闭环 ==============
+// 适用会话 = 业务闭环 ∈ {是, 否, 待定}；「不适用」和空一律排除
+//（非有效会话，或业务分型是「看不出用途」—— 读不出要办什么业务，没有闭环可测）
+// 闭环率 = 是 ÷ (是 + 否)，分母不含待定：待定是咨询还没满 7 天，窗口满了会变成是或否
+const LOOP_OK = new Set(["是", "否", "待定"]);
+const PENDING_LIMIT = 30; // 待定占比超过这条线，本周闭环率还会变
+
+function loopRate(yes, no) {
+  return yes + no ? Number(((yes / (yes + no)) * 100).toFixed(1)) : null;
+}
+
+function buildLoop(rows) {
+  const app = rows.filter((r) => LOOP_OK.has(r.loop));
+  const count = (rs, v) => rs.filter((r) => r.loop === v).length;
+
+  const byWeek = {};
+  for (const r of app) {
+    const day = (r.t || "").slice(0, 10);
+    const wk = day ? isoWeek(day) : "";
+    if (!wk) continue;
+    (byWeek[wk] || (byWeek[wk] = [])).push(r);
+  }
+  const weeks = Object.keys(byWeek).sort().map((week) => {
+    const rs = byWeek[week];
+    const yes = count(rs, "是");
+    const no = count(rs, "否");
+    const pending = count(rs, "待定");
+    const pendingRate = rs.length ? Number(((pending / rs.length) * 100).toFixed(1)) : 0;
+    return {
+      week, applicable: rs.length, yes, no, pending, pendingRate,
+      rate: loopRate(yes, no),
+      unsettled: pendingRate > PENDING_LIMIT,
+    };
+  });
+
+  // 按业务分型只用窗口已满的（是 / 否）
+  const closed = app.filter((r) => r.loop !== "待定");
+  const byType = {};
+  for (const r of closed) {
+    const t = r.biz || "未标注";
+    (byType[t] || (byType[t] = [])).push(r);
+  }
+  const types = Object.entries(byType).map(([type, rs]) => ({
+    type,
+    sessions: rs.length,
+    yes: count(rs, "是"),
+    no: count(rs, "否"),
+    rate: loopRate(count(rs, "是"), count(rs, "否")),
+    small: rs.length < 10,
+  })).sort((a, b) => (a.small === b.small ? b.sessions - a.sessions : a.small ? 1 : -1));
+
+  const yes = count(app, "是");
+  const no = count(app, "否");
+  return {
+    weeks, types,
+    overall: {
+      applicable: app.length, yes, no,
+      pending: count(app, "待定"),
+      closed: closed.length,
+      rate: loopRate(yes, no),
+    },
+  };
+}
+
 // ============== 缓存 ==============
 
 async function readMeta(env) {
@@ -521,6 +587,7 @@ async function refreshCache(env) {
       env.CACHE.put(K_STATS, JSON.stringify(stats)),
       env.CACHE.put(K_ENTRIES, JSON.stringify(rows)),
       env.CACHE.put(K_WEEKLY, JSON.stringify(buildWeekly(rows))),
+      env.CACHE.put(K_LOOP, JSON.stringify(buildLoop(rows))),
       env.CACHE.put(K_META, JSON.stringify(meta)),
     ]);
     console.log("[refresh] ok", JSON.stringify(meta));
@@ -717,6 +784,7 @@ async function renderPage(env, user) {
     <button class="tab" data-tab="service">服务概览</button>
     <button class="tab" data-tab="trend">会话量趋势与来源</button>
     <button class="tab" data-tab="scene">业务场景与套餐</button>
+    <button class="tab" data-tab="loop">业务闭环</button>
   </nav>
 
   <section class="panel active" id="panel-weekly">
@@ -752,11 +820,6 @@ async function renderPage(env, user) {
       <div class="table-wrapper"><table class="report-table" id="tblJiriScenes"></table></div>
     </div>
 
-    <div class="report-block" id="blockBiz" hidden>
-      <h3>六、业务分型 × 建表转化</h3>
-      <div class="table-wrapper"><table class="report-table" id="tblBiz"></table></div>
-      <div class="note" id="bizNote"></div>
-    </div>
 
   </section>
 
@@ -792,6 +855,29 @@ async function renderPage(env, user) {
           <span class="chart-hint" id="hintDayCost"></span>
         </div>
         <canvas id="chartDayCost"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-loop">
+    <div class="grid">
+      <div class="chart-card wide tall">
+        <div class="chart-head">
+          <h3>业务闭环 · 每周趋势</h3>
+          <span class="chart-total" id="totalLoopWeek"></span>
+          <span class="chart-hint" id="hintLoopWeek"></span>
+        </div>
+        <canvas id="chartLoopWeek"></canvas>
+        <div class="note" id="loopWeekNote"></div>
+      </div>
+      <div class="chart-card wide tall">
+        <div class="chart-head">
+          <h3>业务闭环 · 按业务分型</h3>
+          <span class="chart-total" id="totalLoopType"></span>
+          <span class="chart-hint" id="hintLoopType"></span>
+        </div>
+        <canvas id="chartLoopType"></canvas>
+        <div class="note" id="loopTypeNote"></div>
       </div>
     </div>
   </section>
@@ -1105,6 +1191,18 @@ export default {
         resolvedFrom: range.from,
         resolvedTo: range.to,
       });
+    }
+
+    if (path === "/api/loop") {
+      const [loop, meta] = await Promise.all([
+        env.CACHE.get(K_LOOP, { type: "json" }),
+        readMeta(env),
+      ]);
+      if (!loop) {
+        kickoff(env, ctx, meta);
+        return json({ success: true, building: true, meta: await readMeta(env) });
+      }
+      return json({ success: true, loop, meta });
     }
 
     if (path === "/api/weekly") {
