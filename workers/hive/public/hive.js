@@ -1070,14 +1070,14 @@ function renderLoop(loop) {
         datasets: [
           { type: "bar", label: "闭环 是", data: ws.map((x) => x.yes), backgroundColor: "#5cc191", stack: "s", borderColor: "#fff", borderWidth: { top: 2 }, borderRadius: 2, borderSkipped: false, barPercentage: .6, order: 3 },
           { type: "bar", label: "未闭环 否", data: ws.map((x) => x.no), backgroundColor: "#ef8f8a", stack: "s", borderColor: "#fff", borderWidth: { top: 2 }, borderRadius: 2, borderSkipped: false, barPercentage: .6, order: 3 },
-          { type: "bar", label: "待定（窗口未满）", data: ws.map((x) => x.pending), backgroundColor: "#d3d8e6", stack: "s", borderColor: "#fff", borderWidth: { top: 2 }, borderRadius: { topLeft: 5, topRight: 5 }, borderSkipped: false, barPercentage: .6, order: 3 },
+          { type: "bar", label: "待定（结果未定）", data: ws.map((x) => x.pending), backgroundColor: "#d3d8e6", stack: "s", borderColor: "#fff", borderWidth: { top: 2 }, borderRadius: { topLeft: 5, topRight: 5 }, borderSkipped: false, barPercentage: .6, order: 3 },
           {
             type: "line", label: "闭环率", data: rates, yAxisID: "y1",
             borderColor: "#6f9bec", borderWidth: 2.5, tension: .35, spanGaps: false,
             pointBackgroundColor: ws.map((x) => (x.unsettled ? "#eef1fe" : "#fff")),
             pointBorderColor: ws.map((x) => (x.unsettled ? "#b9c7f5" : "#6f9bec")),
             pointBorderWidth: 2, pointRadius: 4, pointHoverRadius: 6, order: 1,
-            // 待定占比 >30% 的周还会变，那一段画成虚线 + 浅色
+            // 待定占比 >30% 的周还会往上走，那一段画成虚线 + 浅色
             segment: {
               borderDash: (c) => (unsettled[c.p0DataIndex] || unsettled[c.p1DataIndex] ? [5, 4] : undefined),
               borderColor: (c) => (unsettled[c.p0DataIndex] || unsettled[c.p1DataIndex] ? "#b9c7f5" : "#6f9bec"),
@@ -1099,7 +1099,7 @@ function renderLoop(loop) {
               afterBody(items) {
                 const x = ws[items[0].dataIndex];
                 return ["适用会话 " + x.applicable + " · 待定占比 " + x.pendingRate + "%" +
-                  (x.rate === null ? " · 闭环率不可用（窗口未满）" : x.unsettled ? " · 闭环率还会变" : "")];
+                  (x.rate === null ? " · 闭环率不可用（无适用会话）" : x.unsettled ? " · 下限值，还会往上走" : "")];
               },
             },
           },
@@ -1114,14 +1114,14 @@ function renderLoop(loop) {
   }
   setTotal("totalLoopWeek", "整体闭环率：", o.rate === null ? "—" : o.rate + "%");
   const un = ws.filter((x) => x.unsettled).map((x) => "第 " + Number(x.week.slice(5)) + " 周");
-  $("hintLoopWeek").textContent = un.length ? un.join("、") + " 待定占比超 30%，闭环率还会变" : "各周窗口均已满";
+  $("hintLoopWeek").textContent = un.length ? un.join("、") + " 待定占比超 30%，闭环率是下限、还会往上走" : "各周结果均已定";
   $("loopWeekNote").innerHTML =
     "口径：闭环 = 咨询后 7 天内该账户名下收到过填写数据；判的是<b>账户</b>不是某一张表，大账户会偏高。<br>" +
-    "适用会话 = 业务闭环标了是 / 否 / 待定（「不适用」和空已排除）；闭环率 = 是 ÷（是 + 否），分母不含待定。" +
-    '<span class="dim-note"><br>待定 = 咨询还没满 7 天、结论未定，窗口满了会自动变成是或否；' +
-    "待定占比超 30% 的周，折线画成浅色虚线，完全没有已判定样本的周直接断开。</span>";
+    "适用会话 = 业务闭环标了是 / 否 / 待定（「不适用」和空已排除）；闭环率 = 是 ÷ 全部适用行（是 + 否 + 待定），<b>下限口径</b>。" +
+    '<span class="dim-note"><br>收到过数据的会话立刻判是，不等 7 天满；待定 = 窗口还没满、也还没收到数据，只会往是或否落地。' +
+    "所以当周读数只会低估不会高估，待定清零后就等于最终闭环率。待定占比超 30% 的周，折线画成浅色虚线。</span>";
 
-  // 图二：按业务分型（只用窗口已满的行），横向条形图 + 整体参考线
+  // 图二：按业务分型（全部适用行，含待定），横向条形图 + 整体参考线
   const types = loop.types || [];
   destroyChart("loopType");
   if (chartReady() && types.length) {
@@ -1153,7 +1153,7 @@ function renderLoop(loop) {
               title: (i) => types[i[0].dataIndex].type,
               label: (c) => {
                 const x = types[c.dataIndex];
-                return "闭环 " + x.yes + " / 未闭环 " + x.no + " · 闭环率 " + x.rate + "%";
+                return "闭环 " + x.yes + " / 未闭环 " + x.no + " / 待定 " + x.pending + " · 闭环率 " + x.rate + "%";
               },
             },
           },
@@ -1166,12 +1166,12 @@ function renderLoop(loop) {
     });
   }
   const small = types.filter((x) => x.small);
-  setTotal("totalLoopType", "窗口已满：", o.closed + " 场");
+  setTotal("totalLoopType", "适用会话：", o.applicable + " 场");
   $("hintLoopType").textContent = small.length ? "灰色为场次不足 10 的分型，样本太小" : "";
   $("loopTypeNote").innerHTML =
     "口径：闭环 = 咨询后 7 天内该账户名下收到过填写数据；判的是<b>账户</b>不是某一张表，大账户会偏高。<br>" +
-    "只统计窗口已满的会话（业务闭环 = 是或否），待定不参与；虚线为整体闭环率 <b>" +
-    (o.rate === null ? "—" : o.rate + "%") + "</b>（是 " + o.yes + " / 否 " + o.no + "）。" +
+    "与上图同口径：闭环率 = 是 ÷ 全部适用行（含待定），待定多的分型会被拉低；虚线为整体闭环率 <b>" +
+    (o.rate === null ? "—" : o.rate + "%") + "</b>（是 " + o.yes + " / 否 " + o.no + " / 待定 " + o.pending + "）。" +
     (small.length ? '<span class="dim-note"><br>' + small.map((x) => x.type + "（" + x.sessions + " 场）").join("、") + " 场次少于 10，仅作参考。</span>" : "");
 }
 

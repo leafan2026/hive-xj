@@ -498,12 +498,14 @@ function buildWeekly(rows) {
 // ============== 业务闭环 ==============
 // 适用会话 = 业务闭环 ∈ {是, 否, 待定}；「不适用」和空一律排除
 //（非有效会话，或业务分型是「看不出用途」—— 读不出要办什么业务，没有闭环可测）
-// 闭环率 = 是 ÷ (是 + 否)，分母不含待定：待定是咨询还没满 7 天，窗口满了会变成是或否
+// 闭环率 = 是 ÷ 全部适用行（是 + 否 + 待定），下限口径。
+// 上游判定：窗口内收到过数据立刻判「是」，不等 7 天满；只有「窗口没满且还没收到数据」才留待定。
+// 所以待定只会变成是或否里的一种走向 —— 待定清零后这个公式自然等于最终闭环率，不用换算法。
 const LOOP_OK = new Set(["是", "否", "待定"]);
-const PENDING_LIMIT = 30; // 待定占比超过这条线，本周闭环率还会变
+const PENDING_LIMIT = 30; // 待定占比超过这条线，本周闭环率还会往上走
 
-function loopRate(yes, no) {
-  return yes + no ? Number(((yes / (yes + no)) * 100).toFixed(1)) : null;
+function loopRate(yes, applicable) {
+  return applicable ? Number(((yes / applicable) * 100).toFixed(1)) : null;
 }
 
 function buildLoop(rows) {
@@ -525,15 +527,14 @@ function buildLoop(rows) {
     const pendingRate = rs.length ? Number(((pending / rs.length) * 100).toFixed(1)) : 0;
     return {
       week, applicable: rs.length, yes, no, pending, pendingRate,
-      rate: loopRate(yes, no),
+      rate: loopRate(yes, rs.length),
       unsettled: pendingRate > PENDING_LIMIT,
     };
   });
 
-  // 按业务分型只用窗口已满的（是 / 否）
-  const closed = app.filter((r) => r.loop !== "待定");
+  // 按业务分型：同一个下限口径，全部适用行都进分母（含待定）
   const byType = {};
-  for (const r of closed) {
+  for (const r of app) {
     const t = r.biz || "未标注";
     (byType[t] || (byType[t] = [])).push(r);
   }
@@ -542,19 +543,20 @@ function buildLoop(rows) {
     sessions: rs.length,
     yes: count(rs, "是"),
     no: count(rs, "否"),
-    rate: loopRate(count(rs, "是"), count(rs, "否")),
+    pending: count(rs, "待定"),
+    rate: loopRate(count(rs, "是"), rs.length),
     small: rs.length < 10,
   })).sort((a, b) => (a.small === b.small ? b.sessions - a.sessions : a.small ? 1 : -1));
 
   const yes = count(app, "是");
   const no = count(app, "否");
+  const pending = count(app, "待定");
   return {
     weeks, types,
     overall: {
-      applicable: app.length, yes, no,
-      pending: count(app, "待定"),
-      closed: closed.length,
-      rate: loopRate(yes, no),
+      applicable: app.length, yes, no, pending,
+      settled: app.length - pending,
+      rate: loopRate(yes, app.length),
     },
   };
 }
