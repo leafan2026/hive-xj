@@ -4,6 +4,26 @@
 
 数据源：金数据表单 `EQca39`（AI 会话质检 4.0），约 6600 条会话。
 
+## 部署
+
+平台是 [WDL](https://wdl.dev)（自托管 Workers 运行时），跟 zlb / qa-tickets 同一个
+namespace `lf`、同一个控制面、同一个部署 token。URL 形态 `https://<ns>.<platform-domain>/<worker>/`。
+
+```bash
+cd workers/hive
+npm install
+npx wdl deploy .          # 等价于 npm run deploy
+```
+
+凭证解析顺序：CLI 标志 > shell 环境变量 > `./.env` > `wdl token store`
+（`~/.config/wdl/credentials`，`wdl token set --ns lf --control-url https://admin-run.jinapp.net`）。
+换机器后 store 会丢，把 `.env.example` 复制成 `.env` 填 token 更省事 ——
+注意 CLI **只读运行目录下的 `./.env`**，必须在 `workers/hive/` 里执行。
+取值来源不确定就跑 `npx wdl config explain`，实时日志用 `npx wdl tail hive`。
+
+部署完刷缓存：登录后点页面右上角「重新拉取数据」（`POST /api/refresh` 要 cookie，
+curl 裸调是 401），或等 cron 的下一个半点。
+
 ## 架构
 
 - 金数据 API `per_page` 实际封顶 50 条/页，`next` 参数就是 `serial_number` 偏移，
