@@ -1197,13 +1197,14 @@ function weekLabel(w) {
   return "第 " + Number(w.slice(5)) + " 周（" + w + "）";
 }
 
-function delta(cur, prev, unit, invert) {
+// 颜色只看方向：涨＝红（up），跌＝绿（down）。不按「指标变好变坏」上色 ——
+// 有些指标越小越好（时长、人工占比），但配色跟着语义翻转会让人读不准涨跌。
+function delta(cur, prev, unit) {
   if (prev === null || prev === undefined || prev === 0) return "";
   const d = cur - prev;
   if (Math.abs(d) < 0.05) return '<span class="dl flat">持平</span>';
-  const good = invert ? d < 0 : d > 0;
   const sign = d > 0 ? "+" : "";
-  return '<span class="dl ' + (good ? "up" : "down") + '">' + sign + Number(d.toFixed(1)) + (unit || "") + "</span>";
+  return '<span class="dl ' + (d > 0 ? "up" : "down") + '">' + sign + Number(d.toFixed(1)) + (unit || "") + "</span>";
 }
 
 async function loadWeekly() {
@@ -1252,7 +1253,7 @@ function renderWeekly(week) {
       target: "≤ " + g.guideTarget + "%",
       value: g.guideShare + "%",
       ok: g.guideShare <= g.guideTarget,
-      delta: pg ? delta(g.guideShare, pg.guideShare, "pp", true) : "",
+      delta: pg ? delta(g.guideShare, pg.guideShare, "pp") : "",
       note: "目标把操作引导类问题交给 Jiri，人工时长占比压到 10% 以内",
     },
     ...g.mustHuman.map((m, k) => {
@@ -1262,7 +1263,7 @@ function renderWeekly(week) {
         target: "≤ " + m.target + " 分",
         value: m.raw === null ? "—" : Number(m.raw).toFixed(1) + " 分",
         ok: m.value !== null && m.value <= m.target,
-        delta: prev && prev.raw !== null && m.raw !== null ? delta(m.raw, prev.raw, " 分", true) : "",
+        delta: prev && prev.raw !== null && m.raw !== null ? delta(m.raw, prev.raw, " 分") : "",
         note: m.receptions ? m.receptions + " 次接待" : "本周无接待",
       };
     }),
@@ -1283,20 +1284,19 @@ function renderWeekly(week) {
   const scope = cmp ? dowLabel(cmp.dows) : "";
   const num = (v) => '<td class="num">' + v + "</td>";
   // 单个百分比药丸
-  const pct1 = (cur, prev, invert) => {
+  const pct1 = (cur, prev) => {
     if (prev === null || prev === undefined || prev === 0) return '<span class="dl flat">—</span>';
     const d = ((cur - prev) / prev) * 100;
     if (Math.abs(d) < 0.05) return '<span class="dl flat">持平</span>';
-    const good = invert ? d < 0 : d > 0;
-    return '<span class="dl ' + (good ? "up" : "down") + '">' + (d > 0 ? "+" : "") + d.toFixed(1) + "%</span>";
+    return '<span class="dl ' + (d > 0 ? "up" : "down") + '">' + (d > 0 ? "+" : "") + d.toFixed(1) + "%</span>";
   };
-  const ratio = (cur, prev, suffix, invert) => num(pct1(cur, prev, invert));
+  const ratio = (cur, prev) => num(pct1(cur, prev));
   // 环比与同比合并成一格，省掉两行同期原始值
-  const dual = (cur, prev, yoy, invert) =>
+  const dual = (cur, prev, yoy) =>
     '<td class="num dual">' +
-    '<span class="dl-row"><i>环</i>' + pct1(cur, prev, invert) + "</span>" +
+    '<span class="dl-row"><i>环</i>' + pct1(cur, prev) + "</span>" +
     (yoy === null || yoy === undefined ? "" :
-      '<span class="dl-row"><i>同</i>' + pct1(cur, yoy, invert) + "</span>") +
+      '<span class="dl-row"><i>同</i>' + pct1(cur, yoy) + "</span>") +
     "</td>";
 
   let html =
@@ -1322,7 +1322,7 @@ function renderWeekly(week) {
       dual(w.users, p2.users, g("users")) +
       dual(w.perUser, p2.perUser, g("perUser")) +
       dual(w.aiRate, p2.aiRate, g("aiRate")) +
-      dual(w.manualRate, p2.manualRate, g("manualRate"), true) +
+      dual(w.manualRate, p2.manualRate, g("manualRate")) +
       dual(w.formFillers, p2.formFillers, g("formFillers")) +
       dual(w.productSessions, p2.productSessions, g("productSessions")) + "</tr>";
   }
@@ -1348,8 +1348,8 @@ function renderWeekly(week) {
       (yoyNo ? " · 同＝第 " + yoyNo + " 周同期" : "") + "</span></td>" +
       dual(a.receptions, b.receptions, g("receptions")) +
       dual(a.durHours, b.durHours, g("durHours")) +
-      dual(a.medianMin, b.medianMin, g("medianMin"), true) +
-      dual(a.avgMin, b.avgMin, g("avgMin"), true) +
+      dual(a.medianMin, b.medianMin, g("medianMin")) +
+      dual(a.avgMin, b.avgMin, g("avgMin")) +
       dual(a.sessions, b.sessions, g("sessions")) +
       dual(a.users, b.users, g("users")) + "</tr>";
     return out;
