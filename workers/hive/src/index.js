@@ -4,7 +4,7 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 const JSJ_TABLE_URL = `https://next.jinshuju.net/tables/${FORM_TOKEN}`;
 
 const K_STATS = "hive:stats:v1";
-const K_ENTRIES = "hive:entries:v1";
+const K_ENTRIES = "hive:entries:v2";   // v2: trim() 增加 baid（billing_account_id）
 const K_WEEKLY = "hive:weekly:v1";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
@@ -97,6 +97,7 @@ function trim(e) {
     t: e.field_1 || "",
     url: e.field_2 || "",
     uid: e.field_8 || "",
+    baid: e.field_9 || "",          // billing_account_id，用于「接待企业数」去重
     ch: e.field_4 || "未知",
     dev: e.field_5 || "未知",
     med: e.field_6 || "未知",
@@ -139,6 +140,19 @@ function isoWeek(dayStr) {
   return t.getUTCFullYear() + "W" + String(1 + Math.round((t - ft) / 604800000)).padStart(2, "0");
 }
 
+// "2026-08-04" → 该粒度下的周期键。客户端 periodKeyOf 必须与此保持一致。
+function periodKeyOf(day, grain) {
+  switch (grain) {
+    case "week":    return isoWeek(day);
+    case "month":   return day.slice(0, 7);
+    case "quarter": return day.slice(0, 4) + "-Q" + (Math.floor((Number(day.slice(5, 7)) - 1) / 3) + 1);
+    case "year":    return day.slice(0, 4);
+    default:        return day;
+  }
+}
+
+const UNIQ_GRAINS = ["day", "week", "month", "quarter", "year"];
+
 function bump(obj, k1, k2) {
   const inner = obj[k1] || (obj[k1] = {});
   inner[k2] = (inner[k2] || 0) + 1;
@@ -164,10 +178,20 @@ function buildStats(rows) {
     nature: {}, durSum: 0, durCount: 0, turnsSum: 0,
     // 按天 / 按周的复合桶，供堆叠柱 + 双轴折线用
     byDay: {}, byWeek: {},
+    // 接待人数（user_id 去重）/ 接待企业数（billing_account_id 去重）。
+    // 去重计数不能跨周期相加——一个用户在两天各来一次，按天是 2、按月是 1——
+    // 所以每个粒度各自去重一次，不能让客户端从日粒度累加。
+    uniq: {},
+    // 全区间去重总数。各周期的去重数不能相加，所以「总计」必须单独算一份。
+    uniqAll: { users: 0, orgs: 0 },
     // 交叉分布
     natureByDevice: {}, natureByChannel: {}, effectiveScene: {},
   };
   const durations = [];
+  // 中间态：每个粒度每个周期一组 Set，收尾时转成计数再下发（不然 payload 会很大）
+  const uniqSets = {};
+  for (const g of UNIQ_GRAINS) uniqSets[g] = {};
+  const allUsers = new Set(), allOrgs = new Set();
 
   for (const r of rows) {
     tally(s.jiri, r.jiri);
@@ -187,6 +211,15 @@ function buildStats(rows) {
     const day = r.t ? r.t.slice(0, 10) : "";
     if (day) {
       tally(s.daily, day);
+      for (const g of UNIQ_GRAINS) {
+        const key = periodKeyOf(day, g);
+        if (!key) continue;
+        const slot = uniqSets[g][key] || (uniqSets[g][key] = { u: new Set(), o: new Set() });
+        if (r.uid) slot.u.add(r.uid);
+        if (r.baid) slot.o.add(r.baid);
+      }
+      if (r.uid) allUsers.add(r.uid);
+      if (r.baid) allOrgs.add(r.baid);
       const week = isoWeek(day);
       for (const b of [
         s.byDay[day] || (s.byDay[day] = bucket()),
@@ -252,6 +285,16 @@ function buildStats(rows) {
     durMedian: median(durations),
     turnsAvg: s.total ? Number((s.turnsSum / s.total).toFixed(2)) : 0,
   };
+
+  // Set → 计数。只下发数字，payload 与粒度数成正比而与会话量无关。
+  for (const g of UNIQ_GRAINS) {
+    const out = {};
+    for (const [key, slot] of Object.entries(uniqSets[g])) {
+      out[key] = { users: slot.u.size, orgs: slot.o.size };
+    }
+    s.uniq[g] = out;
+  }
+  s.uniqAll = { users: allUsers.size, orgs: allOrgs.size };
 
   return s;
 }
@@ -899,6 +942,21 @@ async function renderPage(env, user) {
           <span class="chart-total" id="totalDayRecept"></span>
         </div>
         <canvas id="chartDayRecept"></canvas>
+      </div>
+      <div class="chart-card wide tall">
+        <div class="chart-head">
+          <h3>接待人数与企业数</h3>
+          <select id="granUniq" class="chart-grain" title="聚合粒度">
+            <option value="day">按天</option>
+            <option value="week">按周</option>
+            <option value="month">按月</option>
+            <option value="quarter">按季度</option>
+            <option value="year">按年</option>
+          </select>
+          <span class="chart-total" id="totalReceptUniq"></span>
+          <span class="chart-hint" id="hintReceptUniq"></span>
+        </div>
+        <canvas id="chartReceptUniq"></canvas>
       </div>
       <div class="chart-card wide">
         <div class="chart-head"><h3>每周会话来源</h3><span class="chart-total" id="totalWeekChannel"></span></div>

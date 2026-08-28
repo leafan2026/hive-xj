@@ -500,17 +500,19 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
       data: b.data,
       backgroundColor: b.color,
       hoverBackgroundColor: b.color,
-      stack: "s",
+      // grouped：并列柱。用于彼此不构成整体的指标（如接待人数 vs 接待企业数），
+      // 堆叠会读成「人数 + 企业数」这种没有意义的合计。
+      stack: o.grouped ? undefined : "s",
       yAxisID: "y",
       borderWidth: 0,
-      // 单系列做成胶囊，堆叠时只给最上面一段留圆角
-      borderRadius: single ? 20 : (i === bars.length - 1 ? { topLeft: 5, topRight: 5 } : 2),
+      // 单系列做成胶囊，堆叠时只给最上面一段留圆角，并列柱每根都留圆角
+      borderRadius: o.grouped ? { topLeft: 5, topRight: 5 } : (single ? 20 : (i === bars.length - 1 ? { topLeft: 5, topRight: 5 } : 2)),
       borderSkipped: false,
-      // 段与段之间留一条白色细缝，避免颜色直接相接糊在一起
+      // 段与段之间留一条白色细缝，避免颜色直接相接糊在一起（并列柱不需要）
       borderColor: "#fff",
-      borderWidth: single ? 0 : { top: 2, right: 0, bottom: 0, left: 0 },
-      barPercentage: single ? .42 : .62,
-      categoryPercentage: .82,
+      borderWidth: (single || o.grouped) ? 0 : { top: 2, right: 0, bottom: 0, left: 0 },
+      barPercentage: o.grouped ? .8 : (single ? .42 : .62),
+      categoryPercentage: o.grouped ? .74 : .82,
       order: 2,
     })),
     ...lines.map((l) => ({
@@ -532,7 +534,7 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
     })),
   ];
 
-  const scales = cleanScales({ stacked: true, rotate: o.rotate ?? 45, autoSkip: false });
+  const scales = cleanScales({ stacked: !o.grouped, rotate: o.rotate ?? 45, autoSkip: false });
   if (o.yLabel) scales.y.title = { display: true, text: o.yLabel };
   if (lines.length) {
     scales.y1 = {
@@ -559,7 +561,7 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
           labels: { usePointStyle: true, pointStyle: "circle", boxWidth: 8, boxHeight: 8, padding: 14, font: { size: 12 } },
         },
         hoverGuide: { enabled: true },
-        valueLabels: { maxLabels: o.maxLabels ?? 40, showStackTotal: o.showStackTotal !== false, lineLabels: false },
+        valueLabels: { maxLabels: o.maxLabels ?? 40, maxTotalLabels: o.maxTotalLabels ?? 150, showStackTotal: o.showStackTotal !== false && !o.grouped, barTop: !!o.grouped, lineLabels: false },
         tooltip: { displayColors: true, bodyFont: { size: 12.5, weight: "500" } },
       },
       scales,
@@ -576,7 +578,11 @@ const valueLabels = {
     const opt = chart.options.plugins?.valueLabels;
     if (!opt || opt.enabled === false) return;
     const count = chart.data.labels?.length || 0;
-    if (count > (opt.maxLabels || 40)) return;
+    // 合计数和柱内分段值分开限流：分段值挤在柱子里，柱多了必须让位；
+    // 但柱顶的合计数是最该看到的，阈值放宽，画不下的交给下面的碰撞检测丢弃。
+    const showSeg = count <= (opt.maxLabels || 40);
+    const showTotal = count <= (opt.maxTotalLabels || 150);
+    if (!showSeg && !showTotal) return;
 
     const { ctx } = chart;
     const horizontal = chart.options.indexAxis === "y";
@@ -613,7 +619,12 @@ const valueLabels = {
           items.push({ p: 1, text: txt, x: el.x + 8, y: el.y + 4, font: F(600, 12), fill: (ds.labelInk && ds.labelInk[i]) || "#454b69", align: "left" });
           return;
         }
-        if (Math.abs(el.base - el.y) >= 16) {
+        if (opt.barTop) {
+          // 并列柱：值画在柱顶。柱子矮时画在里面会看不见。
+          if (showTotal) {
+            items.push({ p: 1, text: fmtNum(v), x: el.x, y: el.y - 6, font: F(700, 11), fill: "#454b69", halo: true, align: "center" });
+          }
+        } else if (showSeg && Math.abs(el.base - el.y) >= 16) {
           items.push({ p: 2, text: fmtNum(v), x: el.x, y: (el.y + el.base) / 2 + 4, font: F(600, 11), fill: readableInk(color), align: "center" });
         }
         stackTotals[i] = (stackTotals[i] || 0) + v;
@@ -621,7 +632,7 @@ const valueLabels = {
       });
     });
 
-    if (opt.showStackTotal !== false) {
+    if (opt.showStackTotal !== false && showTotal) {
       Object.keys(stackTotals).forEach((i) => {
         const el = chart.getDatasetMeta(0).data[i];
         if (!el) return;
@@ -972,6 +983,41 @@ function rollupDays(byDay, grain) {
   return { keys: order, buckets: order.map((k) => map[k]) };
 }
 
+let uniqGrain = "week";
+
+/**
+ * 接待人数（user_id 去重）/ 接待企业数（billing_account_id 去重）。
+ *
+ * 两个指标不构成整体（一个企业下可能有多个用户），所以用并列柱不堆叠。
+ * 数据只能来自服务端 s.uniq[粒度]——去重计数无法在客户端从日粒度累加，
+ * 同一个用户跨两天来过，按天是 2、按月只能算 1。
+ */
+function drawUniqChart(s) {
+  const g = RECEPT_GRAINS[uniqGrain] || RECEPT_GRAINS.week;
+  const by = (s.uniq && s.uniq[uniqGrain]) || {};
+  const keys = Object.keys(by).sort();   // 五种粒度的键都可直接字典序排
+  const multiYear = new Set(keys.map((k) => k.slice(0, 4))).size > 1;
+
+  drawCombo(
+    "receptUniq", "chartReceptUniq", keys.map((k) => periodLabel(k, uniqGrain, multiYear)),
+    [
+      { label: "接待人数", data: keys.map((k) => by[k].users), color: "#6f9bec" },
+      { label: "接待企业数", data: keys.map((k) => by[k].orgs), color: "#5cc191" },
+    ],
+    [],
+    { grouped: true, maxLabels: g.maxLabels, rotate: g.rotate }
+  );
+
+  // 总计用全区间去重数，不是各周期相加——相加会把跨周期的回访用户重复计数。
+  const all = s.uniqAll || { users: 0, orgs: 0 };
+  const el = $("totalReceptUniq");
+  if (el) {
+    el.innerHTML = "区间去重：接待人数 <b>" + fmtNum(all.users) + "</b> 人 · 企业 <b>" + fmtNum(all.orgs) + "</b> 家";
+  }
+  const hint = $("hintReceptUniq");
+  if (hint) hint.textContent = "各周期去重独立计算，不可相加";
+}
+
 // 设备堆叠柱 + 人工总时长 / 转人工次数双折线
 function drawReceptChart(s) {
   const g = RECEPT_GRAINS[receptGrain] || RECEPT_GRAINS.day;
@@ -998,6 +1044,7 @@ function renderTrend(s) {
 
   // 会话接待分布：粒度可切（天/周/月/季/年），见 drawReceptChart
   drawReceptChart(s);
+  drawUniqChart(s);
 
   // 每周会话来源：渠道堆叠
   const chKeys = bucketKeys(weekB, "ch");
@@ -1592,6 +1639,15 @@ function initActions() {
     gran.addEventListener("change", () => {
       receptGrain = RECEPT_GRAINS[gran.value] ? gran.value : "day";
       if (LAST_STATS) drawReceptChart(LAST_STATS);
+    });
+  }
+
+  const granU = $("granUniq");
+  if (granU) {
+    granU.value = uniqGrain;
+    granU.addEventListener("change", () => {
+      uniqGrain = RECEPT_GRAINS[granU.value] ? granU.value : "week";
+      if (LAST_STATS) drawUniqChart(LAST_STATS);
     });
   }
 
