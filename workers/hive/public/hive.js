@@ -2,11 +2,11 @@
 // worker 挂在 /hive/ 下，所有请求必须带前缀
 const BASE = "/hive";
 
-// 统一的低饱和调色板：饱和度约 55%、明度约 70%，同色系跨图表复用
+// Figma Widget 色板：紫色作为系统主色，粉 / 琥珀 / 青绿承担数据分组。
 const PALETTE = [
-  "#6f9bec", "#5cc191", "#f0b64f", "#a08ae6", "#ef8f8a",
-  "#68c3dd", "#5ec8c0", "#eaa96b", "#c39ae0", "#f0a3a8",
-  "#8a9bef", "#7fd3a8", "#f2bd8e", "#b6a5ee", "#a9b1c4",
+  "#806dfa", "#00c8a9", "#ffb65c", "#ff6689", "#00d9d4",
+  "#5e8ef2", "#b594ff", "#ff8dac", "#77ddd3", "#e5c77f",
+  "#9289e9", "#70bdf7", "#d3b1ef", "#ffbe9d", "#a9afc7",
 ];
 
 const state = { stats: null, facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null, loop: null, loopLoaded: false };
@@ -98,23 +98,53 @@ function fmtNum(v) {
 
 // 分类固定配色，跨图表保持一致
 const COLOR_NATURE = {
-  "有效": "#8fb2f2", "填表人": "#6fcfc6", "无效": "#8fdcaa",
-  "转接未应答": "#f4a8a4", "电话引导·发链接图片": "#6f9bec",
+  "有效": "#806dfa", "填表人": "#00c8a9", "无效": "#77ddd3",
+  "转接未应答": "#ff8dac", "电话引导·发链接图片": "#5e8ef2",
   "内部测试": "#f3d07a", "未标记": "#d3d8e6",
 };
 const COLOR_CHANNEL = {
-  gd_next: "#eaa96b", gd4: "#c0a07a", gd_app: "#a08ae6",
-  wechat_miniapp: "#5cc191", wechat_official: "#ef8f8a",
-  trade_weixin_app: "#6f9bec", "未知": "#bcc2d1",
+  gd_next: "#ffb65c", gd4: "#d2aa79", gd_app: "#b594ff",
+  wechat_miniapp: "#00c8a9", wechat_official: "#ff6689",
+  trade_weixin_app: "#5e8ef2", "未知": "#bcc2d1",
 };
-const COLOR_DEVICE = { pc: "#6f9bec", mobile: "#5cc191", "未知": "#d3d8e6" };
+const COLOR_DEVICE = { pc: "#5e8ef2", mobile: "#00c8a9", "未知": "#d3d8e6" };
 
 function colorFor(map, key, i) {
   return map[key] || PALETTE[i % PALETTE.length];
 }
 
+// hover 时压暗同一支色，保留「鼠标在这根柱子上」的反馈
+function darken(hex, ratio = .82) {
+  const n = parseInt(hex.slice(1), 16);
+  return "#" + [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+    .map((v) => Math.max(0, Math.round(v * ratio)).toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// 仅柱线组合图使用：与普通柱图共享同一组三主题色。
+const COMBO_BAR_TONES = ["#8676FF", "#FF708B", "#383874"];
+const COMBO_COOL_LINES = ["#5554ed", "#7169f5", "#8d5be8"];
+const COMBO_WARM_LINES = ["#e05091", "#c950c8"];
+
+function comboBarTone(index, total) {
+  if (total === 1) return "#8676FF";
+  return COMBO_BAR_TONES[index % COMBO_BAR_TONES.length];
+}
+
+function comboBarFill(index, total) {
+  return comboBarTone(index, total);
+}
+
+function comboLineTone(source, index) {
+  const hex = String(source || "").toLowerCase();
+  const warm = hex === "#ffb65c" || hex === "#ff6689" || hex === "#ff8dac";
+  return warm
+    ? COMBO_WARM_LINES[index % COMBO_WARM_LINES.length]
+    : COMBO_COOL_LINES[index % COMBO_COOL_LINES.length];
+}
+
 // 折线用的横向渐变（蓝 → 紫 → 粉），面积用纵向渐隐
-const LINE_GRADIENT = ["#74c2f5", "#8194f2", "#b183ee", "#e79ecb"];
+const LINE_GRADIENT = ["#00d9d4", "#806dfa", "#b594ff", "#ff6689"];
 
 function strokeGradient(chart, colors) {
   const { ctx, chartArea } = chart;
@@ -138,12 +168,12 @@ let chartsInited = false;
 function chartReady() {
   if (typeof Chart === "undefined") return false;
   if (!chartsInited) {
-    Chart.register(valueLabels, centerText, hoverGuide, ribbonArcs, refLine);
+    Chart.register(valueLabels, centerText, hoverGuide, ribbonArcs, multiRingArcs, refLine);
     Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
     Chart.defaults.font.size = 11.5;
-    Chart.defaults.color = "#8b90a7";
-    Chart.defaults.borderColor = "#f0f2f8";
-    Chart.defaults.plugins.tooltip.backgroundColor = "#12162b";
+    Chart.defaults.color = "#8f8ca9";
+    Chart.defaults.borderColor = "#eeeaf6";
+    Chart.defaults.plugins.tooltip.backgroundColor = "#393878";
     Chart.defaults.plugins.tooltip.padding = 11;
     Chart.defaults.plugins.tooltip.cornerRadius = 10;
     Chart.defaults.plugins.tooltip.displayColors = false;
@@ -157,6 +187,7 @@ function chartReady() {
 }
 
 // 无边框、无纵轴的坐标系（参考里的柱状图都不画纵轴和竖网格）
+// 镜像轴的上下界要自己定，Chart.js 不会再帮忙取整 —— 不处理就会出现 194.4 这种刻度
 function cleanScales(opts) {
   const o = opts || {};
   return {
@@ -176,7 +207,7 @@ function cleanScales(opts) {
   };
 }
 
-// ============== 环形图（参考：粗圆角弧 + 大内圈 + 中心指标） ==============
+// ============== 环形图（一律同心进度环） ==============
 
 function drawDoughnut(key, canvasId, pairs, opts) {
   if (!chartReady()) return;
@@ -195,35 +226,66 @@ function drawDoughnut(key, canvasId, pairs, opts) {
   const colors = shown.map((p, i) => (o.colorMap ? colorFor(o.colorMap, p[0], i) : PALETTE[i % PALETTE.length]));
   const sum = shown.reduce((a, p) => a + p[1], 0);
   const top = shown[0];
-  const pairs2 = shown;
-
-  charts[key] = new Chart(ctx, {
-    type: "doughnut",
-    data: {
-      labels: pairs2.map((p) => p[0]),
-      datasets: [{
-        data: pairs2.map((p) => p[1]),
+  // 只要不止一类就走独立轨道。不按类别数切换画法 —— 同一行里一张单环一张同心环，
+  // 看着就是两套东西。类别多时靠 cutout 保证中心指标不被最里面那圈压住。
+  const isMultiRing = shown.length >= 2;
+  // 多环必须渲染在正方形画布内；否则 CSS 压缩高度后会把数学圆拉成椭圆。
+  ctx.classList.toggle("multi-ring-chart", isMultiRing);
+  const datasets = isMultiRing
+    ? shown.map((p, i) => ({
+        // 每一圈都是该类别占全部的准确比例，灰色部分是同一总量的剩余部分。
+        // 因此三类以上不再被挤在一条彩虹单环里，也不会改变各类别数值。
+        label: p[0],
+        data: [p[1], Math.max(0, sum - p[1])],
+        backgroundColor: [colors[i], "#edf0f8"],
+        borderWidth: 0,
+        borderRadius: 0,
+        spacing: 0,
+        hoverOffset: 0,
+      }))
+    : [{
+        data: shown.map((p) => p[1]),
         backgroundColor: colors,
         borderWidth: 0,
         borderRadius: 0,
         spacing: 0,
         hoverOffset: 0,
         hoverBorderWidth: 0,
-      }],
+      }];
+
+  charts[key] = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels: isMultiRing ? ["类别占比", "剩余比例"] : shown.map((p) => p[0]),
+      datasets,
     },
     options: {
       responsive: true,
-      maintainAspectRatio: false,
-      cutout: "68%",
-      layout: { padding: { top: 6, bottom: 2 } },
+      maintainAspectRatio: isMultiRing,
+      aspectRatio: isMultiRing ? 1 : undefined,
+      // 多环由 multiRingArcs 自绘 270° 的「轨道 + 进度弧」。
+      // Chart.js 仅保留透明命中区；不能直接设 circumference，否则每个 dataset
+      // 会把 270° 再按数据切分，变成一组短弧。
+      cutout: isMultiRing ? "42%" : "71%",
+      // 环始终占完整方形区域；左上数据块仅放在 270° 缺口内，不能挤压环本身。
+      layout: { padding: { top: 6, bottom: 6, left: 6, right: 6 } },
+      // 同心环别做旋转入场：动画中途每圈都只画出一小段，看着像一把散开的短弧，
+      // 切页签时又会重放一次，很容易被当成渲染坏了。
+      animation: isMultiRing ? { animateRotate: false } : undefined,
       plugins: {
         valueLabels: { enabled: false },
-        ribbonArcs: { enabled: true },
-        centerText: {
+        ribbonArcs: { enabled: !isMultiRing },
+        multiRingArcs: {
+          enabled: isMultiRing,
+          items: shown.map((p, i) => ({ label: p[0], value: p[1], color: colors[i] })),
+          total: sum,
+        },
+        centerText: isMultiRing ? { enabled: false } : {
           value: top && sum ? ((top[1] / sum) * 100).toFixed(1) + "%" : "—",
           label: top ? top[0] : "",
         },
         legend: {
+          display: !isMultiRing,
           position: "bottom",
           labels: {
             usePointStyle: true,
@@ -233,26 +295,35 @@ function drawDoughnut(key, canvasId, pairs, opts) {
             padding: 12,
             font: { size: 12 },
             generateLabels(chart) {
-              const ds = chart.data.datasets[0];
-              return chart.data.labels.map((l, i) => ({
-                text: l + "  " + fmtNum(ds.data[i]),
-                fillStyle: ds.backgroundColor[i],
-                strokeStyle: ds.backgroundColor[i],
+              return shown.map((p, i) => ({
+                text: p[0] + "  " + fmtNum(p[1]),
+                fillStyle: colors[i],
+                strokeStyle: colors[i],
                 lineWidth: 0,
                 pointStyle: "circle",
-                hidden: !chart.getDataVisibility(i),
-                index: i,
+                hidden: isMultiRing ? !chart.isDatasetVisible(i) : !chart.getDataVisibility(i),
+                datasetIndex: isMultiRing ? i : undefined,
+                index: isMultiRing ? undefined : i,
               }));
             },
           },
+          onClick(e, item, legend) {
+            const chart = legend.chart;
+            if (isMultiRing) {
+              const visible = chart.isDatasetVisible(item.datasetIndex);
+              chart.setDatasetVisibility(item.datasetIndex, !visible);
+            } else chart.toggleDataVisibility(item.index);
+            chart.update();
+          },
         },
         tooltip: {
+          enabled: !isMultiRing,
           displayColors: true,
           callbacks: {
-            title: (items) => items[0].label,
+            title: (items) => isMultiRing ? shown[items[0].datasetIndex]?.[0] : items[0].label,
             label(c) {
-              const total = c.dataset.data.reduce((a, b) => a + (Number(b) || 0), 0);
-              return c.parsed + "（" + (total ? ((c.parsed / total) * 100).toFixed(1) : 0) + "%）";
+              const value = isMultiRing ? shown[c.datasetIndex]?.[1] : c.parsed;
+              return value + "（" + (sum ? ((value / sum) * 100).toFixed(1) : 0) + "%）";
             },
           },
         },
@@ -293,32 +364,155 @@ const ribbonArcs = {
 
     ctx.save();
     ctx.lineCap = "round";
-    ctx.shadowColor = "rgba(31, 35, 64, .2)";
-    ctx.shadowBlur = 10;
-    ctx.shadowOffsetY = 3;
+    ctx.shadowColor = "rgba(57, 56, 120, .17)";
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetY = 4;
 
-    // 圆头会往两侧各溢出半个线宽，全额溢出会把小占比的段吃掉：
-    // 把两端各内收一点，重叠量压到半个圆头以内，且不超过该段自身跨度的三成
-    const capAngle = (width / 2) / radius;
+    // 圆头会在两端各多探出「半个线宽」那么长的弧。所以线宽要先按本段可用跨度定下来，
+    // 端点再按这个线宽内收，整颗药丸才刚好落在自己的扇区里。
+    // （旧写法内收的是半个圆头，相邻两段必定重叠半个环厚 —— 段数一多就糊成一堆叠起来的胶囊。）
+    const gap = 0.028;                    // 段间留 1.6° 左右的缝，边界看得清
+    const minWidth = width * 0.34;        // 再小的占比也保留可见的粗度
 
-    // 正序绘制：占比大的先画落在底层，小的后画压在上面，保证都看得见
     for (let i = 0; i < meta.data.length; i++) {
       if (!chart.getDataVisibility(i)) continue;
       const arc = meta.data[i];
       if (!arc) continue;
       const span = arc.endAngle - arc.startAngle;
       if (span <= 0) continue;
-      const inset = Math.min(capAngle * 0.5, span * 0.3);
       const hot = active.includes(i);
-      // 跨度小于一个圆头时按比例收细，否则 0.2% 的段会被撑成和 6% 一样大的圆点
-      const minSpan = capAngle * 0.9;
-      const lw = span >= minSpan ? width : Math.max(width * 0.36, width * (span / minSpan));
-      ctx.lineWidth = hot ? lw + 5 : lw;
+      // 一颗两端圆头、长度为 0 的药丸本身就占 lw/radius 的弧，跨度不够就把它收细
+      const lw = Math.max(minWidth, Math.min(width, Math.max(0, span - gap) * radius));
+      const cap = (lw / 2) / radius;
+      const from = arc.startAngle + cap + gap / 2;
+      const to = arc.endAngle - cap - gap / 2;
+      const mid = (arc.startAngle + arc.endAngle) / 2;
+      ctx.lineWidth = lw;
       ctx.strokeStyle = Array.isArray(ds.backgroundColor) ? ds.backgroundColor[i] : ds.backgroundColor;
       ctx.beginPath();
-      ctx.arc(cx, cy, radius, arc.startAngle + inset, arc.endAngle - inset);
+      // 跨度太小时退化成一个圆点：留 1e-3 的长度，否则 canvas 不画零长度子路径
+      ctx.arc(cx, cy, radius, Math.min(from, mid), Math.max(to, mid + 1e-3));
       ctx.stroke();
+      // hover 只加外发光，不再加粗 —— 加粗会让药丸探出自己的扇区
+      if (hot) {
+        ctx.save();
+        ctx.shadowBlur = 18;
+        ctx.shadowOffsetY = 0;
+        ctx.shadowColor = ctx.strokeStyle;
+        ctx.stroke();
+        ctx.restore();
+      }
     }
+    ctx.restore();
+  },
+};
+
+// 多类别环图：用同心「270° 轨道 + 进度弧」表达各类别占比。
+// 图例固定画在左上，进度环放在右下；Chart.js 保留透明的扇区命中区，
+// 因此 tooltip 仍可逐项交互。
+const multiRingArcs = {
+  id: "multiRingArcs",
+  beforeDatasetDraw(chart) {
+    if (!chart.options.plugins?.multiRingArcs?.enabled) return;
+    chart.ctx.save();
+    chart.ctx.globalAlpha = 0;
+  },
+  afterDatasetDraw(chart) {
+    if (!chart.options.plugins?.multiRingArcs?.enabled) return;
+    chart.ctx.restore();
+  },
+  afterDatasetsDraw(chart) {
+    const o = chart.options.plugins?.multiRingArcs;
+    if (!o?.enabled) return;
+    const { ctx } = chart;
+    const items = o.items || [];
+    const total = Number(o.total) || 0;
+    const start = -Math.PI / 2; // 从正上方起笔，270° 缺口正好落在左上
+    const sweep = Math.PI * 1.5;
+    // 以画布里最大的正方形为基准：整个圆环区域不被图例挤压。
+    // 圆心略向右下移动，让起点竖线正好成为左上数据块的右对齐线。
+    const side = Math.min(chart.width, chart.height);
+    const squareLeft = (chart.width - side) / 2;
+    const squareTop = (chart.height - side) / 2;
+    const cx = squareLeft + side * .52;
+    const cy = squareTop + side * .52;
+    const count = items.length;
+    // 外圈连同圆头和阴影都留在安全边距内，不能被画布底边裁断。
+    const outerRadius = side * .44;
+    // 环宽、文字高度与环距都是全站固定规格，不因卡片里的类别数而变化。
+    // 环数只会向中心延伸，不能让某张卡显得更粗、字号更大或环距更松。
+    const textHeight = 16;
+    const ringWidth = 16;
+    const ringGap = 10;
+    const ringStep = ringWidth + ringGap;
+    // 每个对象只有一个起笔锚点：文字、颜色标记和圆环都从这里读取位置。
+    // 禁止再按“第几行文字”另行计算 y，避免环数变化后出现错位。
+    const rings = items.map((item, i) => ({
+      radius: outerRadius - ringStep * i,
+      startX: cx - ringWidth / 2,
+      startY: cy - (outerRadius - ringStep * i),
+    }));
+    // 起笔是圆头：可见边界比几何起点 cx 向左多出半个线宽。
+    // 文本组与圆头之间留一个字高；每条文本的纵向位置另按其对应环的起笔高度计算。
+    const ringStartX = rings[0]?.startX || cx - ringWidth / 2;
+    const legendRight = ringStartX - textHeight;
+
+    ctx.save();
+    ctx.lineCap = "round";
+
+    // 左上：数据块的右边界（百分比）严格对齐最外环圆头的可见起点。
+    // 这里不使用 Chart.js 的底部 legend，让文本只占 270° 缺口，不缩小圆环。
+    items.forEach((item, i) => {
+      // 文字与对应进度环共用同一个 startY。
+      const y = rings[i].startY;
+      const percent = total ? (Number(item.value) / total) * 100 : 0;
+      const label = String(item.label) + "： ";
+      const value = percent.toFixed(1) + "%";
+      ctx.font = '500 ' + textHeight + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+      const labelWidth = ctx.measureText(label).width;
+      ctx.font = '700 ' + textHeight + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+      const valueWidth = ctx.measureText(value).width;
+      const textLeft = legendRight - labelWidth - valueWidth;
+      ctx.beginPath();
+      ctx.fillStyle = item.color;
+      ctx.arc(textLeft - textHeight * .82, y - 1, textHeight * .28, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.font = '500 ' + textHeight + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+      ctx.fillStyle = "#727995";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, textLeft, y);
+      ctx.font = '700 ' + textHeight + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+      ctx.fillStyle = "#2b3153";
+      ctx.fillText(value, textLeft + labelWidth, y);
+    });
+
+    chart.data.datasets.forEach((dataset, i) => {
+      if (!chart.isDatasetVisible(i)) return;
+      const radius = rings[i]?.radius;
+      if (!Number.isFinite(radius)) return;
+      const value = Number(dataset.data[0]) || 0;
+      const rest = Number(dataset.data[1]) || 0;
+      const progress = value + rest ? Math.max(0, Math.min(1, value / (value + rest))) : 0;
+      const end = start + sweep;
+      const progressEnd = start + sweep * progress;
+      ctx.shadowColor = "transparent";
+      ctx.strokeStyle = "#edf0f8";
+      ctx.lineWidth = ringWidth;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, start, end);
+      ctx.stroke();
+      if (progress > 0) {
+        const hot = (chart.tooltip?.getActiveElements?.() || []).some((active) => active.datasetIndex === i);
+        ctx.shadowColor = hot ? dataset.backgroundColor[0] : "rgba(57, 56, 120, .13)";
+        ctx.shadowBlur = hot ? 14 : 7;
+        ctx.shadowOffsetY = hot ? 0 : 3;
+        ctx.strokeStyle = dataset.backgroundColor[0];
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, start, progressEnd);
+        ctx.stroke();
+      }
+    });
     ctx.restore();
   },
 };
@@ -334,11 +528,11 @@ const centerText = {
     const { ctx } = chart;
     ctx.save();
     ctx.textAlign = "center";
-    ctx.fillStyle = "#1f2340";
-    ctx.font = '700 24px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
+    ctx.fillStyle = "#393878";
+    ctx.font = '750 25px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
     ctx.fillText(o.value, arc.x, arc.y + 2);
     if (o.label) {
-      ctx.fillStyle = "#8b90a7";
+      ctx.fillStyle = "#9995b5";
       ctx.font = '12px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
       ctx.fillText(o.label, arc.x, arc.y + 22);
     }
@@ -348,6 +542,8 @@ const centerText = {
 
 // ============== 条形图（参考：胶囊条 + 末端数值 + 双色交替） ==============
 
+const BAR_THREE_COLORS = ["#8676FF", "#FF708B", "#383874"];
+
 function drawBar(key, canvasId, pairs, opts) {
   if (!chartReady()) return;
   const o = opts || {};
@@ -355,7 +551,8 @@ function drawBar(key, canvasId, pairs, opts) {
   const ctx = $(canvasId);
   if (!ctx) return;
 
-  const alt = o.colors || ["#6f9bec", "#f0a385"];
+  // 所有普通柱状图统一只轮换三色，不再引入第四种橙色。
+  const alt = BAR_THREE_COLORS;
   const colors = o.color ? pairs.map(() => o.color) : pairs.map((_, i) => alt[i % alt.length]);
 
   charts[key] = new Chart(ctx, {
@@ -408,13 +605,13 @@ function drawLine(key, canvasId, pairs) {
         label: "会话数",
         data: pairs.map((p) => p[1]),
         borderColor: (c) => strokeGradient(c.chart, LINE_GRADIENT),
-        backgroundColor: (c) => areaGradient(c.chart, "#8194f2"),
+        backgroundColor: (c) => areaGradient(c.chart, "#806dfa"),
         borderWidth: 3,
         fill: true,
         tension: .42,
         pointRadius: 3,
         pointBackgroundColor: "#fff",
-        pointBorderColor: "#8194f2",
+        pointBorderColor: "#806dfa",
         pointBorderWidth: 2,
         pointHoverRadius: 6,
         pointHoverBorderWidth: 3,
@@ -493,13 +690,15 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
   if (!ctx) return;
 
   const single = bars.length === 1;
+  const hasLines = lines.length > 0;
   const datasets = [
     ...bars.map((b, i) => ({
       type: "bar",
       label: b.label,
       data: b.data,
-      backgroundColor: b.color,
-      hoverBackgroundColor: b.color,
+      // 普通柱图沿用业务色；只有带折线的组合图采用参考色阶。
+      backgroundColor: hasLines ? comboBarFill(i, bars.length) : b.color,
+      hoverBackgroundColor: hasLines ? comboBarTone(i, bars.length) : b.color,
       // grouped：并列柱。用于彼此不构成整体的指标（如接待人数 vs 接待企业数），
       // 堆叠会读成「人数 + 企业数」这种没有意义的合计。
       stack: o.grouped ? undefined : "s",
@@ -509,25 +708,26 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
       borderRadius: o.grouped ? { topLeft: 5, topRight: 5 } : (single ? 20 : (i === bars.length - 1 ? { topLeft: 5, topRight: 5 } : 2)),
       borderSkipped: false,
       // 段与段之间留一条白色细缝，避免颜色直接相接糊在一起（并列柱不需要）
-      borderColor: "#fff",
+      borderColor: "#f7f8fc",
       borderWidth: (single || o.grouped) ? 0 : { top: 2, right: 0, bottom: 0, left: 0 },
       barPercentage: o.grouped ? .8 : (single ? .42 : .62),
       categoryPercentage: o.grouped ? .74 : .82,
       order: 2,
     })),
-    ...lines.map((l) => ({
+    ...lines.map((l, i) => ({
       type: "line",
       label: l.label,
       data: l.data,
-      borderColor: l.color,
-      backgroundColor: l.color,
+      borderColor: comboLineTone(l.color, i),
+      backgroundColor: comboLineTone(l.color, i),
       yAxisID: l.axis || "y1",
       tension: .42,
-      borderWidth: 2.5,
-      pointRadius: 2.5,
+      borderWidth: 3.2,
+      borderDash: [7, 5],
+      pointRadius: 0,
       pointBackgroundColor: "#fff",
-      pointBorderColor: l.color,
-      pointBorderWidth: 2,
+      pointBorderColor: comboLineTone(l.color, i),
+      pointBorderWidth: 2.5,
       pointHoverRadius: 5.5,
       fill: false,
       order: 1,
@@ -776,7 +976,8 @@ async function loadDashboard() {
       $("fFrom").value = json.resolvedFrom || "";
       $("fTo").value = json.resolvedTo || "";
     }
-    renderCards(json.stats);
+    // 上一等长周期由 /api/dashboard 同一次响应带回（json.previous），不再单独发第二次请求。
+    renderCards(json.stats, json.previous);
     renderCharts(json.stats);
     markActive();
     $("matchInfo").innerHTML = json.filtered
@@ -808,27 +1009,106 @@ function renderCharts(s) {
   renderCost(s);
 }
 
-function renderCards(s) {
+function renderCards(s, previous) {
   const d = s.derived;
+  // 五张卡统一口径：折线画的都是「该卡片头部那个指标」的日粒度值，
+  // 实线本期、虚线上一等长周期（previous 由 /api/dashboard 同一次响应带回）。
+  const prevDay = previous?.byDay || null;
+  const prevLabel = previous?.from ? "上一周期 " + previous.from + " ~ " + previous.to : "上一等长周期";
+  const rate = (numerator, denominator) => (denominator > 0 ? (numerator / denominator) * 100 : 0);
+  const series = (byDay, valueOf) => sortedKeys(byDay || {}).map((day) => {
+    const value = valueOf(byDay[day] || {});
+    return Number.isFinite(value) ? value : 0;
+  });
+  // 缓存刚升级、日桶里还没有 aiOnly / avoidable 时会算出 NaN，series 已经兜成 0
+  const trendOf = (valueOf) => ({ current: series(s.byDay, valueOf), previous: series(prevDay, valueOf) });
+
   const cards = [
-    { label: "会话总数", value: s.total, sub: "有效会话 " + d.effectiveCount + " 条 · " + d.effectiveRate + "%" },
-    { label: "AI 独立率", value: d.aiRate + "%", sub: "AI 独立接待 " + d.aiOnlyCount + " 条 · 人工在线 " + d.manualCount + " 条 / " + d.manualRate + "%" },
-    { label: "可避免转人工", value: d.avoidableRate + "%", sub: d.avoidableCount + " / " + s.transferred + " 次本可由 AI 承接" },
-    { label: "人工接待总时长", value: d.durSumHours + " 小时", sub: "均 " + fmtDuration(d.durAvg) + " · 中位 " + fmtDuration(d.durMedian) },
-    { label: "接待轮次总计", value: s.turnsSum, sub: "有时长记录会话 " + s.durCount + " 条" },
+    {
+      label: "会话总数", value: s.total, tone: "violet",
+      sub: "有效会话 " + d.effectiveCount + " 条 · " + d.effectiveRate + "%",
+      trend: trendOf((b) => Number(b.total) || 0),
+      hint: "每日会话数",
+    },
+    {
+      label: "AI 独立率", value: d.aiRate + "%", tone: "cyan",
+      sub: "AI 独立接待 " + d.aiOnlyCount + " 条 · 人工在线 " + d.manualCount + " 条 / " + d.manualRate + "%",
+      trend: trendOf((b) => rate(b.aiOnly, b.total)),
+      hint: "每日 AI 独立率",
+    },
+    {
+      label: "可避免转人工", value: d.avoidableRate + "%", tone: "amber",
+      sub: d.avoidableCount + " / " + s.transferred + " 次本可由 AI 承接",
+      trend: trendOf((b) => rate(b.avoidable, b.transfer)),
+      hint: "每日可避免转人工占比（当天没有转人工的记 0）",
+    },
+    {
+      label: "人工接待总时长", value: d.durSumHours + " 小时", tone: "rose",
+      sub: "均 " + fmtDuration(d.durAvg) + " · 中位 " + fmtDuration(d.durMedian),
+      trend: trendOf((b) => (Number(b.dur) || 0) / 3600),
+      hint: "每日人工接待时长（小时）",
+    },
+    {
+      label: "接待轮次总计", value: s.turnsSum, tone: "blue",
+      sub: "有时长记录会话 " + s.durCount + " 条",
+      trend: trendOf((b) => Number(b.turns) || 0),
+      hint: "每日接待轮次",
+    },
   ];
+
   $("cards").innerHTML = cards.map((c) =>
-    '<div class="card"><div class="card-label">' + c.label + '</div>' +
-    '<div class="card-value">' + c.value + '</div>' +
+    '<div class="card card--metric card--' + c.tone + '"><div class="card-summary"><div class="card-label">' + c.label + '</div>' +
+    '<div class="card-value">' + c.value + '</div></div>' +
+    '<div class="card-visual">' + miniTrend(c.trend.current, c.trend.previous, c.tone, c.hint, prevLabel) + '</div>' +
     '<div class="card-sub">' + c.sub + '</div></div>'
   ).join("");
+}
+
+const escAttr = (text) => String(text).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
+// 折线纯图形，看不出画的是什么：统一挂 title（悬停可读）+ aria-label（读屏可读）
+function describe(hint) {
+  const text = escAttr(hint);
+  return ' role="img" aria-label="' + text + '" title="' + text + '"';
+}
+
+function miniTrend(current, previous, tone, hint, prevLabel) {
+  const now = (current || []).filter((value) => Number.isFinite(value));
+  const before = (previous || []).filter((value) => Number.isFinite(value));
+  if (!now.length) return '<span class="metric-trend"' + describe(hint) + '></span>';
+  const max = Math.max(...now.concat(before), 1);
+  const width = 132, height = 58, padding = 5;
+  const points = (values) => values.map((value, index) => {
+    const x = padding + ((width - padding * 2) * (values.length === 1 ? .5 : index / (values.length - 1)));
+    const y = height - padding - ((height - padding * 2) * value / max);
+    return [x.toFixed(1), y.toFixed(1)];
+  });
+  const curve = (values) => {
+    const p = points(values);
+    if (p.length === 1) return "M" + p[0][0] + " " + p[0][1];
+    let path = "M" + p[0][0] + " " + p[0][1];
+    for (let i = 1; i < p.length; i++) {
+      const prev = p[i - 1], next = p[i];
+      const midX = ((Number(prev[0]) + Number(next[0])) / 2).toFixed(1);
+      const midY = ((Number(prev[1]) + Number(next[1])) / 2).toFixed(1);
+      path += i === p.length - 1 ? " Q" + prev[0] + " " + prev[1] + " " + next[0] + " " + next[1] : " Q" + prev[0] + " " + prev[1] + " " + midX + " " + midY;
+    }
+    return path;
+  };
+  const last = points(now).at(-1);
+  const label = hint + (before.length ? "；实线为本期，虚线为" + prevLabel : "");
+  return '<span class="metric-trend metric-trend--' + tone + '"' + describe(label) + '><svg viewBox="0 0 ' + width + " " + height + '">' +
+    '<path class="metric-trend-grid" d="M5 17.5H127 M5 40.5H127"></path>' +
+    (before.length ? '<path class="metric-trend-before" d="' + curve(before) + '"></path>' : "") +
+    '<path class="metric-trend-current" d="' + curve(now) + '"></path>' +
+    '<circle class="metric-trend-dot" cx="' + last[0] + '" cy="' + last[1] + '" r="3.2"></circle></svg></span>';
 }
 
 function renderAI(s) {
   // 只画已质检的部分，未标记会淹没分布
   drawDoughnut("jiri", "chartJiri", sortedPairs(s.jiri).filter((p) => p[0] !== "未标记"));
   drawDoughnut("way", "chartWay", sortedPairs(s.way));
-  drawBar("reason", "chartReason", sortedPairs(s.reason), { horizontal: true, colors: ["#f0a385", "#6f9bec"] });
+  drawBar("reason", "chartReason", sortedPairs(s.reason), { horizontal: true, colors: ["#ff8dac", "#806dfa", "#00c8a9", "#ffb65c"] });
 
   const d = s.derived;
   const top = sortedPairs(s.reason, 1)[0];
@@ -1001,8 +1281,8 @@ function drawUniqChart(s) {
   drawCombo(
     "receptUniq", "chartReceptUniq", keys.map((k) => periodLabel(k, uniqGrain, multiYear)),
     [
-      { label: "接待人数", data: keys.map((k) => by[k].users), color: "#6f9bec" },
-      { label: "接待企业数", data: keys.map((k) => by[k].orgs), color: "#5cc191" },
+      { label: "接待人数", data: keys.map((k) => by[k].users), color: "#806dfa" },
+      { label: "接待企业数", data: keys.map((k) => by[k].orgs), color: "#00c8a9" },
     ],
     [],
     { grouped: true, maxLabels: g.maxLabels, rotate: g.rotate }
@@ -1030,7 +1310,7 @@ function drawReceptChart(s) {
     "dayRecept", "chartDayRecept", labels,
     devKeys.map((k, i) => ({ label: k, data: buckets.map((b) => b.dev[k] || 0), color: colorFor(COLOR_DEVICE, k, i) })),
     [
-      { label: "人工接待总时长（小时）", data: buckets.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f0b64f", axis: "y1" },
+      { label: "人工接待总时长（小时）", data: buckets.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#ffb65c", axis: "y1" },
       { label: "转人工会话接待次数", data: buckets.map((b) => b.transfer), color: "#a9b1c4", axis: "y1" },
     ],
     { maxLabels: g.maxLabels, rotate: g.rotate }
@@ -1083,14 +1363,14 @@ function renderTrend(s) {
   setTotal("totalDeviceNature", "总计：", s.total);
 
   drawDoughnut("status", "chartStatus", sortedPairs(s.status));
-  drawBar("medium", "chartMedium", sortedPairs(s.medium, 12), { horizontal: true, colors: ["#a08ae6", "#68c3dd"] });
+  drawBar("medium", "chartMedium", sortedPairs(s.medium, 12), { horizontal: true, colors: ["#806dfa", "#00d9d4", "#ff8dac", "#ffb65c"] });
 }
 
 function renderScene(s) {
   drawDoughnut("nature2", "chartNature2", sortedPairs(s.nature), { colorMap: COLOR_NATURE });
   setTotal("totalNature2", "记录数量：", s.total);
 
-  drawBar("scene", "chartScene", sortedPairs(s.effectiveScene), { horizontal: true, colors: ["#6f9bec", "#f0a385"] });
+  drawBar("scene", "chartScene", sortedPairs(s.effectiveScene), { horizontal: true, colors: ["#806dfa", "#ff8dac", "#00c8a9", "#ffb65c"] });
   drawDoughnut("plan", "chartPlan", sortedPairs(s.plan));
   // 「无关」占九成以上，会把其他分类压成一条线，剔除后只看真正相关的会话
   const xj = sortedPairs(s.xjCategory).filter((p) => p[0] !== "无关");
@@ -1131,9 +1411,9 @@ function renderCost(s) {
   // 会话接待分布（按周）：会话数柱 + 人工总时长 / 转人工次数双折线
   drawCombo(
     "weekRecept", "chartWeekRecept", weeks,
-    [{ label: "会话数", data: weekB.map((b) => b.total), color: "#6f9bec" }],
+    [{ label: "会话数", data: weekB.map((b) => b.total), color: "#806dfa" }],
     [
-      { label: "人工接待总时长（小时）", data: weekB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f0b64f", axis: "y1" },
+      { label: "人工接待总时长（小时）", data: weekB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#ffb65c", axis: "y1" },
       { label: "转人工会话接待次数", data: weekB.map((b) => b.transfer), color: "#a9b1c4", axis: "y1" },
     ],
     { rotate: 0, showStackTotal: false }
@@ -1148,7 +1428,7 @@ function renderCost(s) {
     [{
       label: "单会话平均时长（分钟）",
       data: weekB.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(2)) : 0)),
-      color: "#f2c94c",
+      color: "#ffb65c",
       axis: "y1",
     }],
     { rotate: 0 }
@@ -1163,10 +1443,10 @@ function renderCost(s) {
 
   drawCombo(
     "dayCost", "chartDayCost", cz.labels,
-    [{ label: "转人工会话数", data: cz.buckets.map((b) => b.transfer), color: "#c3d7f7" }],
+    [{ label: "转人工会话数", data: cz.buckets.map((b) => b.transfer), color: "#b9b3f5" }],
     [
-      { label: "人工接待总时长（小时）", data: cz.buckets.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f0b64f", axis: "y1" },
-      { label: "单会话平均时长（分钟）", data: cz.buckets.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(1)) : 0)), color: "#ef8f8a", axis: "y1" },
+      { label: "人工接待总时长（小时）", data: cz.buckets.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#ffb65c", axis: "y1" },
+      { label: "单会话平均时长（分钟）", data: cz.buckets.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(1)) : 0)), color: "#ff6689", axis: "y1" },
     ],
     { rotate: 60, maxLabels: 40, showStackTotal: false }
   );
@@ -1213,19 +1493,19 @@ function renderLoop(loop) {
       data: {
         labels,
         datasets: [
-          { type: "bar", label: "闭环 是", data: ws.map((x) => x.yes), backgroundColor: "#5cc191", stack: "s", borderColor: "#fff", borderWidth: { top: 2 }, borderRadius: 2, borderSkipped: false, barPercentage: .6, order: 3 },
-          { type: "bar", label: "未闭环 否", data: ws.map((x) => x.no), backgroundColor: "#ef8f8a", stack: "s", borderColor: "#fff", borderWidth: { top: 2 }, borderRadius: 2, borderSkipped: false, barPercentage: .6, order: 3 },
-          { type: "bar", label: "待定（结果未定）", data: ws.map((x) => x.pending), backgroundColor: "#d3d8e6", stack: "s", borderColor: "#fff", borderWidth: { top: 2 }, borderRadius: { topLeft: 5, topRight: 5 }, borderSkipped: false, barPercentage: .6, order: 3 },
+          { type: "bar", label: "闭环 是", data: ws.map((x) => x.yes), backgroundColor: comboBarFill(0, 3), stack: "s", borderColor: "#f7f8fc", borderWidth: { top: 2 }, borderRadius: 2, borderSkipped: false, barPercentage: .6, order: 3 },
+          { type: "bar", label: "未闭环 否", data: ws.map((x) => x.no), backgroundColor: comboBarFill(1, 3), stack: "s", borderColor: "#f7f8fc", borderWidth: { top: 2 }, borderRadius: 2, borderSkipped: false, barPercentage: .6, order: 3 },
+          { type: "bar", label: "待定（结果未定）", data: ws.map((x) => x.pending), backgroundColor: comboBarFill(2, 3), stack: "s", borderColor: "#f7f8fc", borderWidth: { top: 2 }, borderRadius: { topLeft: 5, topRight: 5 }, borderSkipped: false, barPercentage: .6, order: 3 },
           {
             type: "line", label: "闭环率", data: rates, yAxisID: "y1",
-            borderColor: "#6f9bec", borderWidth: 2.5, tension: .35, spanGaps: false,
+            borderColor: comboLineTone("#806dfa", 0), borderWidth: 3.2, borderDash: [7, 5], tension: .35, spanGaps: false,
             pointBackgroundColor: ws.map((x) => (x.unsettled ? "#eef1fe" : "#fff")),
-            pointBorderColor: ws.map((x) => (x.unsettled ? "#b9c7f5" : "#6f9bec")),
-            pointBorderWidth: 2, pointRadius: 4, pointHoverRadius: 6, order: 1,
+            pointBorderColor: ws.map((x) => (x.unsettled ? "#c9c2ff" : comboLineTone("#806dfa", 0))),
+            pointBorderWidth: 2.5, pointRadius: 0, pointHoverRadius: 6, order: 1,
             // 待定占比 >30% 的周还会往上走，那一段画成虚线 + 浅色
             segment: {
-              borderDash: (c) => (unsettled[c.p0DataIndex] || unsettled[c.p1DataIndex] ? [5, 4] : undefined),
-              borderColor: (c) => (unsettled[c.p0DataIndex] || unsettled[c.p1DataIndex] ? "#b9c7f5" : "#6f9bec"),
+              borderDash: () => [7, 5],
+              borderColor: (c) => (unsettled[c.p0DataIndex] || unsettled[c.p1DataIndex] ? "#c9c2ff" : comboLineTone("#806dfa", 0)),
             },
           },
         ],
@@ -1278,8 +1558,8 @@ function renderLoop(loop) {
         datasets: [{
           label: "闭环率",
           data: types.map((x) => x.rate),
-          backgroundColor: types.map((x) => (x.small ? "#d3d8e6" : "#6f9bec")),
-          hoverBackgroundColor: types.map((x) => (x.small ? "#c6ccdd" : "#5a8ae8")),
+          backgroundColor: types.map((x, i) => (x.small ? "#d3d8e6" : PALETTE[i % PALETTE.length])),
+          hoverBackgroundColor: types.map((x, i) => (x.small ? "#c6ccdd" : darken(PALETTE[i % PALETTE.length]))),
           borderRadius: 20, borderSkipped: false, barPercentage: .58, categoryPercentage: .82,
           customLabels: types.map((x) => "场次 " + x.sessions + " ｜ 闭环率 " + (x.rate === null ? "—" : x.rate.toFixed(1) + "%")),
           labelInk: types.map((x) => (x.small ? "#9aa0b4" : "#454b69")),
