@@ -785,7 +785,12 @@ async function loadDashboard() {
   }
 }
 
+// 缓存最近一次渲染用的 stats：切聚合粒度只是换个分桶方式，
+// 没必要重新打接口（顶部筛选变化时才 reload）。
+let LAST_STATS = null;
+
 function renderCharts(s) {
+  LAST_STATS = s;
   renderAI(s);
   renderTrend(s);
   renderScene(s);
@@ -882,24 +887,117 @@ function setTotal(id, label, value) {
   if (el) el.innerHTML = label + "<b>" + fmtNum(value) + "</b>";
 }
 
+// ============================================================================
+// 会话接待分布 · 聚合粒度
+//
+// byDay 是服务端下发的完整日桶（含 dev/ch/nat 三个维度 map），所以年/季/月/周
+// 都能在客户端从它聚合出来，不需要动接口。
+// ============================================================================
+
+const RECEPT_GRAINS = {
+  day:     { label: "按天",   maxLabels: 40, rotate: 60 },
+  week:    { label: "按周",   maxLabels: 40, rotate: 45 },
+  month:   { label: "按月",   maxLabels: 36, rotate: 0  },
+  quarter: { label: "按季度", maxLabels: 24, rotate: 0  },
+  year:    { label: "按年",   maxLabels: 12, rotate: 0  },
+};
+
+let receptGrain = "day";
+
+// ISO 周键。必须和服务端 isoWeek()（src/index.js）算法一致，否则「按周」
+// 会和「会话接待分布（按周）」那张图对不上。
+function isoWeekOf(dayStr) {
+  const d = new Date(dayStr + "T00:00:00Z");
+  if (isNaN(d)) return "";
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  t.setUTCDate(t.getUTCDate() - ((t.getUTCDay() + 6) % 7) + 3);
+  const ft = new Date(Date.UTC(t.getUTCFullYear(), 0, 4));
+  ft.setUTCDate(ft.getUTCDate() - ((ft.getUTCDay() + 6) % 7) + 3);
+  return t.getUTCFullYear() + "W" + String(1 + Math.round((t - ft) / 604800000)).padStart(2, "0");
+}
+
+// "2026-08-04" → 该粒度下的周期键
+function periodKeyOf(day, grain) {
+  switch (grain) {
+    case "week":    return isoWeekOf(day);
+    case "month":   return day.slice(0, 7);
+    case "quarter": return day.slice(0, 4) + "-Q" + (Math.floor((Number(day.slice(5, 7)) - 1) / 3) + 1);
+    case "year":    return day.slice(0, 4);
+    default:        return day;
+  }
+}
+
+// multiYear：范围跨了多个年份时，周标签要带上年份，否则 2025W22 和 2026W22
+// 都会显示成「第 22 周」，两根柱子看不出区别。月/季/年本身已含年份。
+function periodLabel(key, grain, multiYear) {
+  switch (grain) {
+    case "week":    return (multiYear ? key.slice(2, 4) + " 年" : "") + "第 " + Number(key.slice(5)) + " 周";
+    case "quarter": return key.replace("-Q", " Q");
+    case "month":
+    case "year":    return key;
+    default:        return key;   // 按天保持 2026-08-04 原样，和改动前一致
+  }
+}
+
+/**
+ * 把日桶按粒度合并。
+ *
+ * 注意：不能照抄 compressEmptyDays 里那个 reduce——它合并时直接
+ * `dev: {}, ch: {}, nat: {}` 丢掉了三个维度 map（那里只合并空白天，无所谓）。
+ * 这里必须逐 key 累加，否则 bucketKeys(buckets,"dev") 推不出设备维度，
+ * 堆叠柱会塌成一根灰柱子。
+ */
+function rollupDays(byDay, grain) {
+  const order = [];
+  const map = {};
+  const days = Object.keys(byDay || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+
+  for (const day of days) {
+    const key = periodKeyOf(day, grain);
+    if (!key) continue;
+    if (!map[key]) {
+      map[key] = { total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0, dev: {}, ch: {}, nat: {} };
+      order.push(key);
+    }
+    const t = map[key], b = byDay[day];
+    t.total += b.total;
+    t.dur += b.dur;
+    t.durCount += b.durCount;
+    t.transfer += b.transfer;
+    t.turns += b.turns;
+    for (const f of ["dev", "ch", "nat"]) {
+      for (const [k, v] of Object.entries(b[f] || {})) t[f][k] = (t[f][k] || 0) + v;
+    }
+  }
+  return { keys: order, buckets: order.map((k) => map[k]) };
+}
+
+// 设备堆叠柱 + 人工总时长 / 转人工次数双折线
+function drawReceptChart(s) {
+  const g = RECEPT_GRAINS[receptGrain] || RECEPT_GRAINS.day;
+  const { keys, buckets } = rollupDays(s.byDay, receptGrain);
+  const multiYear = new Set(keys.map((k) => k.slice(0, 4))).size > 1;
+  const labels = keys.map((k) => periodLabel(k, receptGrain, multiYear));
+  const devKeys = bucketKeys(buckets, "dev");
+
+  drawCombo(
+    "dayRecept", "chartDayRecept", labels,
+    devKeys.map((k, i) => ({ label: k, data: buckets.map((b) => b.dev[k] || 0), color: colorFor(COLOR_DEVICE, k, i) })),
+    [
+      { label: "人工接待总时长（小时）", data: buckets.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f0b64f", axis: "y1" },
+      { label: "转人工会话接待次数", data: buckets.map((b) => b.transfer), color: "#a9b1c4", axis: "y1" },
+    ],
+    { maxLabels: g.maxLabels, rotate: g.rotate }
+  );
+  setTotal("totalDayRecept", "总计：", buckets.reduce((a, b) => a + b.total, 0));
+}
+
 function renderTrend(s) {
-  const days = sortedKeys(s.byDay);
-  const dayB = days.map((d) => s.byDay[d]);
   const weeks = sortedKeys(s.byWeek);
   const weekB = weeks.map((w) => s.byWeek[w]);
 
-  // 会话接待分布（按天）：设备堆叠柱 + 人工总时长 / 转人工次数双折线
-  const devKeys = bucketKeys(dayB, "dev");
-  drawCombo(
-    "dayRecept", "chartDayRecept", days,
-    devKeys.map((k, i) => ({ label: k, data: dayB.map((b) => b.dev[k] || 0), color: colorFor(COLOR_DEVICE, k, i) })),
-    [
-      { label: "人工接待总时长（小时）", data: dayB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#f0b64f", axis: "y1" },
-      { label: "转人工会话接待次数", data: dayB.map((b) => b.transfer), color: "#a9b1c4", axis: "y1" },
-    ],
-    { maxLabels: 40, rotate: 60 }
-  );
-  setTotal("totalDayRecept", "总计：", dayB.reduce((a, b) => a + b.total, 0));
+  // 会话接待分布：粒度可切（天/周/月/季/年），见 drawReceptChart
+  drawReceptChart(s);
 
   // 每周会话来源：渠道堆叠
   const chKeys = bucketKeys(weekB, "ch");
@@ -1486,6 +1584,16 @@ function initActions() {
   Object.keys(DIM_SELECTS).forEach((id) => {
     $(id).addEventListener("change", reload);
   });
+
+  // 会话接待分布的聚合粒度：纯前端换分桶，不重新请求接口
+  const gran = $("granRecept");
+  if (gran) {
+    gran.value = receptGrain;
+    gran.addEventListener("change", () => {
+      receptGrain = RECEPT_GRAINS[gran.value] ? gran.value : "day";
+      if (LAST_STATS) drawReceptChart(LAST_STATS);
+    });
+  }
 
   $("fRange").addEventListener("change", () => { applyRangePreset(); reload(); });
   $("fFrom").addEventListener("change", reload);

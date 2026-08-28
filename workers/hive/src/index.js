@@ -887,7 +887,17 @@ async function renderPage(env, user) {
   <section class="panel" id="panel-trend">
     <div class="grid">
       <div class="chart-card wide tall">
-        <div class="chart-head"><h3>会话接待分布（按天）</h3><span class="chart-total" id="totalDayRecept"></span></div>
+        <div class="chart-head">
+          <h3>会话接待分布</h3>
+          <select id="granRecept" class="chart-grain" title="聚合粒度">
+            <option value="day">按天</option>
+            <option value="week">按周</option>
+            <option value="month">按月</option>
+            <option value="quarter">按季度</option>
+            <option value="year">按年</option>
+          </select>
+          <span class="chart-total" id="totalDayRecept"></span>
+        </div>
         <canvas id="chartDayRecept"></canvas>
       </div>
       <div class="chart-card wide">
