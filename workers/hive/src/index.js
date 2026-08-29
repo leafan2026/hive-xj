@@ -870,7 +870,7 @@ async function renderPage(env, user) {
 
   <section class="panel" id="panel-service">
     <div class="grid">
-      <div class="chart-card"><h3>Jiri 是否能解答</h3><canvas id="chartJiri"></canvas></div>
+      <div class="chart-card"><h3>人工接待会话 Jiri 能否解答</h3><canvas id="chartJiri"></canvas></div>
       <div class="chart-card"><h3>转人工方式</h3><canvas id="chartWay"></canvas></div>
       <div class="chart-card"><h3>最后接待对象（仅人工 / 仅 Jiri）</h3><canvas id="chartStatus"></canvas></div>
       <div class="chart-card wide"><h3>转人工原因分布</h3><canvas id="chartReason"></canvas></div>

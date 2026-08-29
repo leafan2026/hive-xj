@@ -168,7 +168,7 @@ let chartsInited = false;
 function chartReady() {
   if (typeof Chart === "undefined") return false;
   if (!chartsInited) {
-    Chart.register(valueLabels, centerText, hoverGuide, ribbonArcs, multiRingArcs, refLine);
+    Chart.register(valueLabels, centerText, hoverGuide, ribbonArcs, multiRingArcs, progressRing, refLine);
     Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
     Chart.defaults.font.size = 11.5;
     Chart.defaults.color = "#8f8ca9";
@@ -517,6 +517,89 @@ const multiRingArcs = {
   },
 };
 
+// 单指标进度环：用于「某一个目标分类占比」，避免把不需比较的其他分类画成多环。
+const progressRing = {
+  id: "progressRing",
+  beforeDatasetDraw(chart) {
+    if (!chart.options.plugins?.progressRing?.enabled) return;
+    chart.ctx.save();
+    chart.ctx.globalAlpha = 0;
+  },
+  afterDatasetDraw(chart) {
+    if (!chart.options.plugins?.progressRing?.enabled) return;
+    chart.ctx.restore();
+  },
+  afterDatasetsDraw(chart) {
+    const o = chart.options.plugins?.progressRing;
+    if (!o?.enabled) return;
+    const { ctx } = chart;
+    const side = Math.min(chart.width, chart.height);
+    const cx = (chart.width - side) / 2 + side / 2;
+    const cy = (chart.height - side) / 2 + side / 2;
+    const value = Math.max(0, Number(o.value) || 0);
+    const total = Math.max(0, Number(o.total) || 0);
+    const ratio = total ? Math.min(1, value / total) : 0;
+    // 半圆仪表盘：从左向右沿上半圆推进，底部留给指标文字。
+    const start = Math.PI;
+    const sweep = Math.PI;
+    const radius = side * .39;
+    const width = Math.max(16, Math.min(28, side * .075));
+    const percent = (ratio * 100).toFixed(1) + "%";
+
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineWidth = width;
+    ctx.strokeStyle = "#e9edf7";
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, start, start + sweep);
+    ctx.stroke();
+    if (ratio > 0) {
+      ctx.strokeStyle = o.color || "#8676FF";
+      ctx.shadowColor = "rgba(86, 80, 237, .16)";
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetY = 3;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, start, start + sweep * ratio);
+      ctx.stroke();
+    }
+    ctx.shadowColor = "transparent";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#858ba7";
+    ctx.font = '600 ' + Math.max(12, Math.min(15, side * .038)) + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+    ctx.fillText(o.label || "占比", cx, cy - side * .085);
+    ctx.fillStyle = "#303660";
+    ctx.font = '750 ' + Math.max(36, Math.min(56, side * .15)) + 'px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
+    ctx.fillText(percent, cx, cy + side * .035);
+    ctx.fillStyle = "#858ba7";
+    ctx.font = '500 ' + Math.max(11, Math.min(14, side * .034)) + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+    ctx.fillText(fmtNum(value) + " / " + fmtNum(total) + " 会话", cx, cy + side * .16);
+    ctx.restore();
+  },
+};
+
+function drawProgressRing(key, canvasId, opts) {
+  if (!chartReady()) return;
+  const ctx = $(canvasId);
+  if (!ctx) return;
+  destroyChart(key);
+  ctx.classList.add("progress-ring-chart");
+  const o = opts || {};
+  charts[key] = new Chart(ctx, {
+    type: "doughnut",
+    data: { labels: [o.label || "占比", "其余"], datasets: [{ data: [o.value || 0, Math.max(0, (o.total || 0) - (o.value || 0))], backgroundColor: [o.color || "#8676FF", "#e9edf7"], borderWidth: 0 }] },
+    options: {
+      responsive: true, maintainAspectRatio: true, aspectRatio: 2,
+      animation: { animateRotate: false },
+      plugins: {
+        legend: { display: false }, valueLabels: { enabled: false }, centerText: { enabled: false }, ribbonArcs: { enabled: false }, multiRingArcs: { enabled: false },
+        progressRing: { enabled: true, label: o.label, value: o.value, total: o.total, color: o.color },
+        tooltip: { callbacks: { label: () => fmtNum(o.value || 0) + " / " + fmtNum(o.total || 0) + " 会话" } },
+      },
+    },
+  });
+}
+
 // 环形图中心的大号指标
 const centerText = {
   id: "centerText",
@@ -680,6 +763,110 @@ const hoverGuide = {
   },
 };
 
+// 柱线组合图的图例/悬浮指标统一语义：柱是方块，折线是圆点。
+function comboDatasetColor(dataset, index) {
+  const source = dataset.type === "line" ? dataset.borderColor : dataset.backgroundColor;
+  return Array.isArray(source) ? source[index] || source[0] : source || "#806dfa";
+}
+
+function comboLegend() {
+  return {
+    position: "top",
+    align: "start",
+    labels: {
+      usePointStyle: true,
+      boxWidth: 9,
+      boxHeight: 9,
+      padding: 14,
+      font: { size: 12 },
+      generateLabels(chart) {
+        return Chart.defaults.plugins.legend.labels.generateLabels(chart).map((item) => {
+          const dataset = chart.data.datasets[item.datasetIndex] || {};
+          const color = comboDatasetColor(dataset, item.index);
+          const isLine = dataset.type === "line";
+          return {
+            ...item,
+            fillStyle: color,
+            strokeStyle: color,
+            lineWidth: isLine ? 2 : 0,
+            pointStyle: isLine ? "circle" : "rect",
+          };
+        });
+      },
+    },
+  };
+}
+
+function glassTooltip(context) {
+  const { chart, tooltip } = context;
+  let el = document.getElementById("hive-glass-tooltip");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "hive-glass-tooltip";
+    el.className = "chart-glass-tooltip";
+    document.body.appendChild(el);
+  }
+  if (!tooltip || tooltip.opacity === 0) {
+    el.classList.remove("visible");
+    return;
+  }
+
+  el.replaceChildren();
+  const title = tooltip.title?.[0];
+  if (title) {
+    const titleEl = document.createElement("div");
+    titleEl.className = "chart-glass-tooltip-title";
+    titleEl.textContent = title;
+    el.appendChild(titleEl);
+  }
+  (tooltip.dataPoints || []).forEach((point) => {
+    const row = document.createElement("div");
+    row.className = "chart-glass-tooltip-row";
+    const marker = document.createElement("span");
+    marker.className = "chart-glass-tooltip-marker " + (point.dataset.type === "line" ? "is-line" : "is-bar");
+    marker.style.backgroundColor = comboDatasetColor(point.dataset, point.dataIndex);
+    const text = document.createElement("span");
+    text.textContent = point.dataset.label + "：" + point.formattedValue;
+    row.append(marker, text);
+    el.appendChild(row);
+  });
+  const notes = tooltip.afterBody || [];
+  if (notes.length) {
+    const note = document.createElement("div");
+    note.className = "chart-glass-tooltip-note";
+    note.textContent = notes.join(" ");
+    el.appendChild(note);
+  }
+
+  // 先显示再测量，确保在靠近视窗边缘时也不会溢出。
+  el.classList.add("visible");
+  const canvasBox = chart.canvas.getBoundingClientRect();
+  const box = el.getBoundingClientRect();
+  const left = Math.min(Math.max(12, canvasBox.left + tooltip.caretX + 16), window.innerWidth - box.width - 12);
+  const top = Math.min(Math.max(12, canvasBox.top + tooltip.caretY + 16), window.innerHeight - box.height - 12);
+  el.style.left = left + "px";
+  el.style.top = top + "px";
+}
+
+function comboTooltip(extraCallbacks) {
+  return {
+    enabled: false,
+    displayColors: false,
+    usePointStyle: true,
+    external: glassTooltip,
+    callbacks: {
+      labelColor(context) {
+        const color = comboDatasetColor(context.dataset, context.dataIndex);
+        return { backgroundColor: color, borderColor: color, borderWidth: context.dataset.type === "line" ? 2 : 0 };
+      },
+      labelPointStyle(context) {
+        return { pointStyle: context.dataset.type === "line" ? "circle" : "rect", rotation: 0 };
+      },
+      ...(extraCallbacks || {}),
+    },
+  };
+}
+
 // ============== 组合图：堆叠柱 + 双轴折线 ==============
 
 function drawCombo(key, canvasId, labels, bars, lines, opts) {
@@ -755,14 +942,10 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
       interaction: { mode: "index", intersect: false },
       layout: { padding: { top: 22 } },
       plugins: {
-        legend: {
-          position: "top",
-          align: "start",
-          labels: { usePointStyle: true, pointStyle: "circle", boxWidth: 8, boxHeight: 8, padding: 14, font: { size: 12 } },
-        },
+        legend: comboLegend(),
         hoverGuide: { enabled: true },
         valueLabels: { maxLabels: o.maxLabels ?? 40, maxTotalLabels: o.maxTotalLabels ?? 150, showStackTotal: o.showStackTotal !== false && !o.grouped, barTop: !!o.grouped, lineLabels: false },
-        tooltip: { displayColors: true, bodyFont: { size: 12.5, weight: "500" } },
+        tooltip: comboTooltip(),
       },
       scales,
     },
@@ -1105,9 +1288,22 @@ function miniTrend(current, previous, tone, hint, prevLabel) {
 }
 
 function renderAI(s) {
-  // 只画已质检的部分，未标记会淹没分布
-  drawDoughnut("jiri", "chartJiri", sortedPairs(s.jiri).filter((p) => p[0] !== "未标记"));
-  drawDoughnut("way", "chartWay", sortedPairs(s.way));
+  const jiri = s.jiri || {};
+  const way = s.way || {};
+  const status = s.status || {};
+  // 三张卡都只表达一个决策指标，分母仅包含该指标可比较的会话。
+  drawProgressRing("jiri", "chartJiri", {
+    label: "不能占比", value: jiri["不能"] || 0,
+    total: (jiri["不能"] || 0) + (jiri["能"] || 0) + (jiri["部分"] || 0), color: "#8676FF",
+  });
+  drawProgressRing("way", "chartWay", {
+    label: "沟通后转占比", value: way["沟通后转"] || 0,
+    total: (way["沟通后转"] || 0) + (way["直接转"] || 0), color: "#FF708B",
+  });
+  drawProgressRing("status", "chartStatus", {
+    label: "仅 Jiri 占比", value: status["仅 Jiri"] || 0,
+    total: (status["仅 Jiri"] || 0) + (status["仅人工"] || 0), color: "#383874",
+  });
   drawBar("reason", "chartReason", sortedPairs(s.reason), { horizontal: true, colors: ["#ff8dac", "#806dfa", "#00c8a9", "#ffb65c"] });
 
   const d = s.derived;
@@ -1362,7 +1558,6 @@ function renderTrend(s) {
   );
   setTotal("totalDeviceNature", "总计：", s.total);
 
-  drawDoughnut("status", "chartStatus", sortedPairs(s.status));
   drawBar("medium", "chartMedium", sortedPairs(s.medium, 12), { horizontal: true, colors: ["#806dfa", "#00d9d4", "#ff8dac", "#ffb65c"] });
 }
 
@@ -1515,19 +1710,16 @@ function renderLoop(loop) {
         interaction: { mode: "index", intersect: false },
         layout: { padding: { top: 22 } },
         plugins: {
-          legend: { position: "top", align: "start", labels: { usePointStyle: true, pointStyle: "circle", boxWidth: 8, boxHeight: 8, padding: 14, font: { size: 12 } } },
+          legend: comboLegend(),
           valueLabels: { maxLabels: 40, showStackTotal: true, lineLabels: false },
           hoverGuide: { enabled: true },
-          tooltip: {
-            displayColors: true, bodyFont: { size: 12.5, weight: "500" },
-            callbacks: {
+          tooltip: comboTooltip({
               afterBody(items) {
                 const x = ws[items[0].dataIndex];
                 return ["适用会话 " + x.applicable + " · 待定占比 " + x.pendingRate + "%" +
                   (x.rate === null ? " · 闭环率不可用（无适用会话）" : x.unsettled ? " · 下限值，还会往上走" : "")];
               },
-            },
-          },
+            }),
         },
         scales: {
           x: { stacked: true, grid: { display: false }, border: { display: false }, ticks: { padding: 6 } },
