@@ -9,17 +9,22 @@
 平台是 [WDL](https://wdl.dev)（自托管 Workers 运行时），跟 zlb / qa-tickets 同一个
 namespace `lf`、同一个控制面、同一个部署 token。URL 形态 `https://<ns>.<platform-domain>/<worker>/`。
 
+部署令牌只保存在本地、被 Git 忽略的 `.key` 文件中（内容仅为原始 `ADMIN_TOKEN`）。
+在 `workers/hive/` 目录中确认 `.key` 已由安全方式写入后执行：
+
 ```bash
-cd workers/hive
-npm install
-npx wdl deploy .          # 等价于 npm run deploy
+ADMIN_TOKEN="$(<.key)" CONTROL_URL="https://admin-run.jinapp.net" WDL_NS="lf" \
+  pnpm dlx @wdl-dev/cli@1.7.1 deploy . --ns lf
 ```
 
-凭证解析顺序：CLI 标志 > shell 环境变量 > `./.env` > `wdl token store`
-（`~/.config/wdl/credentials`，`wdl token set --ns lf --control-url https://admin-run.jinapp.net`）。
-换机器后 store 会丢，把 `.env.example` 复制成 `.env` 填 token 更省事 ——
-注意 CLI **只读运行目录下的 `./.env`**，必须在 `workers/hive/` 里执行。
-取值来源不确定就跑 `npx wdl config explain`，实时日志用 `npx wdl tail hive`。
+部署成功会输出已 promote 的 `vN` 与线上 URL；再执行：
+
+```bash
+curl --head --fail --silent --show-error https://lf.run.jinapp.net/hive/
+```
+
+不要使用 `wrangler deploy`。凭证、提交、部署和回退的完整安全流程见仓库根目录
+`.skill/hive-release/SKILL.md`。
 
 部署完刷缓存：登录后点页面右上角「重新拉取数据」（`POST /api/refresh` 要 cookie，
 curl 裸调是 401），或等 cron 的下一个半点。
