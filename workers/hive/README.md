@@ -26,6 +26,17 @@ curl --head --fail --silent --show-error https://lf.run.jinapp.net/hive/
 不要使用 `wrangler deploy`。凭证、提交、部署和回退的完整安全流程见仓库根目录
 `.skill/hive-release/SKILL.md`。
 
+## 本地预览
+
+在 `workers/hive/` 目录运行：
+
+```bash
+pnpm run preview
+```
+
+打开 `http://127.0.0.1:4173/hive/preview` 即可查看合成示例数据。该预览不会读取金数据、
+不会使用生产凭证，也不能触发真实的数据刷新；它只用于检查页面布局、图表和登录后的界面效果。
+
 部署完刷缓存：登录后点页面右上角「重新拉取数据」（`POST /api/refresh` 要 cookie，
 curl 裸调是 401），或等 cron 的下一个半点。
 
@@ -34,7 +45,7 @@ curl 裸调是 401），或等 cron 的下一个半点。
 - 金数据 API `per_page` 实际封顶 50 条/页，`next` 参数就是 `serial_number` 偏移，
   因此按偏移**并行**拉取（并发 10），全量约 13 秒；按 `serial_number` 去重
   （该表 `token` 字段多为 null，不能用作去重键）。
-- 聚合结果与精简后的明细写入 KV（`hive:stats:v1` / `hive:entries:v1` / `hive:meta:v1`），
+- 聚合结果与精简后的明细写入 KV（`hive:stats:v2` / `hive:entries:v2` / `hive:meta:v1`），
   页面只读缓存，接口响应在百毫秒级。
 - cron `*/30 * * * *` 后台刷新；`POST /api/refresh` 手动触发（立即返回 202，
   进度写在 meta 里，前端轮询 `/api/status`）。
@@ -142,7 +153,7 @@ curl 裸调是 401），或等 cron 的下一个半点。
 | 名称 | 用途 |
 |---|---|
 | `JSJ_API_KEY` / `JSJ_API_SECRET` | 金数据 API 凭证 |
-| `AUTH_USERS` | 登录账号，格式 `user1:pass1,user2:pass2`，未配置则不校验 |
+| `AUTH_USERS` | 登录账号，格式 `user1:pass1,user2:pass2`；生产环境必须配置，缺失时服务拒绝访问 |
 
 ## 登录
 

@@ -23,6 +23,12 @@ const DIM_SELECTS = {
 
 function $(id) { return document.getElementById(id); }
 
+function escHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[char]));
+}
+
 // 首屏先占位，避免大片空白
 function renderSkeleton() {
   const labels = ["会话总数", "AI 独立率", "可避免转人工", "人工接待总时长", "接待轮次总计"];
@@ -1101,10 +1107,11 @@ function fillFacets(facets) {
   for (const [id, cfg] of Object.entries(DIM_SELECTS)) {
     const el = $(id);
     const current = el.value;
-    el.innerHTML = '<option value="">' + cfg.placeholder + "</option>" +
-      sortedPairs(facets[cfg.dim]).map((p) =>
-        '<option value="' + p[0] + '">' + p[0] + "（" + p[1] + "）</option>"
-      ).join("");
+    const options = [new Option(cfg.placeholder, "")];
+    for (const [value, count] of sortedPairs(facets[cfg.dim])) {
+      options.push(new Option(value + "（" + count + "）", value));
+    }
+    el.replaceChildren(...options);
     el.value = current;
   }
 }
@@ -1247,7 +1254,7 @@ function renderCards(s, previous) {
   ).join("");
 }
 
-const escAttr = (text) => String(text).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+const escAttr = escHtml;
 
 // 折线纯图形，看不出画的是什么：统一挂 title（悬停可读）+ aria-label（读屏可读）
 function describe(hint) {
@@ -1586,11 +1593,11 @@ function renderScene(s) {
   });
   const scenes = sortedPairs(s.effectiveScene).map((p) => p[0]);
   let html = "<thead><tr><th>业务场景</th>" +
-    plans.map((p) => "<th>" + p + "</th>").join("") + "<th>合计</th></tr></thead><tbody>";
+    plans.map((p) => "<th>" + escHtml(p) + "</th>").join("") + "<th>合计</th></tr></thead><tbody>";
   for (const sc of scenes) {
     const row = s.sceneByPlan[sc] || {};
     const total = plans.reduce((sum, p) => sum + (row[p] || 0), 0);
-    html += "<tr><td>" + sc + "</td>" +
+    html += "<tr><td>" + escHtml(sc) + "</td>" +
       plans.map((p) => "<td>" + (row[p] || "—") + "</td>").join("") +
       "<td><b>" + total + "</b></td></tr>";
   }
@@ -1789,7 +1796,7 @@ function renderLoop(loop) {
     "口径：闭环 = 咨询后 7 天内该账户名下收到过填写数据；判的是<b>账户</b>不是某一张表，大账户会偏高。<br>" +
     "与上图同口径：闭环率 = 是 ÷ 全部适用行（含待定），待定多的分型会被拉低；虚线为整体闭环率 <b>" +
     (o.rate === null ? "—" : o.rate + "%") + "</b>（是 " + o.yes + " / 否 " + o.no + " / 待定 " + o.pending + "）。" +
-    (small.length ? '<span class="dim-note"><br>' + small.map((x) => x.type + "（" + x.sessions + " 场）").join("、") + " 场次少于 10，仅作参考。</span>" : "");
+    (small.length ? '<span class="dim-note"><br>' + small.map((x) => escHtml(x.type) + "（" + x.sessions + " 场）").join("、") + " 场次少于 10，仅作参考。</span>" : "");
 }
 
 // ============== 周报 ==============
@@ -1835,6 +1842,12 @@ async function loadWeekly() {
     }
     state.weeks = json.weeks || [];
     state.weeklyLoaded = true;
+    if (!state.weeks.length) {
+      $("wkHint").textContent = "暂无可展示的周报数据。";
+      document.querySelectorAll("#panel-weekly .report-block").forEach((block) => { block.hidden = true; });
+      return;
+    }
+    document.querySelectorAll("#panel-weekly .report-block").forEach((block) => { block.hidden = false; });
 
     const sel = $("wkSelect");
     sel.innerHTML = state.weeks.slice().reverse().map((w) =>
@@ -2003,7 +2016,7 @@ function renderWeekly(week) {
     '<th class="num">时长环比</th><th class="num">时长同比</th></tr></thead><tbody>' +
     w.scenes.map((x) => {
       const isGuide = x.scene === "操作引导/功能咨询";
-      return "<tr" + (isGuide ? ' class="warn-row"' : "") + "><td>" + x.scene + "</td>" +
+      return "<tr" + (isGuide ? ' class="warn-row"' : "") + "><td>" + escHtml(x.scene) + "</td>" +
         num(x.receptions) + num(x.durMin) +
         '<td class="num strong">' + x.share + "%" + (isGuide ? "（目标 ≤ 10%）" : "") + "</td>" +
         num(Number(x.medianMin).toFixed(1)) + num(Number(x.avgMin).toFixed(1)) +
@@ -2020,7 +2033,7 @@ function renderWeekly(week) {
     '<thead><tr><th>场景</th><th class="num">场次</th><th class="num">占比</th>' +
     '<th class="num">环比</th><th class="num">同比</th></tr></thead><tbody>' +
     w.jiriScenes.map((x) =>
-      "<tr><td>" + x[0] + "</td>" + num(x[1]) +
+      "<tr><td>" + escHtml(x[0]) + "</td>" + num(x[1]) +
       num((w.jiriSceneTotal ? ((x[1] / w.jiriSceneTotal) * 100).toFixed(1) : 0) + "%") +
       (cmp ? ratio(x[1], (cmp.prev.jiriScenes || {})[x[0]] || 0) : num("—")) +
       (cmp && cmp.yoy ? ratio(x[1], (cmp.yoy.jiriScenes || {})[x[0]] || 0) : num("—")) + "</tr>"

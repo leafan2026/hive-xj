@@ -3,7 +3,9 @@ const FORM_TOKEN = "EQca39";
 const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 const JSJ_TABLE_URL = `https://next.jinshuju.net/tables/${FORM_TOKEN}`;
 
-const K_STATS = "hive:stats:v1";
+// v2 补齐日/周桶里的 AI 独立与可避免转人工计数。保留 v1，不删除既有 KV，
+// 首次访问会安全地后台重建新缓存。
+const K_STATS = "hive:stats:v2";
 const K_ENTRIES = "hive:entries:v2";   // v2: trim() 增加 baid（billing_account_id）
 const K_WEEKLY = "hive:weekly:v1";
 const K_LOOP = "hive:loop:v1";
@@ -159,7 +161,11 @@ function bump(obj, k1, k2) {
 }
 
 function bucket() {
-  return { total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0, dev: {}, ch: {}, nat: {} };
+  return {
+    total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0,
+    aiOnly: 0, avoidable: 0,
+    dev: {}, ch: {}, nat: {},
+  };
 }
 
 function median(nums) {
@@ -233,6 +239,8 @@ function buildStats(rows) {
         if (typeof r.dur === "number" && r.dur > 0) { b.dur += r.dur; b.durCount++; }
         if (typeof r.turns === "number") b.turns += r.turns;
         if (r.way) b.transfer++;
+        if (r.st === "仅 Jiri") b.aiOnly++;
+        if (AVOIDABLE_REASONS.has(r.reason)) b.avoidable++;
       }
     }
 
@@ -701,6 +709,20 @@ function resolveRange(q) {
   return resolveNamedRange(q.get("range") || "");
 }
 
+// 当前区间前的等长区间。只在用户明确选择了时间范围时返回，避免把“全部时间”
+// 错当成可比较的周期。
+function previousRange(range) {
+  if (!range?.from || !range?.to) return null;
+  const from = new Date(range.from + "T00:00:00Z");
+  const to = new Date(range.to + "T00:00:00Z");
+  if (isNaN(from) || isNaN(to) || to < from) return null;
+  const days = Math.floor((to - from) / 86400000) + 1;
+  return {
+    from: iso(shift(from, -days)),
+    to: iso(shift(from, -1)),
+  };
+}
+
 function facetsOf(stats) {
   if (!stats) return null;
   return {
@@ -1006,7 +1028,8 @@ async function renderPage(env, user) {
 }
 
 // ============== 登录与会话 ==============
-// AUTH_USERS secret 格式："user1:pass1,user2:pass2"，未配置时不启用验证。
+// AUTH_USERS secret 格式："user1:pass1,user2:pass2"。线上必须配置；
+// 缺失时拒绝所有请求，避免会话质量数据意外公开。
 // 登录后发一个 HMAC 签名的 Cookie 当会话，避免每次都弹浏览器原生对话框；
 // 签名密钥由 AUTH_USERS 派生 —— 改动账号即让所有旧会话失效。
 
@@ -1082,11 +1105,6 @@ function basicUser(request, env) {
   } catch {
     return null;
   }
-}
-
-async function currentUser(request, env) {
-  if (!authEnabled(env)) return "访客";
-  return (await readSession(env, cookieValue(request, COOKIE_NAME))) || basicUser(request, env);
 }
 
 function sessionCookie(token, maxAge) {
@@ -1180,7 +1198,10 @@ export default {
       let body = {};
       try { body = await request.json(); } catch { /* 忽略 */ }
       const pair = String(body.user || "").trim() + ":" + String(body.pass || "");
-      if (!authEnabled(env) || !userList(env).includes(pair)) {
+      if (!authEnabled(env)) {
+        return json({ success: false, error: "服务暂不可用，请联系管理员。" }, 503);
+      }
+      if (!userList(env).includes(pair)) {
         return json({ success: false, error: "账号或密码不正确" }, 401);
       }
       const token = await signSession(env, String(body.user).trim());
@@ -1204,9 +1225,17 @@ export default {
     // 页面只认会话 Cookie；接口额外接受 Basic 头（方便 curl 调试）。
     // 浏览器会把曾经输入过的 Basic 凭证一直自动带上，如果页面也认 Basic，
     // 「退出」清掉 Cookie 后仍会被放进来，表现就是点了没反应。
-    const session = authEnabled(env)
-      ? await readSession(env, cookieValue(request, COOKIE_NAME))
-      : "访客";
+    if (!authEnabled(env)) {
+      if (path === "/") {
+        return new Response("服务暂不可用，请联系管理员。", {
+          status: 503,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
+      return json({ success: false, error: "服务暂不可用，请联系管理员。" }, 503);
+    }
+
+    const session = await readSession(env, cookieValue(request, COOKIE_NAME));
     const user = session || basicUser(request, env);
 
     if (path === "/") {
@@ -1249,6 +1278,7 @@ export default {
       }
       const range = resolveRange(q);
       const filtered = applyFilters(rows, q, range);
+      const previous = previousRange(range);
       return json({
         success: true,
         stats: buildStats(filtered),
@@ -1260,6 +1290,9 @@ export default {
         latestDay: latestDayOf(full),
         resolvedFrom: range.from,
         resolvedTo: range.to,
+        previous: previous
+          ? { ...buildStats(applyFilters(rows, q, previous)), ...previous }
+          : null,
       });
     }
 

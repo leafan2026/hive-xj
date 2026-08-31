@@ -23,7 +23,7 @@ Read `workers/hive/README.md` for metric/business definitions before changing a 
 ## Data and API invariants
 
 - The Worker uses 金数据 AI 会话质检 form `EQca39`. Runtime credentials are `JSJ_API_KEY` and `JSJ_API_SECRET`; they must remain runtime secrets.
-- KV caches are `hive:stats:v1`, `hive:entries:v2`, `hive:weekly:v1`, `hive:loop:v1`, and `hive:meta:v1` through binding `CACHE`.
+- KV caches are `hive:stats:v2`, `hive:entries:v2`, `hive:weekly:v1`, `hive:loop:v1`, and `hive:meta:v1` through binding `CACHE`.
 - `/api/dashboard` respects the top filter bar. `/api/weekly` and `/api/loop` are independent cached reports; do not imply that top filters change them unless the backend contract changes too.
 - Business-scene charts and the scene × plan table use only `会话性质=有效`. An empty plan is 免费版.
 - Do not commit captured XHR payloads. If a user supplies fixtures, use them only for local visual validation unless they explicitly request a sanitized test fixture.
