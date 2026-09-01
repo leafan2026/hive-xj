@@ -30,7 +30,7 @@ const fullStats = {
 const cache = {
   async get(key) {
     if (key === "hive:entries:v2") return rows;
-    if (key === "hive:stats:v4") return fullStats;
+    if (key === "hive:stats:v5") return fullStats;
     if (key === "hive:weekly:v1") return [];
     if (key === "hive:loop:v1") return { weeks: [], types: [], overall: { applicable: 0, yes: 0, no: 0, pending: 0, rate: null } };
     if (key === "hive:meta:v1") return { status: "ok", updatedAt: new Date().toISOString(), total: rows.length };

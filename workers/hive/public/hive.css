@@ -273,7 +273,7 @@ body {
 .hourly-day-tab:hover { border-color: #c8c0ed; color: var(--primary); }
 .hourly-day-tab.active { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); font-weight: 650; }
 
-/* 人工服务忙闲图：每个格子代表一个 30 分钟，空时段直接留白。 */
+/* 人工服务忙闲图：每个格子代表 15 分钟，空时段直接留白。 */
 #panel-service .service-busy-card { min-height: 0; }
 .manual-busy-modes { display: flex; gap: 7px; margin-left: auto; }
 .manual-busy-modes button {
@@ -289,19 +289,20 @@ body {
 }
 .manual-busy-modes button:hover { border-color: #c8c0ed; color: var(--primary); }
 .manual-busy-modes button[aria-pressed="true"] { border-color: #8676ff; background: #f1efff; color: #635bea; font-weight: 650; }
-.manual-busy-layout { display: grid; grid-template-columns: max-content 190px; gap: 22px; align-items: start; justify-content: start; }
+.manual-busy-layout { display: block; }
 .manual-busy-grid {
   display: grid;
-  grid-template-columns: 70px repeat(19, 30px);
-  gap: 10px;
+  grid-template-columns: 70px repeat(38, minmax(0, 1fr));
+  gap: 8px;
   align-items: center;
+  width: 100%;
   min-width: 0;
 }
 .manual-busy-time, .manual-busy-day { color: var(--muted); font-size: 10.5px; line-height: 1; white-space: nowrap; }
 .manual-busy-time { min-height: 15px; text-align: center; transform: translateX(-50%); }
 .manual-busy-corner { transform: none; }
 .manual-busy-day { padding-right: 6px; text-align: right; }
-.manual-busy-cell { display: block; height: 58px; width: 30px; border-radius: 999px; transition: transform .14s ease, box-shadow .14s ease; }
+.manual-busy-cell { display: block; height: 58px; width: auto; border-radius: 999px; transition: transform .14s ease, box-shadow .14s ease; }
 .manual-busy-cell:hover { transform: scale(1.11); box-shadow: 0 0 0 2px rgba(56, 56, 116, .34); position: relative; z-index: 1; }
 .manual-busy-cell.busy-empty { background: transparent; border: 0; }
 .manual-busy-cell.busy-empty:hover { transform: none; box-shadow: none; }
@@ -310,11 +311,13 @@ body {
 .manual-busy-cell.busy-level-3 { background: #aa9fff; }
 .manual-busy-cell.busy-level-4 { background: #8676ff; }
 .manual-busy-cell.busy-level-5 { background: #383874; }
-.manual-busy-peaks { display: grid; gap: 11px; border-radius: 13px; border: 1px solid #ebe8ff; background: #faf9ff; padding: 13px 14px; }
-.manual-busy-peaks > div + div { border-top: 1px solid #e9e7f5; padding-top: 11px; }
+.manual-busy-footer { display: flex; align-items: center; gap: 16px; width: max-content; margin-top: 14px; }
+.manual-busy-peaks { display: flex; border-radius: 13px; border: 1px solid #ebe8ff; background: #faf9ff; padding: 12px 14px; }
+.manual-busy-peaks > div { min-width: 156px; }
+.manual-busy-peaks > div + div { border-left: 1px solid #e9e7f5; margin-left: 14px; padding-left: 14px; }
 .manual-busy-peaks span, .manual-busy-peaks small { display: block; color: var(--muted); font-size: 11px; }
 .manual-busy-peaks b { display: block; margin: 4px 0 3px; color: #383874; font-size: 16px; letter-spacing: -.2px; }
-.manual-busy-legend { display: flex; justify-content: flex-end; align-items: center; gap: 4px; margin-top: 12px; color: var(--muted); font-size: 11px; }
+.manual-busy-legend { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; }
 .manual-busy-legend span { margin: 0 3px; }
 .manual-busy-legend i { display: block; width: 16px; height: 9px; border-radius: 999px; }
 .manual-busy-legend .busy-level-1 { background: #f1efff; }
@@ -527,9 +530,11 @@ tr.loading-row td { text-align: center; color: var(--muted); padding: 30px; }
   .match-info { margin-left: 0; width: 100%; }
   .card-value { font-size: 24px; }
   .manual-busy-modes { width: 100%; margin-left: 0; }
-  .manual-busy-layout { grid-template-columns: 1fr; gap: 16px; }
-  .manual-busy-grid { grid-template-columns: 58px repeat(19, minmax(8px, 1fr)); gap: 3px; }
+  .manual-busy-grid { grid-template-columns: 58px repeat(38, minmax(5px, 1fr)); gap: 3px; }
   .manual-busy-cell { height: 42px; width: auto; border-radius: 999px; }
+  .manual-busy-footer { width: 100%; flex-wrap: wrap; }
+  .manual-busy-peaks { width: 100%; }
+  .manual-busy-peaks > div { flex: 1 1 0; min-width: 0; }
   .manual-busy-time { font-size: 9px; }
   .manual-busy-day { font-size: 10px; }
 }

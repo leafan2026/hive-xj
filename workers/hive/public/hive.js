@@ -1720,8 +1720,8 @@ function drawHourlyService(s) {
 }
 
 const BUSY_START_MINUTE = 9 * 60 + 30;
-const BUSY_SLOT_MINUTES = 30;
-const BUSY_SLOT_COUNT = 19;
+const BUSY_SLOT_MINUTES = 15;
+const BUSY_SLOT_COUNT = 38;
 const BUSY_COLORS = ["busy-empty", "busy-level-1", "busy-level-2", "busy-level-3", "busy-level-4", "busy-level-5"];
 
 function minuteLabel(minute) {
@@ -1752,7 +1752,6 @@ function drawManualBusy(s) {
   const days = Array.isArray(busy.days) ? busy.days : [];
   const grid = $("manualBusyGrid");
   const hint = $("manualBusyHint");
-  const note = $("manualBusyNote");
   if (!grid) return;
 
   const mode = state.manualBusyMode === "incoming" ? "incoming" : "active";
@@ -1763,7 +1762,7 @@ function drawManualBusy(s) {
     grid.replaceChildren();
     setBusyPeak("manualBusyPeak", "manualBusyPeakDetail", null, [], mode);
     setBusyPeak("manualBusySecond", "manualBusySecondDetail", null, [], mode);
-    if (note) note.textContent = "当前筛选条件下没有可展示的人工服务数据。";
+    if (hint) hint.textContent = "当前筛选条件下没有可展示的人工服务数据。";
     return;
   }
 
@@ -1775,13 +1774,13 @@ function drawManualBusy(s) {
   })).filter(({ values }) => values.some((value) => value > 0));
 
   if (hint) {
-    hint.textContent = "最近 " + days.length + " 天 · 显示 " + visibleRows.length + " 个有人工接待的日期 · 09:30–19:00 · 每格 30 分钟";
+    hint.textContent = "最近 " + days.length + " 天 · 显示 " + visibleRows.length + " 个有人工接待的日期 · 09:30–19:00 · 每格 15 分钟";
   }
   if (!visibleRows.length) {
     grid.replaceChildren();
     setBusyPeak("manualBusyPeak", "manualBusyPeakDetail", null, [], mode);
     setBusyPeak("manualBusySecond", "manualBusySecondDetail", null, [], mode);
-    if (note) note.textContent = "当前筛选条件下没有可展示的人工服务数据。";
+    if (hint) hint.textContent = "当前筛选条件下没有可展示的人工服务数据。";
     return;
   }
 
@@ -1800,7 +1799,7 @@ function drawManualBusy(s) {
   for (let index = 0; index < BUSY_SLOT_COUNT; index++) {
     const time = document.createElement("span");
     time.className = "manual-busy-time";
-    time.textContent = index % 2 === 0 ? minuteLabel(BUSY_START_MINUTE + index * BUSY_SLOT_MINUTES) : "";
+    time.textContent = index % 4 === 0 ? minuteLabel(BUSY_START_MINUTE + index * BUSY_SLOT_MINUTES) : "";
     cells.push(time);
   }
   visibleRows.forEach(({ day: visibleDay, values: row }) => {
@@ -1822,10 +1821,6 @@ function drawManualBusy(s) {
   grid.replaceChildren(...cells);
   setBusyPeak("manualBusyPeak", "manualBusyPeakDetail", slotTotals[0], days, mode);
   setBusyPeak("manualBusySecond", "manualBusySecondDetail", slotTotals[1], days, mode);
-  if (note) {
-    const metric = mode === "active" ? "该半小时内正在由人工接待的会话数" : "该半小时内新进入人工接待的会话数";
-    note.textContent = "每格表示" + metric + "；没有人数的时段直接留白，只显示有人工接待的日期。";
-  }
 }
 
 // ============== 业务闭环 ==============

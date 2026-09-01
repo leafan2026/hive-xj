@@ -3,9 +3,9 @@ const FORM_TOKEN = "EQca39";
 const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 const JSJ_TABLE_URL = `https://next.jinshuju.net/tables/${FORM_TOKEN}`;
 
-// v4 增加人工服务忙闲分布。保留旧版本，不删除既有 KV，
+// v5 将人工服务忙闲分布细化为 15 分钟。保留旧版本，不删除既有 KV，
 // 首次访问会安全地后台重建新缓存。
-const K_STATS = "hive:stats:v4";
+const K_STATS = "hive:stats:v5";
 const K_ENTRIES = "hive:entries:v2";   // v2: trim() 增加 baid（billing_account_id）
 const K_WEEKLY = "hive:weekly:v1";
 const K_LOOP = "hive:loop:v1";
@@ -180,7 +180,7 @@ function timestampDayMinute(value) {
 
 const BUSY_START_MINUTE = 9 * 60 + 30;
 const BUSY_END_MINUTE = 19 * 60;
-const BUSY_SLOT_MINUTES = 30;
+const BUSY_SLOT_MINUTES = 15;
 const BUSY_SLOT_COUNT = (BUSY_END_MINUTE - BUSY_START_MINUTE) / BUSY_SLOT_MINUTES;
 
 function recentCalendarDays(latestDay, count = 7) {
@@ -212,7 +212,7 @@ function buildStats(rows) {
     // 最近 7 个自然日的逐小时服务节奏；小时以金数据记录的原始日历时间划分，
     // 与现有按天统计保持同一口径。
     hourly: { days: [], byDay: {} },
-    // 最近 7 个自然日的人工服务忙闲图：每格为 09:30–19:00 内的半小时。
+    // 最近 7 个自然日的人工服务忙闲图：每格为 09:30–19:00 内的 15 分钟。
     // active 是同时处于人工接待中的会话数；incoming 是该段新进入人工接待的会话数。
     manualBusy: { days: [], byDay: {} },
     // 接待人数（user_id 去重）/ 接待企业数（billing_account_id 去重）。
@@ -1010,13 +1010,14 @@ async function renderPage(env, user) {
         </div>
         <div class="manual-busy-layout">
           <div class="manual-busy-grid" id="manualBusyGrid" aria-label="最近七天人工服务忙闲分布"></div>
+        </div>
+        <div class="manual-busy-footer">
           <aside class="manual-busy-peaks" aria-label="人工服务高峰">
             <div><span>最忙高峰</span><b id="manualBusyPeak">—</b><small id="manualBusyPeakDetail"></small></div>
             <div><span>次高峰</span><b id="manualBusySecond">—</b><small id="manualBusySecondDetail"></small></div>
           </aside>
+          <div class="manual-busy-legend"><span>少</span><i class="busy-level-1"></i><i class="busy-level-2"></i><i class="busy-level-3"></i><i class="busy-level-4"></i><i class="busy-level-5"></i><span>多</span></div>
         </div>
-        <div class="manual-busy-legend"><span>少</span><i class="busy-level-1"></i><i class="busy-level-2"></i><i class="busy-level-3"></i><i class="busy-level-4"></i><i class="busy-level-5"></i><span>多</span></div>
-        <div class="note dim-note" id="manualBusyNote"></div>
       </div>
     </div>
   </section>
