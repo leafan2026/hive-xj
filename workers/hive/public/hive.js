@@ -907,24 +907,27 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
       categoryPercentage: o.grouped ? .74 : .82,
       order: 2,
     })),
-    ...lines.map((l, i) => ({
-      type: "line",
-      label: l.label,
-      data: l.data,
-      borderColor: comboLineTone(l.color, i),
-      backgroundColor: comboLineTone(l.color, i),
-      yAxisID: l.axis || "y1",
-      tension: .42,
-      borderWidth: 3.2,
-      borderDash: [7, 5],
-      pointRadius: 0,
-      pointBackgroundColor: "#fff",
-      pointBorderColor: comboLineTone(l.color, i),
-      pointBorderWidth: 2.5,
-      pointHoverRadius: 5.5,
-      fill: false,
-      order: 1,
-    })),
+    ...lines.map((l, i) => {
+      const lineColor = l.strokeColor || comboLineTone(l.color, i);
+      return {
+        type: "line",
+        label: l.label,
+        data: l.data,
+        borderColor: lineColor,
+        backgroundColor: lineColor,
+        yAxisID: l.axis || "y1",
+        tension: .42,
+        borderWidth: 3.2,
+        borderDash: [7, 5],
+        pointRadius: 0,
+        pointBackgroundColor: "#fff",
+        pointBorderColor: lineColor,
+        pointBorderWidth: 2.5,
+        pointHoverRadius: 5.5,
+        fill: false,
+        order: 1,
+      };
+    }),
   ];
 
   const scales = cleanScales({ stacked: !o.grouped, rotate: o.rotate ?? 45, autoSkip: false });
@@ -1696,9 +1699,9 @@ function drawHourlyService(s) {
     "hourlyService", "chartHourlyService", points.map((_, hour) => String(hour).padStart(2, "0") + ":00"),
     [],
     [
-      { label: "Jiri 会话量", data: points.map((p) => p.jiri), color: "#00c8a9", axis: "y" },
-      { label: "人工会话量", data: points.map((p) => p.manual), color: "#806dfa", axis: "y" },
-      { label: "人工会话时长（小时）", data: points.map((p) => Number((p.manualDur / 3600).toFixed(2))), color: "#ff6689", axis: "y1" },
+      { label: "Jiri 会话量", data: points.map((p) => p.jiri), color: "#8676FF", strokeColor: "#8676FF", axis: "y" },
+      { label: "人工会话量", data: points.map((p) => p.manual), color: "#FF708B", strokeColor: "#FF708B", axis: "y" },
+      { label: "人工会话时长（小时）", data: points.map((p) => Number((p.manualDur / 3600).toFixed(2))), color: "#383874", strokeColor: "#383874", axis: "y1" },
     ],
     { grouped: true, rotate: 0, maxLabels: 0, showStackTotal: false, yLabel: "会话数", y1Label: "小时" }
   );
