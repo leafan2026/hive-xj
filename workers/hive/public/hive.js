@@ -1733,18 +1733,18 @@ function busySlotLabel(index) {
   return minuteLabel(start) + "–" + minuteLabel(start + BUSY_SLOT_MINUTES);
 }
 
-function setBusyPeak(nameId, detailId, peak, days, mode) {
-  const name = $(nameId);
-  const detail = $(detailId);
-  if (!name || !detail) return;
-  if (!peak) {
-    name.textContent = "暂无数据";
-    detail.textContent = "";
+function setBusySummary(peak, second, days, mode) {
+  const summary = $("manualBusySummary");
+  if (!summary) return;
+  if (!peak || !days.length) {
+    summary.textContent = "";
     return;
   }
   const label = mode === "active" ? "平均同时服务" : "平均新转人工";
-  name.textContent = busySlotLabel(peak.index);
-  detail.textContent = label + " " + fmtNum(peak.total / days.length) + " 人";
+  const lead = "最近 " + days.length + " 天，最忙高峰为 " + busySlotLabel(peak.index) + "（" + label + " " + fmtNum(peak.total / days.length) + " 人）";
+  summary.textContent = second
+    ? lead + "；次高峰为 " + busySlotLabel(second.index) + "（" + label + " " + fmtNum(second.total / days.length) + " 人）。"
+    : lead + "。";
 }
 
 function drawManualBusy(s) {
@@ -1760,8 +1760,7 @@ function drawManualBusy(s) {
   });
   if (!days.length) {
     grid.replaceChildren();
-    setBusyPeak("manualBusyPeak", "manualBusyPeakDetail", null, [], mode);
-    setBusyPeak("manualBusySecond", "manualBusySecondDetail", null, [], mode);
+    setBusySummary(null, null, [], mode);
     if (hint) hint.textContent = "当前筛选条件下没有可展示的人工服务数据。";
     return;
   }
@@ -1778,8 +1777,7 @@ function drawManualBusy(s) {
   }
   if (!visibleRows.length) {
     grid.replaceChildren();
-    setBusyPeak("manualBusyPeak", "manualBusyPeakDetail", null, [], mode);
-    setBusyPeak("manualBusySecond", "manualBusySecondDetail", null, [], mode);
+    setBusySummary(null, null, [], mode);
     if (hint) hint.textContent = "当前筛选条件下没有可展示的人工服务数据。";
     return;
   }
@@ -1812,15 +1810,15 @@ function drawManualBusy(s) {
       const cell = document.createElement("span");
       cell.className = "manual-busy-cell " + BUSY_COLORS[level];
       const metric = mode === "active" ? "同时服务" : "新转人工";
-      cell.title = hourlyDayLabel(visibleDay) + " " + busySlotLabel(index) + "：" + metric + " " + value + " 人";
+      const tooltip = hourlyDayLabel(visibleDay) + " " + busySlotLabel(index) + " · " + metric + " " + value + " 人";
+      if (value) cell.dataset.tooltip = tooltip;
       cell.setAttribute("role", "img");
-      cell.setAttribute("aria-label", cell.title);
+      cell.setAttribute("aria-label", tooltip);
       cells.push(cell);
     });
   });
   grid.replaceChildren(...cells);
-  setBusyPeak("manualBusyPeak", "manualBusyPeakDetail", slotTotals[0], days, mode);
-  setBusyPeak("manualBusySecond", "manualBusySecondDetail", slotTotals[1], days, mode);
+  setBusySummary(slotTotals[0], slotTotals[1], days, mode);
 }
 
 // ============== 业务闭环 ==============

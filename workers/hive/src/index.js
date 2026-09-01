@@ -1012,10 +1012,7 @@ async function renderPage(env, user) {
           <div class="manual-busy-grid" id="manualBusyGrid" aria-label="最近七天人工服务忙闲分布"></div>
         </div>
         <div class="manual-busy-footer">
-          <aside class="manual-busy-peaks" aria-label="人工服务高峰">
-            <div><span>最忙高峰</span><b id="manualBusyPeak">—</b><small id="manualBusyPeakDetail"></small></div>
-            <div><span>次高峰</span><b id="manualBusySecond">—</b><small id="manualBusySecondDetail"></small></div>
-          </aside>
+          <p class="manual-busy-summary" id="manualBusySummary" aria-live="polite"></p>
           <div class="manual-busy-legend"><span>少</span><i class="busy-level-1"></i><i class="busy-level-2"></i><i class="busy-level-3"></i><i class="busy-level-4"></i><i class="busy-level-5"></i><span>多</span></div>
         </div>
       </div>
