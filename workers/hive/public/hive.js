@@ -1801,7 +1801,7 @@ function drawManualBusy(s) {
   setBusyPeak("manualBusySecond", "manualBusySecondDetail", slotTotals[1], days, mode);
   if (note) {
     const metric = mode === "active" ? "该半小时内正在由人工接待的会话数" : "该半小时内新进入人工接待的会话数";
-    note.textContent = "每格表示" + metric + "；没有人数的时段以白底、深紫边框留白显示。";
+    note.textContent = "每格表示" + metric + "；没有人数的时段直接留白显示。";
   }
 }
 
