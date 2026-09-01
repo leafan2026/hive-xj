@@ -273,6 +273,55 @@ body {
 .hourly-day-tab:hover { border-color: #c8c0ed; color: var(--primary); }
 .hourly-day-tab.active { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); font-weight: 650; }
 
+/* 人工服务忙闲图：每个格子代表一个 30 分钟，白底深紫边框代表无人接待。 */
+#panel-service .service-busy-card { min-height: 0; }
+.manual-busy-modes { display: flex; gap: 7px; margin-left: auto; }
+.manual-busy-modes button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 11px;
+  background: #fbfaff;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color .14s, border-color .14s, background .14s;
+}
+.manual-busy-modes button:hover { border-color: #c8c0ed; color: var(--primary); }
+.manual-busy-modes button[aria-pressed="true"] { border-color: #8676ff; background: #f1efff; color: #635bea; font-weight: 650; }
+.manual-busy-layout { display: grid; grid-template-columns: minmax(0, 1fr) 190px; gap: 22px; align-items: start; }
+.manual-busy-grid {
+  display: grid;
+  grid-template-columns: 70px repeat(19, minmax(12px, 1fr));
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+}
+.manual-busy-time, .manual-busy-day { color: var(--muted); font-size: 10.5px; line-height: 1; white-space: nowrap; }
+.manual-busy-time { min-height: 15px; text-align: center; transform: translateX(-50%); }
+.manual-busy-corner { transform: none; }
+.manual-busy-day { padding-right: 6px; text-align: right; }
+.manual-busy-cell { display: block; height: 27px; min-width: 0; border-radius: 5px; transition: transform .14s ease, box-shadow .14s ease; }
+.manual-busy-cell:hover { transform: scale(1.11); box-shadow: 0 0 0 2px rgba(56, 56, 116, .34); position: relative; z-index: 1; }
+.manual-busy-cell.busy-empty { background: #fff; border: 1px solid #383874; }
+.manual-busy-cell.busy-level-1 { background: #f1efff; }
+.manual-busy-cell.busy-level-2 { background: #d9d3ff; }
+.manual-busy-cell.busy-level-3 { background: #aa9fff; }
+.manual-busy-cell.busy-level-4 { background: #8676ff; }
+.manual-busy-cell.busy-level-5 { background: #383874; }
+.manual-busy-peaks { display: grid; gap: 11px; border-radius: 13px; border: 1px solid #ebe8ff; background: #faf9ff; padding: 13px 14px; }
+.manual-busy-peaks > div + div { border-top: 1px solid #e9e7f5; padding-top: 11px; }
+.manual-busy-peaks span, .manual-busy-peaks small { display: block; color: var(--muted); font-size: 11px; }
+.manual-busy-peaks b { display: block; margin: 4px 0 3px; color: #383874; font-size: 16px; letter-spacing: -.2px; }
+.manual-busy-legend { display: flex; justify-content: flex-end; align-items: center; gap: 4px; margin-top: 12px; color: var(--muted); font-size: 11px; }
+.manual-busy-legend span { margin: 0 3px; }
+.manual-busy-legend i { display: block; width: 16px; height: 9px; border-radius: 3px; }
+.manual-busy-legend .busy-level-1 { background: #f1efff; }
+.manual-busy-legend .busy-level-2 { background: #d9d3ff; }
+.manual-busy-legend .busy-level-3 { background: #aa9fff; }
+.manual-busy-legend .busy-level-4 { background: #8676ff; }
+.manual-busy-legend .busy-level-5 { background: #383874; }
+
 /* 图表卡片内的聚合粒度下拉 */
 .chart-grain {
   padding: 4px 9px;
@@ -476,6 +525,12 @@ tr.loading-row td { text-align: center; color: var(--muted); padding: 30px; }
   .tab { flex: 0 0 auto; }
   .match-info { margin-left: 0; width: 100%; }
   .card-value { font-size: 24px; }
+  .manual-busy-modes { width: 100%; margin-left: 0; }
+  .manual-busy-layout { grid-template-columns: 1fr; gap: 16px; }
+  .manual-busy-grid { grid-template-columns: 58px repeat(19, minmax(8px, 1fr)); gap: 3px; }
+  .manual-busy-cell { height: 23px; border-radius: 4px; }
+  .manual-busy-time { font-size: 9px; }
+  .manual-busy-day { font-size: 10px; }
 }
 
 @media (min-width: 761px) and (max-width: 1180px) {

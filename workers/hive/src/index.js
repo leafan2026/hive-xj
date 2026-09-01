@@ -3,9 +3,9 @@ const FORM_TOKEN = "EQca39";
 const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 const JSJ_TABLE_URL = `https://next.jinshuju.net/tables/${FORM_TOKEN}`;
 
-// v3 增加最近 7 天的小时服务节奏。保留旧版本，不删除既有 KV，
+// v4 增加人工服务忙闲分布。保留旧版本，不删除既有 KV，
 // 首次访问会安全地后台重建新缓存。
-const K_STATS = "hive:stats:v3";
+const K_STATS = "hive:stats:v4";
 const K_ENTRIES = "hive:entries:v2";   // v2: trim() 增加 baid（billing_account_id）
 const K_WEEKLY = "hive:weekly:v1";
 const K_LOOP = "hive:loop:v1";
@@ -168,12 +168,20 @@ function bucket() {
   };
 }
 
-function timestampDayHour(value) {
-  const match = String(value || "").match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}):/);
+function timestampDayMinute(value) {
+  const match = String(value || "").match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}):(\d{2})/);
   if (!match) return null;
   const hour = Number(match[2]);
-  return hour >= 0 && hour < 24 ? { day: match[1], hour } : null;
+  const minute = Number(match[3]);
+  return hour >= 0 && hour < 24 && minute >= 0 && minute < 60
+    ? { day: match[1], hour, minute: hour * 60 + minute }
+    : null;
 }
+
+const BUSY_START_MINUTE = 9 * 60 + 30;
+const BUSY_END_MINUTE = 19 * 60;
+const BUSY_SLOT_MINUTES = 30;
+const BUSY_SLOT_COUNT = (BUSY_END_MINUTE - BUSY_START_MINUTE) / BUSY_SLOT_MINUTES;
 
 function recentCalendarDays(latestDay, count = 7) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(latestDay || "")) return [];
@@ -204,6 +212,9 @@ function buildStats(rows) {
     // 最近 7 个自然日的逐小时服务节奏；小时以金数据记录的原始日历时间划分，
     // 与现有按天统计保持同一口径。
     hourly: { days: [], byDay: {} },
+    // 最近 7 个自然日的人工服务忙闲图：每格为 09:30–19:00 内的半小时。
+    // active 是同时处于人工接待中的会话数；incoming 是该段新进入人工接待的会话数。
+    manualBusy: { days: [], byDay: {} },
     // 接待人数（user_id 去重）/ 接待企业数（billing_account_id 去重）。
     // 去重计数不能跨周期相加——一个用户在两天各来一次，按天是 2、按月是 1——
     // 所以每个粒度各自去重一次，不能让客户端从日粒度累加。
@@ -219,6 +230,10 @@ function buildStats(rows) {
   s.hourly.days = recentCalendarDays(latestRowDay);
   for (const day of s.hourly.days) {
     s.hourly.byDay[day] = Array.from({ length: 24 }, () => ({ jiri: 0, manual: 0, manualDur: 0 }));
+  }
+  s.manualBusy.days = [...s.hourly.days];
+  for (const day of s.manualBusy.days) {
+    s.manualBusy.byDay[day] = Array.from({ length: BUSY_SLOT_COUNT }, () => ({ active: 0, incoming: 0 }));
   }
   // 中间态：每个粒度每个周期一组 Set，收尾时转成计数再下发（不然 payload 会很大）
   const uniqSets = {};
@@ -241,13 +256,28 @@ function buildStats(rows) {
     if (r.nat === "有效") tally(s.effectiveScene, r.scene);
 
     const day = r.t ? r.t.slice(0, 10) : "";
-    const hourSlot = timestampDayHour(r.t);
+    const hourSlot = timestampDayMinute(r.t);
     if (hourSlot && s.hourly.byDay[hourSlot.day]) {
       const hourly = s.hourly.byDay[hourSlot.day][hourSlot.hour];
       if (r.st === "仅 Jiri") hourly.jiri++;
       if (r.st === "仅人工") {
         hourly.manual++;
         if (typeof r.dur === "number" && r.dur > 0) hourly.manualDur += r.dur;
+      }
+    }
+    if (hourSlot && r.st === "仅人工" && s.manualBusy.byDay[hourSlot.day]) {
+      const slots = s.manualBusy.byDay[hourSlot.day];
+      if (hourSlot.minute >= BUSY_START_MINUTE && hourSlot.minute < BUSY_END_MINUTE) {
+        const incomingIndex = Math.floor((hourSlot.minute - BUSY_START_MINUTE) / BUSY_SLOT_MINUTES);
+        slots[incomingIndex].incoming++;
+      }
+      if (typeof r.dur === "number" && r.dur > 0) {
+        const serviceEnd = Math.min(hourSlot.minute + r.dur / 60, BUSY_END_MINUTE);
+        for (let index = 0; index < BUSY_SLOT_COUNT; index++) {
+          const slotStart = BUSY_START_MINUTE + index * BUSY_SLOT_MINUTES;
+          const slotEnd = slotStart + BUSY_SLOT_MINUTES;
+          if (hourSlot.minute < slotEnd && serviceEnd > slotStart) slots[index].active++;
+        }
       }
     }
     if (day) {
@@ -966,6 +996,27 @@ async function renderPage(env, user) {
         </div>
         <canvas id="chartHourlyService"></canvas>
         <div class="note dim-note" id="hourlyServiceNote"></div>
+      </div>
+      <div class="chart-card wide service-busy-card">
+        <div class="chart-head">
+          <div>
+            <h3>人工服务忙闲分布</h3>
+            <span class="chart-total" id="manualBusyHint"></span>
+          </div>
+          <div class="manual-busy-modes" id="manualBusyModes" aria-label="选择人工服务统计方式">
+            <button type="button" data-mode="active" aria-pressed="true">同时服务人数</button>
+            <button type="button" data-mode="incoming" aria-pressed="false">新转人工人数</button>
+          </div>
+        </div>
+        <div class="manual-busy-layout">
+          <div class="manual-busy-grid" id="manualBusyGrid" aria-label="最近七天人工服务忙闲分布"></div>
+          <aside class="manual-busy-peaks" aria-label="人工服务高峰">
+            <div><span>最忙高峰</span><b id="manualBusyPeak">—</b><small id="manualBusyPeakDetail"></small></div>
+            <div><span>次高峰</span><b id="manualBusySecond">—</b><small id="manualBusySecondDetail"></small></div>
+          </aside>
+        </div>
+        <div class="manual-busy-legend"><span>少</span><i class="busy-level-1"></i><i class="busy-level-2"></i><i class="busy-level-3"></i><i class="busy-level-4"></i><i class="busy-level-5"></i><span>多</span></div>
+        <div class="note dim-note" id="manualBusyNote"></div>
       </div>
     </div>
   </section>

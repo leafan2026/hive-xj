@@ -9,7 +9,7 @@ const PALETTE = [
   "#9289e9", "#70bdf7", "#d3b1ef", "#ffbe9d", "#a9afc7",
 ];
 
-const state = { stats: null, facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null, loop: null, loopLoaded: false, hourlyDay: null };
+const state = { stats: null, facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null, loop: null, loopLoaded: false, hourlyDay: null, manualBusyMode: "active" };
 const charts = {};
 
 // 筛选项 → 接口参数名；选项值来自首次全量结果，筛选后不再改动
@@ -1663,6 +1663,7 @@ function renderCost(s) {
   }
 
   drawHourlyService(s);
+  drawManualBusy(s);
 }
 
 function hourlyDayLabel(day) {
@@ -1708,6 +1709,100 @@ function drawHourlyService(s) {
   const total = points.reduce((sum, point) => sum + point.jiri + point.manual, 0);
   setTotal("totalHourlyService", hourlyDayLabel(state.hourlyDay) + "：", total + " 场会话");
   if (note) note.textContent = "每个点覆盖该小时的 00 分至 59 分；人工时长只统计处理状态为“仅人工”的会话。";
+}
+
+const BUSY_START_MINUTE = 9 * 60 + 30;
+const BUSY_SLOT_MINUTES = 30;
+const BUSY_SLOT_COUNT = 19;
+const BUSY_COLORS = ["busy-empty", "busy-level-1", "busy-level-2", "busy-level-3", "busy-level-4", "busy-level-5"];
+
+function minuteLabel(minute) {
+  return String(Math.floor(minute / 60)).padStart(2, "0") + ":" + String(minute % 60).padStart(2, "0");
+}
+
+function busySlotLabel(index) {
+  const start = BUSY_START_MINUTE + index * BUSY_SLOT_MINUTES;
+  return minuteLabel(start) + "–" + minuteLabel(start + BUSY_SLOT_MINUTES);
+}
+
+function setBusyPeak(nameId, detailId, peak, days, mode) {
+  const name = $(nameId);
+  const detail = $(detailId);
+  if (!name || !detail) return;
+  if (!peak) {
+    name.textContent = "暂无数据";
+    detail.textContent = "";
+    return;
+  }
+  const label = mode === "active" ? "平均同时服务" : "平均新转人工";
+  name.textContent = busySlotLabel(peak.index);
+  detail.textContent = label + " " + fmtNum(peak.total / days.length) + " 人";
+}
+
+function drawManualBusy(s) {
+  const busy = s.manualBusy || {};
+  const days = Array.isArray(busy.days) ? busy.days : [];
+  const grid = $("manualBusyGrid");
+  const hint = $("manualBusyHint");
+  const note = $("manualBusyNote");
+  if (!grid) return;
+
+  const mode = state.manualBusyMode === "incoming" ? "incoming" : "active";
+  document.querySelectorAll("#manualBusyModes button[data-mode]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
+  });
+  if (hint) hint.textContent = days.length ? "最近 " + days.length + " 天 · 09:30–19:00 · 每格 30 分钟" : "";
+  if (!days.length) {
+    grid.replaceChildren();
+    setBusyPeak("manualBusyPeak", "manualBusyPeakDetail", null, [], mode);
+    setBusyPeak("manualBusySecond", "manualBusySecondDetail", null, [], mode);
+    if (note) note.textContent = "当前筛选条件下没有可展示的人工服务数据。";
+    return;
+  }
+
+  const rows = days.map((day) => Array.from({ length: BUSY_SLOT_COUNT }, (_, index) => {
+    return Number(busy.byDay?.[day]?.[index]?.[mode]) || 0;
+  }));
+  const max = Math.max(0, ...rows.flat());
+  const slotTotals = Array.from({ length: BUSY_SLOT_COUNT }, (_, index) => ({
+    index,
+    total: rows.reduce((sum, row) => sum + row[index], 0),
+  })).filter((slot) => slot.total > 0)
+    .sort((a, b) => b.total - a.total || a.index - b.index);
+
+  const cells = [];
+  const corner = document.createElement("span");
+  corner.className = "manual-busy-time manual-busy-corner";
+  cells.push(corner);
+  for (let index = 0; index < BUSY_SLOT_COUNT; index++) {
+    const time = document.createElement("span");
+    time.className = "manual-busy-time";
+    time.textContent = index % 2 === 0 ? minuteLabel(BUSY_START_MINUTE + index * BUSY_SLOT_MINUTES) : "";
+    cells.push(time);
+  }
+  rows.forEach((row, rowIndex) => {
+    const day = document.createElement("span");
+    day.className = "manual-busy-day";
+    day.textContent = hourlyDayLabel(days[rowIndex]);
+    cells.push(day);
+    row.forEach((value, index) => {
+      const level = value ? Math.min(5, Math.max(1, Math.ceil(value / max * 5))) : 0;
+      const cell = document.createElement("span");
+      cell.className = "manual-busy-cell " + BUSY_COLORS[level];
+      const metric = mode === "active" ? "同时服务" : "新转人工";
+      cell.title = hourlyDayLabel(days[rowIndex]) + " " + busySlotLabel(index) + "：" + metric + " " + value + " 人";
+      cell.setAttribute("role", "img");
+      cell.setAttribute("aria-label", cell.title);
+      cells.push(cell);
+    });
+  });
+  grid.replaceChildren(...cells);
+  setBusyPeak("manualBusyPeak", "manualBusyPeakDetail", slotTotals[0], days, mode);
+  setBusyPeak("manualBusySecond", "manualBusySecondDetail", slotTotals[1], days, mode);
+  if (note) {
+    const metric = mode === "active" ? "该半小时内正在由人工接待的会话数" : "该半小时内新进入人工接待的会话数";
+    note.textContent = "每格表示" + metric + "；没有人数的时段以白底、深紫边框留白显示。";
+  }
 }
 
 // ============== 业务闭环 ==============
@@ -2192,6 +2287,14 @@ function initActions() {
     if (!button || !LAST_STATS) return;
     state.hourlyDay = button.dataset.day;
     drawHourlyService(LAST_STATS);
+  });
+
+  const manualBusyModes = $("manualBusyModes");
+  if (manualBusyModes) manualBusyModes.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-mode]");
+    if (!button || !LAST_STATS) return;
+    state.manualBusyMode = button.dataset.mode === "incoming" ? "incoming" : "active";
+    drawManualBusy(LAST_STATS);
   });
 
   $("fRange").addEventListener("change", () => { applyRangePreset(); reload(); });

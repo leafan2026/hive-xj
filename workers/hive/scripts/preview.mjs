@@ -11,6 +11,11 @@ const day = (offset) => new Date(Date.now() + offset * 86400000).toISOString().s
 const rows = [
   { t: `${day(0)}T09:00:00Z`, st: "仅 Jiri", jiri: "能", ch: "gd_next", dev: "pc", med: "网页", plan: "免费版", cat: "无关", nat: "有效", scene: "操作引导/功能咨询", dur: 180, turns: 2, way: "", reason: "", uid: "u1", baid: "b1" },
   { t: `${day(-1)}T10:00:00Z`, st: "仅人工", jiri: "不能", ch: "gd_app", dev: "mobile", med: "应用", plan: "企业高级版", cat: "无关", nat: "有效", scene: "故障/技术", dur: 480, turns: 3, way: "直接转", reason: "可自助", uid: "u2", baid: "b2" },
+  { t: `${day(0)}T14:50:00Z`, st: "仅人工", jiri: "不能", ch: "gd_app", dev: "pc", med: "网页", plan: "企业高级版", cat: "无关", nat: "有效", scene: "故障/技术", dur: 5400, turns: 4, way: "直接转", reason: "可自助", uid: "u5", baid: "b5" },
+  { t: `${day(-1)}T14:55:00Z`, st: "仅人工", jiri: "不能", ch: "gd_app", dev: "mobile", med: "应用", plan: "企业高级版", cat: "无关", nat: "有效", scene: "故障/技术", dur: 3600, turns: 3, way: "直接转", reason: "可自助", uid: "u6", baid: "b6" },
+  { t: `${day(-2)}T15:10:00Z`, st: "仅人工", jiri: "不能", ch: "gd_app", dev: "pc", med: "网页", plan: "企业高级版", cat: "无关", nat: "有效", scene: "故障/技术", dur: 1800, turns: 2, way: "直接转", reason: "可自助", uid: "u7", baid: "b7" },
+  { t: `${day(-3)}T10:35:00Z`, st: "仅人工", jiri: "不能", ch: "gd_app", dev: "mobile", med: "应用", plan: "企业高级版", cat: "无关", nat: "有效", scene: "故障/技术", dur: 2700, turns: 3, way: "直接转", reason: "可自助", uid: "u8", baid: "b8" },
+  { t: `${day(-4)}T10:45:00Z`, st: "仅人工", jiri: "不能", ch: "gd_app", dev: "pc", med: "网页", plan: "企业高级版", cat: "无关", nat: "有效", scene: "故障/技术", dur: 1800, turns: 2, way: "直接转", reason: "可自助", uid: "u9", baid: "b9" },
   { t: `${day(-3)}T11:00:00Z`, st: "仅 Jiri", jiri: "能", ch: "gd_next", dev: "mobile", med: "网页", plan: "免费版", cat: "无关", nat: "填表人", scene: "操作引导/功能咨询", dur: 120, turns: 1, way: "", reason: "", uid: "u3", baid: "b3" },
   { t: `${day(-16)}T14:00:00Z`, st: "仅 Jiri", jiri: "能", ch: "gd_next", dev: "pc", med: "网页", plan: "免费版", cat: "无关", nat: "有效", scene: "操作引导/功能咨询", dur: 90, turns: 1, way: "", reason: "", uid: "u4", baid: "b4" },
 ];
@@ -25,7 +30,7 @@ const fullStats = {
 const cache = {
   async get(key) {
     if (key === "hive:entries:v2") return rows;
-    if (key === "hive:stats:v3") return fullStats;
+    if (key === "hive:stats:v4") return fullStats;
     if (key === "hive:weekly:v1") return [];
     if (key === "hive:loop:v1") return { weeks: [], types: [], overall: { applicable: 0, yes: 0, no: 0, pending: 0, rate: null } };
     if (key === "hive:meta:v1") return { status: "ok", updatedAt: new Date().toISOString(), total: rows.length };
