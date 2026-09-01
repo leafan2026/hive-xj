@@ -199,7 +199,8 @@ function cleanScales(opts) {
   return {
     x: {
       stacked: !!o.stacked,
-      grid: { display: false, drawBorder: false },
+      // v4 起轴线归 border 管，grid.drawBorder 已被移除，别再往 grid 里塞
+      grid: { display: false },
       border: { display: false },
       ticks: { maxRotation: o.rotate ?? 0, autoSkip: o.autoSkip !== false, maxTicksLimit: o.maxTicks, padding: 6 },
     },
@@ -207,7 +208,7 @@ function cleanScales(opts) {
       stacked: !!o.stacked,
       beginAtZero: true,
       grid: { color: "#f2f4fa", drawTicks: false },
-      border: { display: false, dash: [0, 1] },
+      border: { display: false },
       ticks: { padding: 10, maxTicksLimit: 6 },
     },
   };
@@ -904,11 +905,10 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
       // 堆叠会读成「人数 + 企业数」这种没有意义的合计。
       stack: o.grouped ? undefined : "s",
       yAxisID: "y",
-      borderWidth: 0,
       // 单系列做成胶囊，堆叠时只给最上面一段留圆角，并列柱每根都留圆角
       borderRadius: o.grouped ? (o.pillBars ? 20 : { topLeft: 5, topRight: 5 }) : (single ? 20 : (i === bars.length - 1 ? { topLeft: 5, topRight: 5 } : 2)),
       borderSkipped: false,
-      // 段与段之间留一条白色细缝，避免颜色直接相接糊在一起（并列柱不需要）
+      // 段与段之间留一条白色细缝，避免颜色直接相接糊在一起（单柱和并列柱不需要）
       borderColor: "#f7f8fc",
       borderWidth: (single || o.grouped) ? 0 : { top: 2, right: 0, bottom: 0, left: 0 },
       barPercentage: o.grouped ? (o.pillBars ? .54 : .8) : (single ? .42 : .62),
@@ -1719,85 +1719,101 @@ function drawHourlyService(s) {
   if (note) note.textContent = "每个点覆盖该小时的 00 分至 59 分；人工时长只统计处理状态为“仅人工”的会话。";
 }
 
-const BUSY_START_MINUTE = 9 * 60 + 30;
-const BUSY_SLOT_MINUTES = 15;
-const BUSY_SLOT_COUNT = 38;
 const BUSY_COLORS = ["busy-empty", "busy-level-1", "busy-level-2", "busy-level-3", "busy-level-4", "busy-level-5"];
+
+// 时段定义由 /api/dashboard 随 manualBusy 下发，前端不再各存一份常量。
+// 兜底值只服务于「刚部署完、KV 还是旧结构」这一小段时间。
+const BUSY_SLOT_FALLBACK = { startMinute: 9 * 60 + 30, endMinute: 19 * 60, slotMinutes: 15, slotCount: 38 };
+
+function busySlotOf(busy) {
+  const s = busy && busy.slot ? busy.slot : null;
+  return s && s.slotCount > 0 ? s : BUSY_SLOT_FALLBACK;
+}
 
 function minuteLabel(minute) {
   return String(Math.floor(minute / 60)).padStart(2, "0") + ":" + String(minute % 60).padStart(2, "0");
 }
 
-function busySlotLabel(index) {
-  const start = BUSY_START_MINUTE + index * BUSY_SLOT_MINUTES;
-  return minuteLabel(start) + "–" + minuteLabel(start + BUSY_SLOT_MINUTES);
+function busySlotLabel(slot, index) {
+  const start = slot.startMinute + index * slot.slotMinutes;
+  return minuteLabel(start) + "–" + minuteLabel(start + slot.slotMinutes);
 }
 
-function setBusySummary(peak, second, days, mode) {
+// 分母是**最近 N 个自然日**（含当天没有人工接待的日子），不是网格上显示的行数 ——
+// 两个数不一样，所以文案里必须把「按几天平均」写出来。
+function setBusySummary(slot, peak, second, days, mode) {
   const summary = $("manualBusySummary");
   if (!summary) return;
   if (!peak || !days.length) {
     summary.textContent = "";
     return;
   }
-  const label = mode === "active" ? "平均同时服务" : "平均新转人工";
-  const lead = "最近 " + days.length + " 天，最忙高峰为 " + busySlotLabel(peak.index) + "（" + label + " " + fmtNum(peak.total / days.length) + " 人）";
-  summary.textContent = second
-    ? lead + "；次高峰为 " + busySlotLabel(second.index) + "（" + label + " " + fmtNum(second.total / days.length) + " 人）。"
-    : lead + "。";
+  const label = mode === "active" ? "同时服务" : "新转人工";
+  const per = (slot2) => fmtNum(slot2.total / days.length) + " 人";
+  const lead = "最忙高峰为 " + busySlotLabel(slot, peak.index) + "（" + label + " " + per(peak) + "）";
+  summary.textContent = lead +
+    (second ? "；次高峰为 " + busySlotLabel(slot, second.index) + "（" + label + " " + per(second) + "）" : "") +
+    "。以上为按最近 " + days.length + " 个自然日平均，空闲日也计入分母。";
 }
 
 function drawManualBusy(s) {
   const busy = s.manualBusy || {};
   const days = Array.isArray(busy.days) ? busy.days : [];
+  const slot = busySlotOf(busy);
   const grid = $("manualBusyGrid");
   const hint = $("manualBusyHint");
   if (!grid) return;
+
+  // 列数跟着下发的 slotCount 走，CSS 只留一个兜底值
+  grid.style.setProperty("--busy-slots", String(slot.slotCount));
 
   const mode = state.manualBusyMode === "incoming" ? "incoming" : "active";
   document.querySelectorAll("#manualBusyModes button[data-mode]").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
   });
-  if (!days.length) {
+  const clear = () => {
     grid.replaceChildren();
-    setBusySummary(null, null, [], mode);
+    setBusySummary(slot, null, null, [], mode);
     if (hint) hint.textContent = "当前筛选条件下没有可展示的人工服务数据。";
-    return;
-  }
+  };
+  if (!days.length) return clear();
 
   const visibleRows = days.map((day) => ({
     day,
-    values: Array.from({ length: BUSY_SLOT_COUNT }, (_, index) => {
+    values: Array.from({ length: slot.slotCount }, (_, index) => {
       return Number(busy.byDay?.[day]?.[index]?.[mode]) || 0;
     }),
   })).filter(({ values }) => values.some((value) => value > 0));
 
+  if (!visibleRows.length) return clear();
+
   if (hint) {
-    hint.textContent = "最近 " + days.length + " 天 · 显示 " + visibleRows.length + " 个有人工接待的日期 · 09:30–19:00 · 每格 15 分钟";
-  }
-  if (!visibleRows.length) {
-    grid.replaceChildren();
-    setBusySummary(null, null, [], mode);
-    if (hint) hint.textContent = "当前筛选条件下没有可展示的人工服务数据。";
-    return;
+    // active 靠时长铺开，没有时长记录的会话进不了这张图；把差额说清楚，
+    // 否则两个模式的总量对不上会被当成 bug。
+    const noDuration = Number(busy.noDuration) || 0;
+    hint.textContent = "最近 " + days.length + " 天 · 显示 " + visibleRows.length + " 个有人工接待的日期 · " +
+      minuteLabel(slot.startMinute) + "–" + minuteLabel(slot.endMinute) + " · 每格 " + slot.slotMinutes + " 分钟" +
+      (mode === "active" && noDuration
+        ? " · 另有 " + noDuration + " 场无时长记录，只计入「新转人工人数」"
+        : "");
   }
 
   const rows = visibleRows.map(({ values }) => values);
   const max = Math.max(...rows.flat());
-  const slotTotals = Array.from({ length: BUSY_SLOT_COUNT }, (_, index) => ({
+  const slotTotals = Array.from({ length: slot.slotCount }, (_, index) => ({
     index,
     total: rows.reduce((sum, row) => sum + row[index], 0),
-  })).filter((slot) => slot.total > 0)
+  })).filter((x) => x.total > 0)
     .sort((a, b) => b.total - a.total || a.index - b.index);
 
   const cells = [];
   const corner = document.createElement("span");
   corner.className = "manual-busy-time manual-busy-corner";
   cells.push(corner);
-  for (let index = 0; index < BUSY_SLOT_COUNT; index++) {
+  for (let index = 0; index < slot.slotCount; index++) {
     const time = document.createElement("span");
     time.className = "manual-busy-time";
-    time.textContent = index % 4 === 0 ? minuteLabel(BUSY_START_MINUTE + index * BUSY_SLOT_MINUTES) : "";
+    time.textContent = index % 4 === 0 ? minuteLabel(slot.startMinute + index * slot.slotMinutes) : "";
     cells.push(time);
   }
   visibleRows.forEach(({ day: visibleDay, values: row }) => {
@@ -1810,7 +1826,7 @@ function drawManualBusy(s) {
       const cell = document.createElement("span");
       cell.className = "manual-busy-cell " + BUSY_COLORS[level];
       const metric = mode === "active" ? "同时服务" : "新转人工";
-      const tooltip = hourlyDayLabel(visibleDay) + " " + busySlotLabel(index) + " · " + metric + " " + value + " 人";
+      const tooltip = hourlyDayLabel(visibleDay) + " " + busySlotLabel(slot, index) + " · " + metric + " " + value + " 人";
       if (value) cell.dataset.tooltip = tooltip;
       cell.setAttribute("role", "img");
       cell.setAttribute("aria-label", tooltip);
@@ -1818,7 +1834,7 @@ function drawManualBusy(s) {
     });
   });
   grid.replaceChildren(...cells);
-  setBusySummary(slotTotals[0], slotTotals[1], days, mode);
+  setBusySummary(slot, slotTotals[0], slotTotals[1], days, mode);
 }
 
 // ============== 业务闭环 ==============

@@ -1,15 +1,19 @@
 // hive 服务看板 — 数据源：金数据表单 EQca39
 const FORM_TOKEN = "EQca39";
 const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
-const JSJ_TABLE_URL = `https://next.jinshuju.net/tables/${FORM_TOKEN}`;
 
-// v5 将人工服务忙闲分布细化为 15 分钟。保留旧版本，不删除既有 KV，
-// 首次访问会安全地后台重建新缓存。
-const K_STATS = "hive:stats:v5";
-const K_ENTRIES = "hive:entries:v2";   // v2: trim() 增加 baid（billing_account_id）
+// v6 在 manualBusy 里下发时段定义（起点/格宽/格数），前端不再硬编码。
+// v3 的明细去掉了全链路无消费者的 sn/url/sm/inWindow/creator。
+// 保留旧版本键，不删除既有 KV，首次访问会安全地后台重建新缓存。
+const K_STATS = "hive:stats:v6";
+const K_ENTRIES = "hive:entries:v3";
 const K_WEEKLY = "hive:weekly:v1";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
+// 筛选结果记忆缓存：键里带 meta.updatedAt，数据一刷新自然失效；
+// TTL 只用来回收过期键，不承担正确性。
+const K_QUERY_PREFIX = "hive:q:v1:";
+const QUERY_CACHE_TTL_S = 3600;
 
 // 金数据 per_page 实际封顶 50；next 是 serial_number 偏移，可并行取页
 const PAGE_SIZE = 50;
@@ -87,17 +91,11 @@ async function fetchAllEntries(env) {
   return { rows, total };
 }
 
-function numOf(v) {
-  const n = Number(String(v ?? "").trim());
-  return isFinite(n) ? n : 0;
-}
-
-// 精简条目：只留看板/周报要用的字段，控制 KV value 体积
+// 精简条目：只留看板/周报要用的字段，控制 KV value 体积。
+// 只保留有消费者的字段 —— 明细每多一个字段，筛选路径就要多解析 6600 次。
 function trim(e) {
   return {
-    sn: e.serial_number,
     t: e.field_1 || "",
-    url: e.field_2 || "",
     uid: e.field_8 || "",
     baid: e.field_9 || "",          // billing_account_id，用于「接待企业数」去重
     ch: e.field_4 || "未知",
@@ -105,7 +103,6 @@ function trim(e) {
     med: e.field_6 || "未知",
     st: e.field_7 || "未标记",
     plan: e.field_10 || "免费版",   // 套餐为空即未付费，归入免费版
-    sm: e.field_11 || "",
     dur: typeof e.field_12 === "number" ? e.field_12 : null,
     turns: typeof e.field_13 === "number" ? e.field_13 : null,
     nat: e.field_14 || "未标记",
@@ -117,10 +114,8 @@ function trim(e) {
     biz: e.field_22 || "",          // 业务分型
     onTarget: e.field_23 || "",     // 对口建表
     gotData: e.field_25 || "",      // 对口表单收数据
-    inWindow: e.field_26 || "",     // 窗口内收款
     jiriBuilt: e.field_27 || "",    // Jiri 代建表单
     loop: e.field_30 || "",         // 业务闭环
-    creator: e.creator_name || "未知",
   };
 }
 
@@ -212,9 +207,21 @@ function buildStats(rows) {
     // 最近 7 个自然日的逐小时服务节奏；小时以金数据记录的原始日历时间划分，
     // 与现有按天统计保持同一口径。
     hourly: { days: [], byDay: {} },
-    // 最近 7 个自然日的人工服务忙闲图：每格为 09:30–19:00 内的 15 分钟。
-    // active 是同时处于人工接待中的会话数；incoming 是该段新进入人工接待的会话数。
-    manualBusy: { days: [], byDay: {} },
+    // 最近 7 个自然日的人工服务忙闲图。时段定义随数据一起下发（slot），
+    // 前端不再各写一份常量 —— 改窗口只需改这里。
+    // active   = 该格内同时处于人工接待中的会话数，靠时长铺开，所以**只统计有时长的会话**；
+    // incoming = 该格内新进入人工接待的会话数，不要求有时长。
+    // 两个口径的分母因此不同，差额记在 noDuration 里，由前端如实说明。
+    manualBusy: {
+      days: [], byDay: {},
+      slot: {
+        startMinute: BUSY_START_MINUTE,
+        endMinute: BUSY_END_MINUTE,
+        slotMinutes: BUSY_SLOT_MINUTES,
+        slotCount: BUSY_SLOT_COUNT,
+      },
+      noDuration: 0,
+    },
     // 接待人数（user_id 去重）/ 接待企业数（billing_account_id 去重）。
     // 去重计数不能跨周期相加——一个用户在两天各来一次，按天是 2、按月是 1——
     // 所以每个粒度各自去重一次，不能让客户端从日粒度累加。
@@ -267,11 +274,14 @@ function buildStats(rows) {
     }
     if (hourSlot && r.st === "仅人工" && s.manualBusy.byDay[hourSlot.day]) {
       const slots = s.manualBusy.byDay[hourSlot.day];
+      const hasDuration = typeof r.dur === "number" && r.dur > 0;
       if (hourSlot.minute >= BUSY_START_MINUTE && hourSlot.minute < BUSY_END_MINUTE) {
         const incomingIndex = Math.floor((hourSlot.minute - BUSY_START_MINUTE) / BUSY_SLOT_MINUTES);
         slots[incomingIndex].incoming++;
+        // 进了 incoming 却永远进不了 active 的会话，数出来让前端说清楚差额
+        if (!hasDuration) s.manualBusy.noDuration++;
       }
-      if (typeof r.dur === "number" && r.dur > 0) {
+      if (hasDuration) {
         const serviceEnd = Math.min(hourSlot.minute + r.dur / 60, BUSY_END_MINUTE);
         for (let index = 0; index < BUSY_SLOT_COUNT; index++) {
           const slotStart = BUSY_START_MINUTE + index * BUSY_SLOT_MINUTES;
@@ -459,6 +469,14 @@ function sceneWorkload(effManual) {
   return out;
 }
 
+// 同一份聚合的数组形态：周报表格要按总时长降序排，同期对比要按场景名查。
+// 两种形态必须出自同一个 sceneWorkload，否则口径迟早会漂。
+function sceneWorkloadList(effManual) {
+  return Object.entries(sceneWorkload(effManual))
+    .map(([scene, a]) => ({ scene, ...a }))
+    .sort((x, y) => y.durMin - x.durMin);
+}
+
 // 业务分型 × 建表转化。「只跟金数据打交道」「看不出用途」不是建表需求，排除
 const BIZ_EXCLUDE = new Set(["只跟金数据打交道", "看不出用途"]);
 
@@ -530,22 +548,7 @@ function buildWeekly(rows) {
     const allManual = groupStats(manual);
 
     // 有效人工场景 × 工作量（占比按时长）
-    const sceneAgg = {};
-    for (const r of effManual) {
-      const a = sceneAgg[r.scene] || (sceneAgg[r.scene] = { receptions: 0, durSec: 0, rows: [] });
-      a.receptions += r.turns || 0;
-      a.durSec += r.dur || 0;
-      a.rows.push(r);
-    }
-    const totalDurSec = effManual.reduce((a, r) => a + (r.dur || 0), 0);
-    const scenes = Object.entries(sceneAgg).map(([scene, a]) => ({
-      scene,
-      receptions: a.receptions,
-      durMin: Math.round(a.durSec / 60),
-      share: totalDurSec ? Number(((a.durSec / totalDurSec) * 100).toFixed(0)) : 0,
-      medianMin: Number((median(perReception(a.rows)) / 60).toFixed(1)),
-      avgMin: Number((mean(perReception(a.rows)) / 60).toFixed(1)),
-    })).sort((x, y) => y.durMin - x.durMin);
+    const scenes = sceneWorkloadList(effManual);
 
     // 仅 Jiri 有效场景
     const jiriScenes = {};
@@ -823,6 +826,27 @@ function applyFilters(rows, q, range) {
   });
 }
 
+// ============== 筛选结果记忆缓存 ==============
+// 时间下拉默认就是「过去 14 天」，所以**每一次**看板加载都带筛选参数、都走明细路径：
+// 读全量明细 → JSON.parse → applyFilters → buildStats 两次（当前区间 + 上一等长区间）。
+// 预聚合的 K_STATS 只有用户主动选「全部时间」时才命中，等于常年不生效。
+// 这里按「数据版本 + 归一化后的筛选条件」记一份结果，同一版数据的相同筛选只算一次。
+
+// 键里放**换算后**的 from/to，不是原始的 range=14 ——「过去 14 天」跨过零点就是另一个区间，
+// 只按原始参数缓存会在午夜前后发错数据。
+async function queryCacheKey(q, dataVersion, range) {
+  const norm = FILTER_KEYS.map((k) => k + "=" + (q.get(k) || "")).join("&") +
+    "|resolved=" + (range.from || "") + ".." + (range.to || "");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(norm));
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return K_QUERY_PREFIX + dataVersion + ":" + hex.slice(0, 32);
+}
+
+// 没有 updatedAt 就没有可靠的失效依据，这时干脆不缓存
+function dataVersionOf(meta) {
+  return meta && meta.status === "ok" && meta.updatedAt ? meta.updatedAt : "";
+}
+
 function isRunning(meta) {
   return !!meta && meta.status === "running" && Date.now() - (meta.startedAt || 0) < RUNNING_TTL_MS;
 }
@@ -839,6 +863,14 @@ function json(data, status = 200) {
 }
 
 // ============== 页面 ==============
+
+// 插进 HTML 的值一律转义。这里的 user 必然来自 AUTH_USERS，外部改不了，
+// 但把「安全」建立在「上游恰好可信」上迟早出事，转义是零成本的。
+function escHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
 
 async function renderPage(env, user) {
   // Chart.js 随静态资源部署，不走公共 CDN（jsdelivr 国内经常卡住，且是阻塞脚本）
@@ -865,7 +897,7 @@ async function renderPage(env, user) {
     <div class="header-meta">
       <span id="updatedAt">—</span>
       <button class="btn" id="refreshBtn">重新拉取数据</button>
-      <span class="user-chip" title="当前登录账号">${user || ""}</span>
+      <span class="user-chip" title="当前登录账号">${escHtml(user)}</span>
       <button class="btn-ghost" id="logoutBtn">退出</button>
     </div>
   </div>
@@ -1111,7 +1143,6 @@ async function renderPage(env, user) {
 </main>
 
 <footer class="footer"><p>Powered by WDL</p></footer>
-<script>window.JSJ_TABLE_URL = ${JSON.stringify(JSJ_TABLE_URL)};</script>
 <script defer src="${chartUrl}"></script>
 <script defer src="${jsUrl}"></script>
 </body>
@@ -1123,11 +1154,18 @@ async function renderPage(env, user) {
 // ============== 登录与会话 ==============
 // AUTH_USERS secret 格式："user1:pass1,user2:pass2"。线上必须配置；
 // 缺失时拒绝所有请求，避免会话质量数据意外公开。
+// 因为用 "," 分隔、":" 拆账号密码，并且逐项 trim()，所以**口令不能包含逗号、冒号或首尾空格**。
 // 登录后发一个 HMAC 签名的 Cookie 当会话，避免每次都弹浏览器原生对话框；
 // 签名密钥由 AUTH_USERS 派生 —— 改动账号即让所有旧会话失效。
 
 const COOKIE_NAME = "hive_session";
 const SESSION_DAYS = 7;
+
+// 同一来源连续失败上限与窗口。KV 计数是最终一致的，短时突发仍可能多放几次进来；
+// 这里挡的是「慢速穷举」，不是分布式爆破。
+const LOGIN_FAIL_LIMIT = 8;
+const LOGIN_FAIL_WINDOW_S = 900;
+const K_LOGIN_FAIL_PREFIX = "hive:loginfail:v1:";
 
 function userList(env) {
   return (env.AUTH_USERS || "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -1135,6 +1173,54 @@ function userList(env) {
 
 function authEnabled(env) {
   return userList(env).length > 0;
+}
+
+async function sha256Bytes(text) {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+}
+
+// 逐字节累积差异、不提前返回，避免用响应时间试探口令前缀
+function bytesEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+// 「user:pass」是否命中 AUTH_USERS。比的是 SHA-256 摘要（长度恒定 32 字节），
+// 且匹配上也不 break —— 耗时只与账号条数有关，与口令内容无关。
+async function matchesCredential(env, pair) {
+  const list = userList(env);
+  if (!list.length) return false;
+  const target = await sha256Bytes(pair);
+  let ok = false;
+  for (const entry of list) {
+    if (bytesEqual(await sha256Bytes(entry), target)) ok = true;
+  }
+  return ok;
+}
+
+// 边缘之后的头都可能被伪造；拿不到可信来源时退回 "unknown"，
+// 意味着这一桶是所有匿名来源共用的 —— 限流会更严，不会更松。
+function clientIp(request) {
+  return request.headers.get("CF-Connecting-IP")
+    || request.headers.get("X-Real-IP")
+    || (request.headers.get("X-Forwarded-For") || "").split(",")[0].trim()
+    || "unknown";
+}
+
+async function loginFailures(env, ip) {
+  return Number(await env.CACHE.get(K_LOGIN_FAIL_PREFIX + ip)) || 0;
+}
+
+function noteLoginFailure(env, ip, current) {
+  return env.CACHE.put(K_LOGIN_FAIL_PREFIX + ip, String(current + 1), {
+    expirationTtl: LOGIN_FAIL_WINDOW_S,
+  });
+}
+
+function clearLoginFailures(env, ip) {
+  return env.CACHE.delete(K_LOGIN_FAIL_PREFIX + ip);
 }
 
 function b64urlEncode(bytes) {
@@ -1189,12 +1275,12 @@ function cookieValue(request, name) {
 }
 
 // Basic Auth 仍然接受（方便 curl / 接口调试），但不再主动发起挑战
-function basicUser(request, env) {
+async function basicUser(request, env) {
   const header = request.headers.get("Authorization") || "";
   if (!header.startsWith("Basic ")) return null;
   try {
     const decoded = atob(header.slice(6));
-    return userList(env).includes(decoded) ? decoded.split(":")[0] : null;
+    return (await matchesCredential(env, decoded)) ? decoded.split(":")[0] : null;
   } catch {
     return null;
   }
@@ -1288,16 +1374,26 @@ export default {
     // 登录：校验账号密码，通过则下发会话 Cookie
     if (path === "/api/login") {
       if (request.method !== "POST") return json({ success: false, error: "use POST" }, 405);
-      let body = {};
-      try { body = await request.json(); } catch { /* 忽略 */ }
-      const pair = String(body.user || "").trim() + ":" + String(body.pass || "");
       if (!authEnabled(env)) {
         return json({ success: false, error: "服务暂不可用，请联系管理员。" }, 503);
       }
-      if (!userList(env).includes(pair)) {
+
+      // 先看限流再解析 body：超限的请求不该有机会触发任何比对
+      const ip = clientIp(request);
+      const fails = await loginFailures(env, ip);
+      if (fails >= LOGIN_FAIL_LIMIT) {
+        return json({ success: false, error: "尝试过于频繁，请稍后再试。" }, 429);
+      }
+
+      let body = {};
+      try { body = await request.json(); } catch { /* 忽略 */ }
+      const name = String(body.user || "").trim();
+      if (!(await matchesCredential(env, name + ":" + String(body.pass || "")))) {
+        ctx.waitUntil(noteLoginFailure(env, ip, fails));
         return json({ success: false, error: "账号或密码不正确" }, 401);
       }
-      const token = await signSession(env, String(body.user).trim());
+      ctx.waitUntil(clearLoginFailures(env, ip));
+      const token = await signSession(env, name);
       return new Response(JSON.stringify({ success: true }), {
         headers: {
           "content-type": "application/json; charset=utf-8",
@@ -1329,7 +1425,7 @@ export default {
     }
 
     const session = await readSession(env, cookieValue(request, COOKIE_NAME));
-    const user = session || basicUser(request, env);
+    const user = session || (await basicUser(request, env));
 
     if (path === "/") {
       if (!session) return renderLogin(env);
@@ -1360,22 +1456,30 @@ export default {
         });
       }
 
-      const [rows, full, meta] = await Promise.all([
+      const range = resolveRange(q);
+      const meta = await readMeta(env);
+      const version = dataVersionOf(meta);
+
+      // 命中记忆缓存就直接返回，连明细都不用读
+      const cacheKey = version ? await queryCacheKey(q, version, range) : "";
+      if (cacheKey) {
+        const hit = await env.CACHE.get(cacheKey, { type: "json" });
+        if (hit) return json({ ...hit, meta });
+      }
+
+      const [rows, full] = await Promise.all([
         env.CACHE.get(K_ENTRIES, { type: "json" }),
         env.CACHE.get(K_STATS, { type: "json" }),
-        readMeta(env),
       ]);
       if (!rows) {
         kickoff(env, ctx, meta);
         return json({ success: true, building: true, meta: await readMeta(env) });
       }
-      const range = resolveRange(q);
       const filtered = applyFilters(rows, q, range);
       const previous = previousRange(range);
-      return json({
+      const payload = {
         success: true,
         stats: buildStats(filtered),
-        meta,
         filtered: true,
         matched: filtered.length,
         fullTotal: rows.length,
@@ -1386,7 +1490,15 @@ export default {
         previous: previous
           ? { ...buildStats(applyFilters(rows, q, previous)), ...previous }
           : null,
-      });
+      };
+      // 写缓存不挡响应；写失败只是下次再算一遍，不影响正确性
+      if (cacheKey) {
+        ctx.waitUntil(
+          env.CACHE.put(cacheKey, JSON.stringify(payload), { expirationTtl: QUERY_CACHE_TTL_S })
+            .catch((err) => console.error("[query-cache] put failed:", err.message))
+        );
+      }
+      return json({ ...payload, meta });
     }
 
     if (path === "/api/loop") {
@@ -1411,47 +1523,6 @@ export default {
         return json({ success: true, building: true, meta: await readMeta(env) });
       }
       return json({ success: true, weeks: weekly, meta });
-    }
-
-    if (path === "/api/entries") {
-      const rows = await env.CACHE.get(K_ENTRIES, { type: "json" });
-      if (!rows) {
-        kickoff(env, ctx, await readMeta(env));
-        return json({ success: true, building: true, total: 0, page: 1, totalPages: 1, data: [] });
-      }
-
-      const q = url.searchParams;
-      const page = Math.max(1, parseInt(q.get("page") || "1", 10));
-      const perPage = Math.min(100, Math.max(1, parseInt(q.get("per_page") || "25", 10)));
-      const channel = q.get("channel") || "";
-      const scene = q.get("scene") || "";
-      const nature = q.get("nature") || "";
-      const jiri = q.get("jiri") || "";
-      const search = (q.get("search") || "").toLowerCase();
-
-      let filtered = rows;
-      if (channel) filtered = filtered.filter((r) => r.ch === channel);
-      if (scene) filtered = filtered.filter((r) => r.scene === scene);
-      if (nature) filtered = filtered.filter((r) => r.nat === nature);
-      if (jiri) filtered = filtered.filter((r) => r.jiri === jiri);
-      if (search) {
-        filtered = filtered.filter(
-          (r) =>
-            (r.sm && r.sm.toLowerCase().includes(search)) ||
-            (r.reason && r.reason.toLowerCase().includes(search))
-        );
-      }
-
-      const total = filtered.length;
-      const start = (page - 1) * perPage;
-      return json({
-        success: true,
-        total,
-        page,
-        perPage,
-        totalPages: Math.max(1, Math.ceil(total / perPage)),
-        data: filtered.slice(start, start + perPage),
-      });
     }
 
     // 后台刷新：立即返回，进度写在 meta 里

@@ -27,16 +27,30 @@ const fullStats = {
   daily: Object.fromEntries(rows.map((row) => [row.t.slice(0, 10), 1])),
 };
 
+// 固定的数据版本：筛选结果记忆缓存的键里带 updatedAt，每次都换新值就永远命不中
+const updatedAt = new Date().toISOString();
+
+// 预置键之外的写入（筛选结果缓存、登录失败计数）落到内存里，
+// 让本地预览也能真正跑到缓存命中和限流这两条分支。
+const scratch = new Map();
+
 const cache = {
   async get(key) {
-    if (key === "hive:entries:v2") return rows;
-    if (key === "hive:stats:v5") return fullStats;
+    if (key === "hive:entries:v3") return rows;
+    if (key === "hive:stats:v6") return fullStats;
     if (key === "hive:weekly:v1") return [];
     if (key === "hive:loop:v1") return { weeks: [], types: [], overall: { applicable: 0, yes: 0, no: 0, pending: 0, rate: null } };
-    if (key === "hive:meta:v1") return { status: "ok", updatedAt: new Date().toISOString(), total: rows.length };
-    return null;
+    if (key === "hive:meta:v1") return { status: "ok", updatedAt, total: rows.length };
+    const hit = scratch.get(key);
+    return hit === undefined ? null : hit;
   },
-  async put() {},
+  async put(key, value) {
+    // 真实 KV 存的是字符串，读回来才按 type 解析；这里照做，避免预览掩盖序列化问题
+    scratch.set(key, typeof value === "string" ? JSON.parse(value) : value);
+  },
+  async delete(key) {
+    scratch.delete(key);
+  },
 };
 
 const env = {

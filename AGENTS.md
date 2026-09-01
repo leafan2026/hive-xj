@@ -26,8 +26,17 @@ The skills live in the repository by design. Keep all future repository-specific
 | `workers/hive/public/hive.css` | Dashboard layout, visual tokens, chart-card and tooltip styling |
 | `workers/hive/public/chart.min.js` | Pinned Chart.js asset; do not edit for dashboard styling |
 | `workers/hive/wrangler.jsonc` | Worker name `hive`, KV `CACHE`, static assets, 30-minute cron |
+| `workers/hive/scripts/preview.mjs` | Local preview server; stubs the KV binding with synthetic data, no credentials |
 | `workers/hive/README.md` | Business/data definitions and operational background |
 | `workers/hive/.key` | Local raw WDL deployment token; ignored by Git, never read or printed in conversation |
+
+### Second worker at the repository root
+
+`src/index.js`, `public/dashboard.{js,css}` and the root `wrangler.jsonc` are a **separate**
+worker (`app`) — the 明道云 HAP「收款反馈跟进」dashboard, last changed 2026-07-14 in `01a80af`.
+It shares nothing with `workers/hive` beyond the repository. Do not edit it while working on
+HIVE, and do not assume a HIVE change needs mirroring there. Its deployment status is not
+recorded here; ask before deploying or deleting it.
 
 ## Non-negotiable safety rules
 
