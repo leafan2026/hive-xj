@@ -3,9 +3,9 @@ const FORM_TOKEN = "EQca39";
 const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 const JSJ_TABLE_URL = `https://next.jinshuju.net/tables/${FORM_TOKEN}`;
 
-// v2 补齐日/周桶里的 AI 独立与可避免转人工计数。保留 v1，不删除既有 KV，
+// v3 增加最近 7 天的小时服务节奏。保留旧版本，不删除既有 KV，
 // 首次访问会安全地后台重建新缓存。
-const K_STATS = "hive:stats:v2";
+const K_STATS = "hive:stats:v3";
 const K_ENTRIES = "hive:entries:v2";   // v2: trim() 增加 baid（billing_account_id）
 const K_WEEKLY = "hive:weekly:v1";
 const K_LOOP = "hive:loop:v1";
@@ -168,6 +168,23 @@ function bucket() {
   };
 }
 
+function timestampDayHour(value) {
+  const match = String(value || "").match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}):/);
+  if (!match) return null;
+  const hour = Number(match[2]);
+  return hour >= 0 && hour < 24 ? { day: match[1], hour } : null;
+}
+
+function recentCalendarDays(latestDay, count = 7) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(latestDay || "")) return [];
+  const end = new Date(latestDay + "T00:00:00Z");
+  return Array.from({ length: count }, (_, i) => {
+    const d = new Date(end);
+    d.setUTCDate(end.getUTCDate() - (count - 1 - i));
+    return d.toISOString().slice(0, 10);
+  });
+}
+
 function median(nums) {
   if (!nums.length) return 0;
   const s = [...nums].sort((a, b) => a - b);
@@ -184,6 +201,9 @@ function buildStats(rows) {
     nature: {}, durSum: 0, durCount: 0, turnsSum: 0,
     // 按天 / 按周的复合桶，供堆叠柱 + 双轴折线用
     byDay: {}, byWeek: {},
+    // 最近 7 个自然日的逐小时服务节奏；小时以金数据记录的原始日历时间划分，
+    // 与现有按天统计保持同一口径。
+    hourly: { days: [], byDay: {} },
     // 接待人数（user_id 去重）/ 接待企业数（billing_account_id 去重）。
     // 去重计数不能跨周期相加——一个用户在两天各来一次，按天是 2、按月是 1——
     // 所以每个粒度各自去重一次，不能让客户端从日粒度累加。
@@ -194,6 +214,12 @@ function buildStats(rows) {
     natureByDevice: {}, natureByChannel: {}, effectiveScene: {},
   };
   const durations = [];
+  const latestRowDay = rows.map((r) => String(r.t || "").slice(0, 10))
+    .filter((day) => /^\d{4}-\d{2}-\d{2}$/.test(day)).sort().pop();
+  s.hourly.days = recentCalendarDays(latestRowDay);
+  for (const day of s.hourly.days) {
+    s.hourly.byDay[day] = Array.from({ length: 24 }, () => ({ jiri: 0, manual: 0, manualDur: 0 }));
+  }
   // 中间态：每个粒度每个周期一组 Set，收尾时转成计数再下发（不然 payload 会很大）
   const uniqSets = {};
   for (const g of UNIQ_GRAINS) uniqSets[g] = {};
@@ -215,6 +241,15 @@ function buildStats(rows) {
     if (r.nat === "有效") tally(s.effectiveScene, r.scene);
 
     const day = r.t ? r.t.slice(0, 10) : "";
+    const hourSlot = timestampDayHour(r.t);
+    if (hourSlot && s.hourly.byDay[hourSlot.day]) {
+      const hourly = s.hourly.byDay[hourSlot.day][hourSlot.hour];
+      if (r.st === "仅 Jiri") hourly.jiri++;
+      if (r.st === "仅人工") {
+        hourly.manual++;
+        if (typeof r.dur === "number" && r.dur > 0) hourly.manualDur += r.dur;
+      }
+    }
     if (day) {
       tally(s.daily, day);
       for (const g of UNIQ_GRAINS) {
@@ -922,6 +957,15 @@ async function renderPage(env, user) {
           <span class="chart-hint" id="hintDayCost"></span>
         </div>
         <canvas id="chartDayCost"></canvas>
+      </div>
+      <div class="chart-card wide tall">
+        <div class="chart-head">
+          <h3>24 小时服务节奏</h3>
+          <span class="chart-total" id="totalHourlyService"></span>
+          <div class="hourly-day-tabs" id="hourlyDayTabs" aria-label="选择统计日期"></div>
+        </div>
+        <canvas id="chartHourlyService"></canvas>
+        <div class="note dim-note" id="hourlyServiceNote"></div>
       </div>
     </div>
   </section>

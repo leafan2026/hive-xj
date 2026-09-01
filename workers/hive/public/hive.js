@@ -9,7 +9,7 @@ const PALETTE = [
   "#9289e9", "#70bdf7", "#d3b1ef", "#ffbe9d", "#a9afc7",
 ];
 
-const state = { stats: null, facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null, loop: null, loopLoaded: false };
+const state = { stats: null, facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null, loop: null, loopLoaded: false, hourlyDay: null };
 const charts = {};
 
 // 筛选项 → 接口参数名；选项值来自首次全量结果，筛选后不再改动
@@ -898,12 +898,12 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
       yAxisID: "y",
       borderWidth: 0,
       // 单系列做成胶囊，堆叠时只给最上面一段留圆角，并列柱每根都留圆角
-      borderRadius: o.grouped ? { topLeft: 5, topRight: 5 } : (single ? 20 : (i === bars.length - 1 ? { topLeft: 5, topRight: 5 } : 2)),
+      borderRadius: o.grouped ? (o.pillBars ? 20 : { topLeft: 5, topRight: 5 }) : (single ? 20 : (i === bars.length - 1 ? { topLeft: 5, topRight: 5 } : 2)),
       borderSkipped: false,
       // 段与段之间留一条白色细缝，避免颜色直接相接糊在一起（并列柱不需要）
       borderColor: "#f7f8fc",
       borderWidth: (single || o.grouped) ? 0 : { top: 2, right: 0, bottom: 0, left: 0 },
-      barPercentage: o.grouped ? .8 : (single ? .42 : .62),
+      barPercentage: o.grouped ? (o.pillBars ? .54 : .8) : (single ? .42 : .62),
       categoryPercentage: o.grouped ? .74 : .82,
       order: 2,
     })),
@@ -951,7 +951,7 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
         legend: comboLegend(),
         hoverGuide: { enabled: true },
         valueLabels: { maxLabels: o.maxLabels ?? 40, maxTotalLabels: o.maxTotalLabels ?? 150, showStackTotal: o.showStackTotal !== false && !o.grouped, barTop: !!o.grouped, lineLabels: false },
-        tooltip: comboTooltip(),
+        tooltip: comboTooltip(o.tooltipCallbacks),
       },
       scales,
     },
@@ -1488,7 +1488,7 @@ function drawUniqChart(s) {
       { label: "接待企业数", data: keys.map((k) => by[k].orgs), color: "#00c8a9" },
     ],
     [],
-    { grouped: true, maxLabels: g.maxLabels, rotate: g.rotate }
+    { grouped: true, pillBars: true, maxLabels: g.maxLabels, rotate: g.rotate }
   );
 
   // 总计用全区间去重数，不是各周期相加——相加会把跨周期的回访用户重复计数。
@@ -1658,6 +1658,53 @@ function renderCost(s) {
     hint.textContent = "最近 " + recentDays.length + " 天" +
       (cz.merged > 0 ? "，其中 " + cz.merged + " 个无人工接待的日期已与相邻空档合并" : "");
   }
+
+  drawHourlyService(s);
+}
+
+function hourlyDayLabel(day) {
+  const date = new Date(day + "T00:00:00Z");
+  return isNaN(date) ? day : new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", weekday: "short",
+  }).format(date);
+}
+
+function drawHourlyService(s) {
+  const hourly = s.hourly || {};
+  const days = Array.isArray(hourly.days) ? hourly.days : [];
+  const tabs = $("hourlyDayTabs");
+  const note = $("hourlyServiceNote");
+  if (!days.length || !tabs) {
+    destroyChart("hourlyService");
+    if (note) note.textContent = "当前筛选条件下没有可展示的小时数据。";
+    return;
+  }
+  if (!days.includes(state.hourlyDay)) state.hourlyDay = days.at(-1);
+  tabs.replaceChildren(...days.map((day) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "hourly-day-tab" + (day === state.hourlyDay ? " active" : "");
+    button.dataset.day = day;
+    button.textContent = hourlyDayLabel(day);
+    button.setAttribute("aria-pressed", String(day === state.hourlyDay));
+    return button;
+  }));
+
+  const buckets = hourly.byDay?.[state.hourlyDay] || [];
+  const points = Array.from({ length: 24 }, (_, hour) => buckets[hour] || { jiri: 0, manual: 0, manualDur: 0 });
+  drawCombo(
+    "hourlyService", "chartHourlyService", points.map((_, hour) => String(hour).padStart(2, "0") + ":00"),
+    [],
+    [
+      { label: "Jiri 会话量", data: points.map((p) => p.jiri), color: "#00c8a9", axis: "y" },
+      { label: "人工会话量", data: points.map((p) => p.manual), color: "#806dfa", axis: "y" },
+      { label: "人工会话时长（小时）", data: points.map((p) => Number((p.manualDur / 3600).toFixed(2))), color: "#ff6689", axis: "y1" },
+    ],
+    { grouped: true, rotate: 0, maxLabels: 0, showStackTotal: false, yLabel: "会话数", y1Label: "小时" }
+  );
+  const total = points.reduce((sum, point) => sum + point.jiri + point.manual, 0);
+  setTotal("totalHourlyService", hourlyDayLabel(state.hourlyDay) + "：", total + " 场会话");
+  if (note) note.textContent = "每个点覆盖该小时的 00 分至 59 分；人工时长只统计处理状态为“仅人工”的会话。";
 }
 
 // ============== 业务闭环 ==============
@@ -2135,6 +2182,14 @@ function initActions() {
       if (LAST_STATS) drawUniqChart(LAST_STATS);
     });
   }
+
+  const hourlyTabs = $("hourlyDayTabs");
+  if (hourlyTabs) hourlyTabs.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-day]");
+    if (!button || !LAST_STATS) return;
+    state.hourlyDay = button.dataset.day;
+    drawHourlyService(LAST_STATS);
+  });
 
   $("fRange").addEventListener("change", () => { applyRangePreset(); reload(); });
   $("fFrom").addEventListener("change", reload);

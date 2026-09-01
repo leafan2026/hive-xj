@@ -251,6 +251,28 @@ body {
 .chart-total b { color: var(--ink); font-size: 19px; font-weight: 700; margin-left: 4px; letter-spacing: -.3px; }
 .chart-hint { color: #a7abbe; font-size: 12px; margin-left: auto; }
 
+.hourly-day-tabs {
+  display: flex;
+  flex: 1 1 100%;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 0 3px;
+  scrollbar-width: thin;
+}
+.hourly-day-tab {
+  flex: 0 0 auto;
+  padding: 6px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fbfaff;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color .14s, border-color .14s, background .14s;
+}
+.hourly-day-tab:hover { border-color: #c8c0ed; color: var(--primary); }
+.hourly-day-tab.active { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); font-weight: 650; }
+
 /* 图表卡片内的聚合粒度下拉 */
 .chart-grain {
   padding: 4px 9px;
