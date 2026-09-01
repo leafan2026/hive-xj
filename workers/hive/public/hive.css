@@ -273,7 +273,7 @@ body {
 .hourly-day-tab:hover { border-color: #c8c0ed; color: var(--primary); }
 .hourly-day-tab.active { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); font-weight: 650; }
 
-/* 人工服务忙闲图：每个格子代表一个 30 分钟，无人接待的时段直接留白。 */
+/* 人工服务忙闲图：每个格子代表一个 30 分钟，空时段直接留白。 */
 #panel-service .service-busy-card { min-height: 0; }
 .manual-busy-modes { display: flex; gap: 7px; margin-left: auto; }
 .manual-busy-modes button {
@@ -292,8 +292,8 @@ body {
 .manual-busy-layout { display: grid; grid-template-columns: minmax(0, 1fr) 190px; gap: 22px; align-items: start; }
 .manual-busy-grid {
   display: grid;
-  grid-template-columns: 70px repeat(19, minmax(12px, 1fr));
-  gap: 5px;
+  grid-template-columns: 70px repeat(19, 30px);
+  gap: 10px;
   align-items: center;
   min-width: 0;
 }
@@ -301,7 +301,7 @@ body {
 .manual-busy-time { min-height: 15px; text-align: center; transform: translateX(-50%); }
 .manual-busy-corner { transform: none; }
 .manual-busy-day { padding-right: 6px; text-align: right; }
-.manual-busy-cell { display: block; height: 40px; min-width: 0; border-radius: 999px; transition: transform .14s ease, box-shadow .14s ease; }
+.manual-busy-cell { display: block; height: 58px; width: 30px; border-radius: 999px; transition: transform .14s ease, box-shadow .14s ease; }
 .manual-busy-cell:hover { transform: scale(1.11); box-shadow: 0 0 0 2px rgba(56, 56, 116, .34); position: relative; z-index: 1; }
 .manual-busy-cell.busy-empty { background: transparent; border: 0; }
 .manual-busy-cell.busy-empty:hover { transform: none; box-shadow: none; }
@@ -529,7 +529,7 @@ tr.loading-row td { text-align: center; color: var(--muted); padding: 30px; }
   .manual-busy-modes { width: 100%; margin-left: 0; }
   .manual-busy-layout { grid-template-columns: 1fr; gap: 16px; }
   .manual-busy-grid { grid-template-columns: 58px repeat(19, minmax(8px, 1fr)); gap: 3px; }
-  .manual-busy-cell { height: 28px; border-radius: 999px; }
+  .manual-busy-cell { height: 42px; width: auto; border-radius: 999px; }
   .manual-busy-time { font-size: 9px; }
   .manual-busy-day { font-size: 10px; }
 }
