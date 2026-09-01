@@ -844,14 +844,21 @@ function glassTooltip(context) {
     el.appendChild(note);
   }
 
-  // 先显示再测量，确保在靠近视窗边缘时也不会溢出。
-  el.classList.add("visible");
+  // 先在不可见状态下完成定位，避免首次悬停时提示框从旧位置滑入。
+  el.classList.remove("visible");
   const canvasBox = chart.canvas.getBoundingClientRect();
   const box = el.getBoundingClientRect();
-  const left = Math.min(Math.max(12, canvasBox.left + tooltip.caretX + 16), window.innerWidth - box.width - 12);
-  const top = Math.min(Math.max(12, canvasBox.top + tooltip.caretY + 16), window.innerHeight - box.height - 12);
+  const anchorX = canvasBox.left + tooltip.caretX;
+  const anchorY = canvasBox.top + tooltip.caretY;
+  let left = anchorX + 14;
+  if (left + box.width > window.innerWidth - 12) left = anchorX - box.width - 14;
+  left = Math.min(Math.max(12, left), window.innerWidth - box.width - 12);
+  let top = anchorY - box.height - 14;
+  if (top < 12) top = anchorY + 14;
+  top = Math.min(Math.max(12, top), window.innerHeight - box.height - 12);
   el.style.left = left + "px";
   el.style.top = top + "px";
+  el.classList.add("visible");
 }
 
 function comboTooltip(extraCallbacks) {
@@ -859,6 +866,7 @@ function comboTooltip(extraCallbacks) {
     enabled: false,
     displayColors: false,
     usePointStyle: true,
+    position: "nearest",
     external: glassTooltip,
     callbacks: {
       labelColor(context) {
@@ -1751,7 +1759,6 @@ function drawManualBusy(s) {
   document.querySelectorAll("#manualBusyModes button[data-mode]").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
   });
-  if (hint) hint.textContent = days.length ? "最近 " + days.length + " 天 · 09:30–19:00 · 每格 30 分钟" : "";
   if (!days.length) {
     grid.replaceChildren();
     setBusyPeak("manualBusyPeak", "manualBusyPeakDetail", null, [], mode);
@@ -1760,10 +1767,26 @@ function drawManualBusy(s) {
     return;
   }
 
-  const rows = days.map((day) => Array.from({ length: BUSY_SLOT_COUNT }, (_, index) => {
-    return Number(busy.byDay?.[day]?.[index]?.[mode]) || 0;
-  }));
-  const max = Math.max(0, ...rows.flat());
+  const visibleRows = days.map((day) => ({
+    day,
+    values: Array.from({ length: BUSY_SLOT_COUNT }, (_, index) => {
+      return Number(busy.byDay?.[day]?.[index]?.[mode]) || 0;
+    }),
+  })).filter(({ values }) => values.some((value) => value > 0));
+
+  if (hint) {
+    hint.textContent = "最近 " + days.length + " 天 · 显示 " + visibleRows.length + " 个有人工接待的日期 · 09:30–19:00 · 每格 30 分钟";
+  }
+  if (!visibleRows.length) {
+    grid.replaceChildren();
+    setBusyPeak("manualBusyPeak", "manualBusyPeakDetail", null, [], mode);
+    setBusyPeak("manualBusySecond", "manualBusySecondDetail", null, [], mode);
+    if (note) note.textContent = "当前筛选条件下没有可展示的人工服务数据。";
+    return;
+  }
+
+  const rows = visibleRows.map(({ values }) => values);
+  const max = Math.max(...rows.flat());
   const slotTotals = Array.from({ length: BUSY_SLOT_COUNT }, (_, index) => ({
     index,
     total: rows.reduce((sum, row) => sum + row[index], 0),
@@ -1780,17 +1803,17 @@ function drawManualBusy(s) {
     time.textContent = index % 2 === 0 ? minuteLabel(BUSY_START_MINUTE + index * BUSY_SLOT_MINUTES) : "";
     cells.push(time);
   }
-  rows.forEach((row, rowIndex) => {
+  visibleRows.forEach(({ day: visibleDay, values: row }) => {
     const day = document.createElement("span");
     day.className = "manual-busy-day";
-    day.textContent = hourlyDayLabel(days[rowIndex]);
+    day.textContent = hourlyDayLabel(visibleDay);
     cells.push(day);
     row.forEach((value, index) => {
       const level = value ? Math.min(5, Math.max(1, Math.ceil(value / max * 5))) : 0;
       const cell = document.createElement("span");
       cell.className = "manual-busy-cell " + BUSY_COLORS[level];
       const metric = mode === "active" ? "同时服务" : "新转人工";
-      cell.title = hourlyDayLabel(days[rowIndex]) + " " + busySlotLabel(index) + "：" + metric + " " + value + " 人";
+      cell.title = hourlyDayLabel(visibleDay) + " " + busySlotLabel(index) + "：" + metric + " " + value + " 人";
       cell.setAttribute("role", "img");
       cell.setAttribute("aria-label", cell.title);
       cells.push(cell);
@@ -1801,7 +1824,7 @@ function drawManualBusy(s) {
   setBusyPeak("manualBusySecond", "manualBusySecondDetail", slotTotals[1], days, mode);
   if (note) {
     const metric = mode === "active" ? "该半小时内正在由人工接待的会话数" : "该半小时内新进入人工接待的会话数";
-    note.textContent = "每格表示" + metric + "；没有人数的时段直接留白显示。";
+    note.textContent = "每格表示" + metric + "；没有人数的时段直接留白，只显示有人工接待的日期。";
   }
 }
 

@@ -228,10 +228,10 @@ body {
   backdrop-filter: blur(28px) saturate(155%);
   -webkit-backdrop-filter: blur(28px) saturate(155%);
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
-  transition: opacity .12s ease;
 }
-.chart-glass-tooltip.visible { opacity: 1; }
+.chart-glass-tooltip.visible { opacity: 1; visibility: visible; }
 .chart-glass-tooltip-title { margin-bottom: 8px; font-size: 13px; font-weight: 700; letter-spacing: .02em; }
 .chart-glass-tooltip-row { display: flex; align-items: center; gap: 7px; min-height: 23px; font-size: 13px; font-weight: 600; white-space: nowrap; }
 .chart-glass-tooltip-marker { display: inline-block; flex: 0 0 12px; width: 12px; height: 12px; border: 1.5px solid rgba(255,255,255,.86); }
@@ -289,7 +289,7 @@ body {
 }
 .manual-busy-modes button:hover { border-color: #c8c0ed; color: var(--primary); }
 .manual-busy-modes button[aria-pressed="true"] { border-color: #8676ff; background: #f1efff; color: #635bea; font-weight: 650; }
-.manual-busy-layout { display: grid; grid-template-columns: minmax(0, 1fr) 190px; gap: 22px; align-items: start; }
+.manual-busy-layout { display: grid; grid-template-columns: max-content 190px; gap: 22px; align-items: start; justify-content: start; }
 .manual-busy-grid {
   display: grid;
   grid-template-columns: 70px repeat(19, 30px);
