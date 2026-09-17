@@ -5,12 +5,12 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 // v6 在 manualBusy 里下发时段定义（起点/格宽/格数），前端不再硬编码。
 // v3 的明细去掉了全链路无消费者的 sn/url/sm/inWindow/creator。
 // v7 / v4（2026-09-17）：明细加回 url（会话地址）并新增 rep/repFrom（复问、复问自，读质检表 field_33/34），
-// 日/周桶新增 rep（复问数），stats 新增 repeats 明细。weekly v2：目标追踪加 guideSplit（操作引导占比按 Jiri 能否解答拆分）。
+// 日/周桶新增 rep（复问数），stats 新增 repeats 明细。weekly v2：目标追踪加 guideSplit（操作引导占比按 Jiri 能否解答拆分）；v3：加 jiri（JIRI 接待现状板块，读 field_35/36）。
 // 旧 v3 明细没有这些字段，读到会把复问率画成全 0，所以三个键一起换，让首次访问后台重建。
 // 保留旧版本键，不删除既有 KV，首次访问会安全地后台重建新缓存。
 const K_STATS = "hive:stats:v7";
 const K_ENTRIES = "hive:entries:v4";
-const K_WEEKLY = "hive:weekly:v2";
+const K_WEEKLY = "hive:weekly:v3";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
 // 筛选结果记忆缓存：键里带 meta.updatedAt，数据一刷新自然失效；
@@ -122,6 +122,8 @@ function trim(e) {
     loop: e.field_30 || "",         // 业务闭环
     rep: e.field_33 === "是",       // 复问（上游 算复问.py 算好写回：同用户隔 6~36h 再进线且一句话总结相似）
     repFrom: e.field_34 || "",      // 复问自：前一场会话地址
+    uturns: typeof e.field_35 === "number" ? e.field_35 : null,  // 用户轮次（客户说话条数，上游 推轮次与at到质检表.py）
+    atJiri: e.field_36 === "是",    // 人工中@jiri：仅人工会话里客服有没有 @jiri
   };
 }
 
@@ -544,6 +546,29 @@ function bizTypeStats(rows) {
 }
 
 // 一批会话 → 周报三/四/五要用的全部指标（同期对齐时在子集上重算）
+// 周报「JIRI（AI）接待现状」板块（2026-09-17 加）。口径与 hive 仓库 skills/统计口径.md 一致：
+// - 轮次三档的分母 = 仅 Jiri 且有效；单轮 =1、2 轮 =2、深度 ≥3（另给深度中位轮次）；三档之和与分母的差 = 用户 0 轮（只有 Jiri 单方说话）
+// - 复问、填表人的分母 = 全部会话（表内不含内部测试）；填表人分 AI 侧（仅 Jiri）与含人工侧
+// - 人工中 @jiri 的分母 = 全部仅人工
+function jiriStats(rows, manual, effJiri) {
+  const turns = effJiri.map((r) => r.uturns).filter((n) => typeof n === "number");
+  const deepTurns = turns.filter((n) => n >= 3);
+  const one = turns.filter((n) => n === 1).length;
+  const two = turns.filter((n) => n === 2).length;
+  const deep = deepTurns.length;
+  return {
+    base: effJiri.length, unlabeled: effJiri.length - turns.length,
+    one, two, deep, zero: turns.length - one - two - deep,
+    deepMedian: median(deepTurns),
+    repeat: rows.filter((r) => r.rep).length,
+    fillerAI: rows.filter((r) => r.nat === "填表人" && r.st === "仅 Jiri").length,
+    fillerAll: rows.filter((r) => r.nat === "填表人").length,
+    atJiri: manual.filter((r) => r.atJiri).length,
+    manual: manual.length,
+    total: rows.length,
+  };
+}
+
 function weekMetrics(rows) {
   const manual = rows.filter((r) => r.st === "仅人工");
   const effManual = manual.filter((r) => r.nat === "有效");
@@ -552,6 +577,7 @@ function weekMetrics(rows) {
   for (const r of effJiri) jiriScenes[r.scene] = (jiriScenes[r.scene] || 0) + 1;
   return {
     ...overview(rows),
+    jiri: jiriStats(rows, manual, effJiri),
     eff: groupStats(effManual),
     allManual: groupStats(manual),
     directTransfer: effManual.filter((r) => r.way === "直接转").length,
@@ -601,6 +627,7 @@ function buildWeekly(rows) {
       firstDay: [...days].sort()[0],
       lastDay: [...days].sort().pop(),
       ...overview(all),
+      jiri: jiriStats(all, manual, effJiri),
       bizTypes: bizTypeStats(all),
       eff,
       allManual,
@@ -1005,23 +1032,29 @@ async function renderPage(env, user) {
     </div>
 
     <div class="report-block">
-      <h3>二、周度接待概览</h3>
+      <h3>二、JIRI（AI）接待现状</h3>
+      <div class="table-wrapper"><table class="report-table" id="tblJiri"></table></div>
+      <div class="note" id="jiriNote"></div>
+    </div>
+
+    <div class="report-block">
+      <h3>三、周度接待概览</h3>
       <div class="table-wrapper"><table class="report-table" id="tblOverview"></table></div>
     </div>
 
     <div class="report-block">
-      <h3>三、人工接待现状</h3>
+      <h3>四、人工接待现状</h3>
       <div class="table-wrapper"><table class="report-table" id="tblManual"></table></div>
       <div class="note" id="manualNote"></div>
     </div>
 
     <div class="report-block">
-      <h3>四、有效人工场景 × 工作量（占比按时长）</h3>
+      <h3>五、有效人工场景 × 工作量（占比按时长）</h3>
       <div class="table-wrapper"><table class="report-table" id="tblScenes"></table></div>
     </div>
 
     <div class="report-block">
-      <h3>五、仅 Jiri 有效场景</h3>
+      <h3>六、仅 Jiri 有效场景</h3>
       <div class="table-wrapper"><table class="report-table" id="tblJiriScenes"></table></div>
     </div>
 

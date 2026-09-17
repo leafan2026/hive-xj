@@ -2143,7 +2143,36 @@ function renderWeekly(week) {
       '<td class="dim">' + r.note + "</td></tr>"
     ).join("") + "</tbody>";
 
-  // 二、周度接待概览：只看到所选周为止的最近 5 周，底部附同期对齐的环比
+  // 二、JIRI（AI）接待现状：本周 / 上周同期（相同星期对齐）
+  const j = w.jiri;
+  const pj = w.compare ? w.compare.prev.jiri : null;
+  const jscope = w.compare ? dowLabel(w.compare.dows) : "";
+  if (j) {
+    const pctOf = (n, d) => (d ? ((n / d) * 100).toFixed(2) + "%" : "—");
+    const line = (n, d) => n + " / " + pctOf(n, d);
+    const jrows = [
+      ["一次性浅问题", "单轮 " + line(j.one, j.base) + "；2 轮 " + line(j.two, j.base),
+        pj ? "单轮 " + line(pj.one, pj.base) + "；2 轮 " + line(pj.two, pj.base) : ""],
+      ["深度咨询（≥3 轮）", line(j.deep, j.base) + "，中位 " + j.deepMedian + " 轮",
+        pj ? line(pj.deep, pj.base) + "，中位 " + pj.deepMedian + " 轮" : ""],
+      ["复问（同一用户 6～36 小时内再问同一件事）", line(j.repeat, j.total), pj ? line(pj.repeat, pj.total) : ""],
+      ["填表人（AI 侧）", line(j.fillerAI, j.total) + "（含人工侧共 " + line(j.fillerAll, j.total) + "，分母均为剔内测 " + j.total + "）",
+        pj ? line(pj.fillerAI, pj.total) + "（含人工侧 " + line(pj.fillerAll, pj.total) + "）" : ""],
+      ["人工会话中客服 @jiri", j.atJiri + " / " + j.manual + " = " + pctOf(j.atJiri, j.manual) + "（分母为剔内测的全部仅人工）",
+        pj ? pj.atJiri + " / " + pj.manual + " = " + pctOf(pj.atJiri, pj.manual) : ""],
+    ];
+    $("tblJiri").innerHTML =
+      "<thead><tr><th>指标</th><th>结果</th>" + (pj ? "<th>上周同期" + (jscope ? "（" + jscope + "）" : "") + "</th>" : "") + "</tr></thead><tbody>" +
+      jrows.map((r) => "<tr><td>" + r[0] + '</td><td class="dim">' + r[1] + "</td>" + (pj ? '<td class="dim">' + r[2] + "</td>" : "") + "</tr>").join("") +
+      "</tbody>";
+    $("jiriNote").innerHTML =
+      '<span class="dim-note">口径：轮次三档的分母 = 仅 Jiri 且有效 ' + j.base + " 场；三档之和比分母少 " + j.zero +
+      " 场，是用户一句话没说、只有 Jiri 单方回复的 0 轮场次" + (j.unlabeled ? "，另有 " + j.unlabeled + " 场还没算轮次" : "") +
+      "。用户轮次 = 客户说话的条数；复问 = 同一用户隔 6～36 小时再进线且一句话总结相似（质检表「复问」列）；" +
+      "@jiri 只算客服侧。上周同期按相同星期对齐。</span>";
+  }
+
+  // 三、周度接待概览：只看到所选周为止的最近 5 周，底部附同期对齐的环比
   const recent = state.weeks.slice(Math.max(0, i - 4), i + 1);
   const cmp = w.compare;
   const scope = cmp ? dowLabel(cmp.dows) : "";
@@ -2193,7 +2222,7 @@ function renderWeekly(week) {
   }
   $("tblOverview").innerHTML = html + "</tbody>";
 
-  // 三、人工接待现状：每个口径都给本周 / 上周同期 / 环比 / 4 周前同期 / 同比
+  // 四、人工接待现状：每个口径都给本周 / 上周同期 / 环比 / 4 周前同期 / 同比
   const d1 = (v) => Number(v).toFixed(1);
   const yoyNo = cmp && cmp.yoyWeek ? Number(cmp.yoyWeek.slice(5)) : null;
 
@@ -2240,7 +2269,7 @@ function renderWeekly(week) {
     '（表单里「人工接待次数」两个字段全为空）；单次中位 = 每场「时长 ÷ 接待次数」的中位数。' +
     '环比对比上周同期，同比对比 4 周前同期，都按相同星期对齐。</span>';
 
-  // 四、有效人工场景 × 工作量
+  // 五、有效人工场景 × 工作量
   const sceneVal = (src, scene, field) => {
     const hit = src && src.scenes ? src.scenes[scene] : null;
     return hit ? hit[field] : null;
@@ -2263,7 +2292,7 @@ function renderWeekly(week) {
     (cmp ? ratio(w.eff.durMin, cmp.prev.eff.durMin) : num("—")) +
     (cmp && cmp.yoy ? ratio(w.eff.durMin, cmp.yoy.eff.durMin) : num("—")) + "</tr></tbody>";
 
-  // 五、仅 Jiri 有效场景
+  // 六、仅 Jiri 有效场景
   $("tblJiriScenes").innerHTML =
     '<thead><tr><th>场景</th><th class="num">场次</th><th class="num">占比</th>' +
     '<th class="num">环比</th><th class="num">同比</th></tr></thead><tbody>' +
