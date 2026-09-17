@@ -2351,6 +2351,16 @@ function initTabs() {
   });
 }
 
+// 筛选栏吸顶：sticky 的 top 要等于顶栏实际高度（顶栏在窄屏会换行、变高），按实际量出来写进 CSS 变量
+function initStickyFilter() {
+  const header = document.querySelector(".header");
+  if (!header) return;
+  const apply = () => document.documentElement.style.setProperty("--header-h", header.offsetHeight + "px");
+  apply();
+  window.addEventListener("resize", apply);
+  if (window.ResizeObserver) new ResizeObserver(apply).observe(header);
+}
+
 function initActions() {
   $("refreshBtn").addEventListener("click", hardRefresh);
 
@@ -2438,6 +2448,7 @@ const T0 = performance.now();
 
 initTabs();
 initActions();
+initStickyFilter();
 renderSkeleton();
 loadWeekly();
 

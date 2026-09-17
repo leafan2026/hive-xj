@@ -374,6 +374,8 @@ body {
 
 /* ============ 筛选栏 ============ */
 
+/* 筛选栏跟着页面吸顶，贴在顶栏（同样是 sticky）正下方；--header-h 由 hive.js 按顶栏实际高度写入。
+   层级放到全页最高（高于图表卡、表头、悬浮指标框），下滑时永远压在内容之上。 */
 .filterbar {
   background: var(--card);
   border-radius: var(--radius);
@@ -381,6 +383,19 @@ body {
   margin-bottom: 0;
   box-shadow: var(--shadow);
   border: 1px solid rgba(57,56,120,.045);
+  position: sticky;
+  top: var(--header-h, 72px);
+  z-index: 60;
+}
+/* 吸顶后顶栏与筛选栏之间那 20px 是 .main 的内边距，内容滚过会从缝里露出来，用页面底色把缝盖住 */
+.filterbar::before {
+  content: "";
+  position: absolute;
+  left: -28px;
+  right: -28px;
+  top: -21px;
+  height: 21px;
+  background: var(--bg);
 }
 .filter-row { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
 .filter-row select, .filter-row input[type="date"] {
@@ -539,6 +554,7 @@ td a:hover { text-decoration: underline; }
 
 @media (max-width: 760px) {
   .header-inner, .main { padding-left: 16px; padding-right: 16px; }
+  .filterbar::before { left: -16px; right: -16px; }
   .header-inner { align-items: flex-start; }
   .header-meta { justify-content: flex-end; flex-wrap: wrap; }
   /* 数据新鲜度是关键信息，手机上不隐藏，换行单独占一行 */
