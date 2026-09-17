@@ -927,6 +927,7 @@ async function renderPage(env, user) {
   <div id="banner" class="banner" hidden></div>
 
   <div class="filter-sentinel" id="filterSentinel" aria-hidden="true"></div>
+  <div class="sticky-top" id="stickyTop">
   <section class="filterbar" id="filterbar">
     <div class="filter-row">
       <select id="fRange" title="时间范围">
@@ -961,9 +962,6 @@ async function renderPage(env, user) {
       <span class="match-info" id="matchInfo"></span>
     </div>
   </section>
-
-  <section class="cards" id="cards"></section>
-
   <nav class="tabs">
     <button class="tab active" data-tab="weekly">周报</button>
     <button class="tab" data-tab="service">服务概览</button>
@@ -971,6 +969,9 @@ async function renderPage(env, user) {
     <button class="tab" data-tab="scene">业务场景与套餐</button>
     <button class="tab" data-tab="loop">业务闭环</button>
   </nav>
+  </div>
+
+  <section class="cards" id="cards"></section>
 
   <section class="panel active" id="panel-weekly">
     <div class="report-bar">
@@ -1128,7 +1129,7 @@ async function renderPage(env, user) {
       </div>
       <div class="chart-card wide tall">
         <div class="chart-head">
-          <h3>人工会话中 Jiri 不能解答占比</h3>
+          <h3>人工会话中 Jiri 能解答占比</h3>
           <select id="granCannot" class="chart-grain" title="聚合粒度">
             <option value="day">按天</option>
             <option value="week">按周</option>
@@ -1137,7 +1138,7 @@ async function renderPage(env, user) {
             <option value="year">按年</option>
           </select>
           <span class="chart-total" id="totalCannot"></span>
-          <span class="chart-hint">只算人工质检过「Jiri 是否能解答」的会话；顶部业务场景选「操作引导/功能咨询」即得操作引导类的占比</span>
+          <span class="chart-hint">能解答占比 = 能 ÷ 人工质检过「Jiri 是否能解答」的会话；顶部业务场景选「操作引导/功能咨询」即得操作引导类的占比</span>
         </div>
         <canvas id="chartCannot"></canvas>
       </div>

@@ -1561,30 +1561,30 @@ function drawRepeatChart(s) {
   if (el) el.innerHTML = "区间：复问 <b>" + fmtNum(rep) + "</b> / 会话 <b>" + fmtNum(total) + "</b> = <b>" + (total ? ((rep / total) * 100).toFixed(2) : "0") + "%</b>";
 }
 
-// 人工会话中 Jiri 不能解答占比：能 / 部分 / 不能 堆叠柱（分母 = 人工质检过「Jiri 是否能解答」的会话）+ 不能占比 %（折线）。
-// 与服务概览「人工接待会话 Jiri 能否解答 → 不能占比」同口径，只是拆到时间轴上；未质检的会话不参与。
+// 人工会话中 Jiri 能解答占比：能 / 不能 / 部分 堆叠柱（分母 = 仅人工且人工质检过「Jiri 是否能解答」的会话）+ 能解答占比 %（折线）。
+// 与服务概览「人工接待会话 Jiri 能否解答」同口径，只是拆到时间轴上；未质检的会话不参与。
 function drawCannotChart(s) {
   const g = RECEPT_GRAINS[cannotGrain] || RECEPT_GRAINS.week;
   const { keys, buckets } = rollupDays(s.byDay, cannotGrain);
   const multiYear = new Set(keys.map((k) => k.slice(0, 4))).size > 1;
   const labels = keys.map((k) => periodLabel(k, cannotGrain, multiYear));
-  const rate = (b) => (b.jl ? Number(((b.jc / b.jl) * 100).toFixed(1)) : null);
+  const rate = (b) => (b.jl ? Number(((b.jy / b.jl) * 100).toFixed(1)) : null);
 
   drawCombo(
     "cannot", "chartCannot", labels,
     [
-      // 组合图的柱色按序号取三色阶（紫 / 粉 / 深蓝），把「不能」放第二个让它拿到粉色、和折线「不能占比」对上
+      // 组合图的柱色按序号取三色阶（紫 / 粉 / 深蓝）：能=紫（与折线同色系）、不能=粉、部分=深蓝
       { label: "能", data: buckets.map((b) => b.jy) },
       { label: "不能", data: buckets.map((b) => b.jc) },
       { label: "部分", data: buckets.map((b) => b.jp) },
     ],
-    [{ label: "不能占比", data: buckets.map(rate), color: "#FF708B", axis: "y1", unit: "%" }],
+    [{ label: "能解答占比", data: buckets.map(rate), color: "#8676FF", axis: "y1", unit: "%" }],
     { maxLabels: g.maxLabels, rotate: g.rotate, yLabel: "已质检人工会话数", y1Label: "%" }
   );
   const jl = buckets.reduce((a, b) => a + b.jl, 0);
-  const jc = buckets.reduce((a, b) => a + b.jc, 0);
+  const jy = buckets.reduce((a, b) => a + b.jy, 0);
   const el = $("totalCannot");
-  if (el) el.innerHTML = "区间：不能 <b>" + fmtNum(jc) + "</b> / 已质检人工会话 <b>" + fmtNum(jl) + "</b> = <b>" + (jl ? ((jc / jl) * 100).toFixed(1) : "0") + "%</b>";
+  if (el) el.innerHTML = "区间：能 <b>" + fmtNum(jy) + "</b> / 已质检人工会话 <b>" + fmtNum(jl) + "</b> = <b>" + (jl ? ((jy / jl) * 100).toFixed(1) : "0") + "%</b>";
 }
 
 // 复问明细：时间 / 本场会话地址 / 复问自（前一场会话地址）。服务端只下发 复问=是 的行，按时间倒序。
@@ -2351,9 +2351,9 @@ function initTabs() {
   });
 }
 
-// 筛选栏吸顶状态：哨兵元素一滚出视口顶端，就给筛选栏加 .stuck（更重的投影）
+// 筛选栏 + 页签吸顶状态：哨兵元素一滚出视口顶端，就给吸顶块加 .stuck（更重的投影）
 function initStickyFilter() {
-  const bar = $("filterbar"), sentinel = $("filterSentinel");
+  const bar = $("stickyTop"), sentinel = $("filterSentinel");
   if (!bar || !sentinel || !window.IntersectionObserver) return;
   new IntersectionObserver(([entry]) => {
     bar.classList.toggle("stuck", !entry.isIntersecting && entry.boundingClientRect.top < 0);

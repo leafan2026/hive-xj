@@ -146,7 +146,7 @@ body {
 
 /* ============ 页签 ============ */
 
-.tabs { display: flex; gap: 8px; margin: 12px 0 14px; flex-wrap: wrap; }
+.tabs { display: flex; gap: 8px; margin: 12px 0 0; flex-wrap: wrap; }
 .tab {
   background: var(--card);
   border: none;
@@ -374,8 +374,20 @@ body {
 
 /* ============ 筛选栏 ============ */
 
-/* 筛选栏吸顶：贴到视口顶端，层级全页最高（高于图表卡、表头、悬浮指标框）。
-   吸住之后（.stuck 由 hive.js 用哨兵元素判定）加一层更重的投影，把滚过去的内容压在下面。 */
+/* 筛选栏 + 页签一起吸顶（2026-09-17 用户定：页签放在筛选器下面、同一层级）。
+   容器贴到视口顶端，层级全页最高（高于图表卡、表头、悬浮指标框）；
+   吸住之后（.stuck 由 hive.js 用哨兵元素判定）整块加一层更重的投影，把滚过去的内容压在下面。 */
+.sticky-top {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  background: var(--bg);
+  margin: 0 -8px;
+  padding: 0 8px 10px;
+  border-radius: 0 0 var(--radius) var(--radius);
+  transition: box-shadow .18s;
+}
+.sticky-top.stuck { box-shadow: 0 10px 28px rgba(32, 38, 74, .16); }
 .filterbar {
   background: var(--card);
   border-radius: var(--radius);
@@ -383,16 +395,8 @@ body {
   margin-bottom: 0;
   box-shadow: var(--shadow);
   border: 1px solid rgba(57,56,120,.045);
-  position: sticky;
-  top: 0;
-  z-index: 60;
-  transition: box-shadow .18s, border-radius .18s;
 }
-.filterbar.stuck {
-  border-radius: 0 0 var(--radius) var(--radius);
-  box-shadow: 0 10px 28px rgba(32, 38, 74, .16), 0 1px 0 rgba(32, 38, 74, .05);
-}
-/* 哨兵：贴在筛选栏正上方的 0 高元素，它滚出视口就等于筛选栏吸住了 */
+/* 哨兵：贴在吸顶块正上方的 0 高元素，它滚出视口就等于吸住了 */
 .filter-sentinel { height: 0; }
 .filter-row { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
 .filter-row select, .filter-row input[type="date"] {
