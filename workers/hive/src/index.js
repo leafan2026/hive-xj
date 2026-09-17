@@ -926,7 +926,8 @@ async function renderPage(env, user) {
 <main class="main">
   <div id="banner" class="banner" hidden></div>
 
-  <section class="filterbar">
+  <div class="filter-sentinel" id="filterSentinel" aria-hidden="true"></div>
+  <section class="filterbar" id="filterbar">
     <div class="filter-row">
       <select id="fRange" title="时间范围">
         <option value="">全部时间</option>

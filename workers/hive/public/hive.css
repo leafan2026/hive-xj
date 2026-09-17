@@ -31,10 +31,10 @@ body {
 
 /* ============ 顶栏 ============ */
 
+/* 顶栏随页面滚走，不再吸顶（2026-09-17 用户定：顶部不该被占着），吸顶的只有筛选栏 */
 .header {
   background: #fff;
-  position: sticky;
-  top: 0;
+  position: relative;
   z-index: 20;
   border-bottom: 1px solid #eef0f7;
 }
@@ -374,8 +374,8 @@ body {
 
 /* ============ 筛选栏 ============ */
 
-/* 筛选栏跟着页面吸顶，贴在顶栏（同样是 sticky）正下方；--header-h 由 hive.js 按顶栏实际高度写入。
-   层级放到全页最高（高于图表卡、表头、悬浮指标框），下滑时永远压在内容之上。 */
+/* 筛选栏吸顶：贴到视口顶端，层级全页最高（高于图表卡、表头、悬浮指标框）。
+   吸住之后（.stuck 由 hive.js 用哨兵元素判定）加一层更重的投影，把滚过去的内容压在下面。 */
 .filterbar {
   background: var(--card);
   border-radius: var(--radius);
@@ -384,19 +384,16 @@ body {
   box-shadow: var(--shadow);
   border: 1px solid rgba(57,56,120,.045);
   position: sticky;
-  top: var(--header-h, 72px);
+  top: 0;
   z-index: 60;
+  transition: box-shadow .18s, border-radius .18s;
 }
-/* 吸顶后顶栏与筛选栏之间那 20px 是 .main 的内边距，内容滚过会从缝里露出来，用页面底色把缝盖住 */
-.filterbar::before {
-  content: "";
-  position: absolute;
-  left: -28px;
-  right: -28px;
-  top: -21px;
-  height: 21px;
-  background: var(--bg);
+.filterbar.stuck {
+  border-radius: 0 0 var(--radius) var(--radius);
+  box-shadow: 0 10px 28px rgba(32, 38, 74, .16), 0 1px 0 rgba(32, 38, 74, .05);
 }
+/* 哨兵：贴在筛选栏正上方的 0 高元素，它滚出视口就等于筛选栏吸住了 */
+.filter-sentinel { height: 0; }
 .filter-row { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
 .filter-row select, .filter-row input[type="date"] {
   padding: 9px 11px;
@@ -554,7 +551,6 @@ td a:hover { text-decoration: underline; }
 
 @media (max-width: 760px) {
   .header-inner, .main { padding-left: 16px; padding-right: 16px; }
-  .filterbar::before { left: -16px; right: -16px; }
   .header-inner { align-items: flex-start; }
   .header-meta { justify-content: flex-end; flex-wrap: wrap; }
   /* 数据新鲜度是关键信息，手机上不隐藏，换行单独占一行 */
