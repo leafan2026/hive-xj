@@ -833,7 +833,8 @@ function glassTooltip(context) {
     marker.className = "chart-glass-tooltip-marker " + (point.dataset.type === "line" ? "is-line" : "is-bar");
     marker.style.backgroundColor = comboDatasetColor(point.dataset, point.dataIndex);
     const text = document.createElement("span");
-    text.textContent = point.dataset.label + "：" + point.formattedValue;
+    // 折线可带单位（如占比的 %），柱子是条数不带
+    text.textContent = point.dataset.label + "：" + point.formattedValue + (point.dataset.unit || "");
     row.append(marker, text);
     el.appendChild(row);
   });
@@ -921,6 +922,7 @@ function drawCombo(key, canvasId, labels, bars, lines, opts) {
         type: "line",
         label: l.label,
         data: l.data,
+        unit: l.unit || "",
         borderColor: lineColor,
         backgroundColor: lineColor,
         yAxisID: l.axis || "y1",
@@ -1461,7 +1463,7 @@ function rollupDays(byDay, grain) {
     const key = periodKeyOf(day, grain);
     if (!key) continue;
     if (!map[key]) {
-      map[key] = { total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0, dev: {}, ch: {}, nat: {} };
+      map[key] = { total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0, rep: 0, jl: 0, jy: 0, jc: 0, jp: 0, dev: {}, ch: {}, nat: {} };
       order.push(key);
     }
     const t = map[key], b = byDay[day];
@@ -1470,6 +1472,8 @@ function rollupDays(byDay, grain) {
     t.durCount += b.durCount;
     t.transfer += b.transfer;
     t.turns += b.turns;
+    // 复问数与「Jiri 是否能解答」四计数：旧缓存里没有这几个键，按 0 处理
+    for (const f of ["rep", "jl", "jy", "jc", "jp"]) t[f] += b[f] || 0;
     for (const f of ["dev", "ch", "nat"]) {
       for (const [k, v] of Object.entries(b[f] || {})) t[f][k] = (t[f][k] || 0) + v;
     }
@@ -1532,13 +1536,83 @@ function drawReceptChart(s) {
   setTotal("totalDayRecept", "总计：", buckets.reduce((a, b) => a + b.total, 0));
 }
 
+let repeatGrain = "week";
+let cannotGrain = "week";
+
+// 复问率：复问会话数（柱）+ 复问率 %（折线，右轴）。
+// 口径来自质检表 field_33（上游 算复问.py：同一 user_id 隔 6~36 小时再进线且一句话总结相似度 ≥0.3，计后一场），
+// 分母是该周期内当前筛选下的全部会话。
+function drawRepeatChart(s) {
+  const g = RECEPT_GRAINS[repeatGrain] || RECEPT_GRAINS.week;
+  const { keys, buckets } = rollupDays(s.byDay, repeatGrain);
+  const multiYear = new Set(keys.map((k) => k.slice(0, 4))).size > 1;
+  const labels = keys.map((k) => periodLabel(k, repeatGrain, multiYear));
+  const rate = (b) => (b.total ? Number(((b.rep / b.total) * 100).toFixed(2)) : null);
+
+  drawCombo(
+    "repeat", "chartRepeat", labels,
+    [{ label: "复问会话数", data: buckets.map((b) => b.rep) }],
+    [{ label: "复问率", data: buckets.map(rate), color: "#FF708B", axis: "y1", unit: "%" }],
+    { maxLabels: g.maxLabels, rotate: g.rotate, yLabel: "复问会话数", y1Label: "%" }
+  );
+  const rep = buckets.reduce((a, b) => a + b.rep, 0);
+  const total = buckets.reduce((a, b) => a + b.total, 0);
+  const el = $("totalRepeat");
+  if (el) el.innerHTML = "区间：复问 <b>" + fmtNum(rep) + "</b> / 会话 <b>" + fmtNum(total) + "</b> = <b>" + (total ? ((rep / total) * 100).toFixed(2) : "0") + "%</b>";
+}
+
+// 人工会话中 Jiri 不能解答占比：能 / 部分 / 不能 堆叠柱（分母 = 人工质检过「Jiri 是否能解答」的会话）+ 不能占比 %（折线）。
+// 与服务概览「人工接待会话 Jiri 能否解答 → 不能占比」同口径，只是拆到时间轴上；未质检的会话不参与。
+function drawCannotChart(s) {
+  const g = RECEPT_GRAINS[cannotGrain] || RECEPT_GRAINS.week;
+  const { keys, buckets } = rollupDays(s.byDay, cannotGrain);
+  const multiYear = new Set(keys.map((k) => k.slice(0, 4))).size > 1;
+  const labels = keys.map((k) => periodLabel(k, cannotGrain, multiYear));
+  const rate = (b) => (b.jl ? Number(((b.jc / b.jl) * 100).toFixed(1)) : null);
+
+  drawCombo(
+    "cannot", "chartCannot", labels,
+    [
+      // 组合图的柱色按序号取三色阶（紫 / 粉 / 深蓝），把「不能」放第二个让它拿到粉色、和折线「不能占比」对上
+      { label: "能", data: buckets.map((b) => b.jy) },
+      { label: "不能", data: buckets.map((b) => b.jc) },
+      { label: "部分", data: buckets.map((b) => b.jp) },
+    ],
+    [{ label: "不能占比", data: buckets.map(rate), color: "#FF708B", axis: "y1", unit: "%" }],
+    { maxLabels: g.maxLabels, rotate: g.rotate, yLabel: "已质检人工会话数", y1Label: "%" }
+  );
+  const jl = buckets.reduce((a, b) => a + b.jl, 0);
+  const jc = buckets.reduce((a, b) => a + b.jc, 0);
+  const el = $("totalCannot");
+  if (el) el.innerHTML = "区间：不能 <b>" + fmtNum(jc) + "</b> / 已质检人工会话 <b>" + fmtNum(jl) + "</b> = <b>" + (jl ? ((jc / jl) * 100).toFixed(1) : "0") + "%</b>";
+}
+
+// 复问明细：时间 / 本场会话地址 / 复问自（前一场会话地址）。服务端只下发 复问=是 的行，按时间倒序。
+function renderRepeatsTable(s) {
+  const tbl = $("tblRepeats");
+  if (!tbl) return;
+  const rows = Array.isArray(s.repeats) ? s.repeats : [];
+  const link = (u) => (u ? '<a href="' + escHtml(u) + '" target="_blank" rel="noopener">' + escHtml(u.replace(/^https?:\/\//, "")) + "</a>" : "—");
+  tbl.innerHTML =
+    "<thead><tr><th>时间</th><th>会话地址</th><th>复问地址</th></tr></thead><tbody>" +
+    (rows.length
+      ? rows.map((r) => "<tr><td>" + escHtml(String(r.t || "").slice(0, 16).replace("T", " ")) + "</td><td>" + link(r.url) + "</td><td>" + link(r.from) + "</td></tr>").join("")
+      : '<tr><td colspan="3">当前筛选范围内没有复问会话</td></tr>') +
+    "</tbody>";
+  const note = $("repeatsNote");
+  if (note) note.textContent = "共 " + rows.length + " 场复问，跟随顶部筛选；「复问地址」是同一用户 6～36 小时前问同一件事的那场会话。";
+}
+
 function renderTrend(s) {
   const weeks = sortedKeys(s.byWeek);
   const weekB = weeks.map((w) => s.byWeek[w]);
 
   // 会话接待分布：粒度可切（天/周/月/季/年），见 drawReceptChart
   drawReceptChart(s);
+  drawRepeatChart(s);
+  drawCannotChart(s);
   drawUniqChart(s);
+  renderRepeatsTable(s);
 
   // 每周会话来源：渠道堆叠
   const chKeys = bucketKeys(weekB, "ch");
@@ -2301,6 +2375,24 @@ function initActions() {
     gran.addEventListener("change", () => {
       receptGrain = RECEPT_GRAINS[gran.value] ? gran.value : "day";
       if (LAST_STATS) drawReceptChart(LAST_STATS);
+    });
+  }
+
+  const granR = $("granRepeat");
+  if (granR) {
+    granR.value = repeatGrain;
+    granR.addEventListener("change", () => {
+      repeatGrain = RECEPT_GRAINS[granR.value] ? granR.value : "week";
+      if (LAST_STATS) drawRepeatChart(LAST_STATS);
+    });
+  }
+
+  const granC = $("granCannot");
+  if (granC) {
+    granC.value = cannotGrain;
+    granC.addEventListener("change", () => {
+      cannotGrain = RECEPT_GRAINS[granC.value] ? granC.value : "week";
+      if (LAST_STATS) drawCannotChart(LAST_STATS);
     });
   }
 

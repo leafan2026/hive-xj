@@ -4,15 +4,18 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 
 // v6 在 manualBusy 里下发时段定义（起点/格宽/格数），前端不再硬编码。
 // v3 的明细去掉了全链路无消费者的 sn/url/sm/inWindow/creator。
+// v7 / v4（2026-09-17）：明细加回 url（会话地址）并新增 rep/repFrom（复问、复问自，读质检表 field_33/34），
+// 日/周桶新增 rep 与 jl/jy/jc/jp（人工质检会话里 Jiri 能否解答的四个计数），stats 新增 repeats 明细。
+// 旧 v3 明细没有这些字段，读到会把复问率画成全 0，所以三个键一起换，让首次访问后台重建。
 // 保留旧版本键，不删除既有 KV，首次访问会安全地后台重建新缓存。
-const K_STATS = "hive:stats:v6";
-const K_ENTRIES = "hive:entries:v3";
+const K_STATS = "hive:stats:v7";
+const K_ENTRIES = "hive:entries:v4";
 const K_WEEKLY = "hive:weekly:v1";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
 // 筛选结果记忆缓存：键里带 meta.updatedAt，数据一刷新自然失效；
 // TTL 只用来回收过期键，不承担正确性。
-const K_QUERY_PREFIX = "hive:q:v1:";
+const K_QUERY_PREFIX = "hive:q:v2:";
 const QUERY_CACHE_TTL_S = 3600;
 
 // 金数据 per_page 实际封顶 50；next 是 serial_number 偏移，可并行取页
@@ -96,6 +99,7 @@ async function fetchAllEntries(env) {
 function trim(e) {
   return {
     t: e.field_1 || "",
+    url: e.field_2 || "",           // 会话地址，只有「复问明细」表消费（复问自 指向的也是它）
     uid: e.field_8 || "",
     baid: e.field_9 || "",          // billing_account_id，用于「接待企业数」去重
     ch: e.field_4 || "未知",
@@ -116,6 +120,8 @@ function trim(e) {
     gotData: e.field_25 || "",      // 对口表单收数据
     jiriBuilt: e.field_27 || "",    // Jiri 代建表单
     loop: e.field_30 || "",         // 业务闭环
+    rep: e.field_33 === "是",       // 复问（上游 算复问.py 算好写回：同用户隔 6~36h 再进线且一句话总结相似）
+    repFrom: e.field_34 || "",      // 复问自：前一场会话地址
   };
 }
 
@@ -159,6 +165,8 @@ function bucket() {
   return {
     total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0,
     aiOnly: 0, avoidable: 0,
+    // 复问会话数；jl/jy/jc/jp = 人工质检过的会话里「Jiri 是否能解答」已标 / 能 / 不能 / 部分
+    rep: 0, jl: 0, jy: 0, jc: 0, jp: 0,
     dev: {}, ch: {}, nat: {},
   };
 }
@@ -230,6 +238,8 @@ function buildStats(rows) {
     uniqAll: { users: 0, orgs: 0 },
     // 交叉分布
     natureByDevice: {}, natureByChannel: {}, effectiveScene: {},
+    // 复问明细（时间 / 本场会话地址 / 前一场会话地址），给「复问明细」表；只含 复问=是 的行，量很小
+    repeats: [],
   };
   const durations = [];
   const latestRowDay = rows.map((r) => String(r.t || "").slice(0, 10))
@@ -316,7 +326,16 @@ function buildStats(rows) {
         if (r.way) b.transfer++;
         if (r.st === "仅 Jiri") b.aiOnly++;
         if (AVOIDABLE_REASONS.has(r.reason)) b.avoidable++;
+        if (r.rep) b.rep++;
+        // 「Jiri 是否能解答」只在人工质检过的会话上有值；这里再限定 仅人工，与图名「人工会话中」一致
+        if (r.st === "仅人工" && r.jiri !== "未标记") {
+          b.jl++;
+          if (r.jiri === "能") b.jy++;
+          else if (r.jiri === "不能") b.jc++;
+          else if (r.jiri === "部分") b.jp++;
+        }
       }
+      if (r.rep) s.repeats.push({ t: r.t, url: r.url, from: r.repFrom });
     }
 
     if (r.way) { s.transferred++; tally(s.way, r.way); }
@@ -378,6 +397,7 @@ function buildStats(rows) {
     s.uniq[g] = out;
   }
   s.uniqAll = { users: allUsers.size, orgs: allOrgs.size };
+  s.repeats.sort((a, b) => (b.t || "").localeCompare(a.t || ""));
 
   return s;
 }
@@ -1092,6 +1112,36 @@ async function renderPage(env, user) {
       </div>
       <div class="chart-card wide tall">
         <div class="chart-head">
+          <h3>复问率</h3>
+          <select id="granRepeat" class="chart-grain" title="聚合粒度">
+            <option value="day">按天</option>
+            <option value="week">按周</option>
+            <option value="month">按月</option>
+            <option value="quarter">按季度</option>
+            <option value="year">按年</option>
+          </select>
+          <span class="chart-total" id="totalRepeat"></span>
+          <span class="chart-hint">复问 = 同一用户隔 6～36 小时再进线、且问的是同一件事；复问率 = 复问会话数 ÷ 会话数</span>
+        </div>
+        <canvas id="chartRepeat"></canvas>
+      </div>
+      <div class="chart-card wide tall">
+        <div class="chart-head">
+          <h3>人工会话中 Jiri 不能解答占比</h3>
+          <select id="granCannot" class="chart-grain" title="聚合粒度">
+            <option value="day">按天</option>
+            <option value="week">按周</option>
+            <option value="month">按月</option>
+            <option value="quarter">按季度</option>
+            <option value="year">按年</option>
+          </select>
+          <span class="chart-total" id="totalCannot"></span>
+          <span class="chart-hint">只算人工质检过「Jiri 是否能解答」的会话；顶部业务场景选「操作引导/功能咨询」即得操作引导类的占比</span>
+        </div>
+        <canvas id="chartCannot"></canvas>
+      </div>
+      <div class="chart-card wide tall">
+        <div class="chart-head">
           <h3>接待人数与企业数</h3>
           <select id="granUniq" class="chart-grain" title="聚合粒度">
             <option value="day">按天</option>
@@ -1118,6 +1168,11 @@ async function renderPage(env, user) {
         <canvas id="chartDeviceNature"></canvas>
       </div>
       <div class="chart-card"><h3>入口媒介 Top 12</h3><canvas id="chartMedium"></canvas></div>
+    </div>
+    <div class="report-block">
+      <h3>复问明细</h3>
+      <div class="table-wrapper"><table class="report-table" id="tblRepeats"></table></div>
+      <div class="note" id="repeatsNote"></div>
     </div>
   </section>
 

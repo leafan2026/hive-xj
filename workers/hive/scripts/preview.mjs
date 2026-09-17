@@ -18,6 +18,10 @@ const rows = [
   { t: `${day(-4)}T10:45:00Z`, st: "仅人工", jiri: "不能", ch: "gd_app", dev: "pc", med: "网页", plan: "企业高级版", cat: "无关", nat: "有效", scene: "故障/技术", dur: 1800, turns: 2, way: "直接转", reason: "可自助", uid: "u9", baid: "b9" },
   { t: `${day(-3)}T11:00:00Z`, st: "仅 Jiri", jiri: "能", ch: "gd_next", dev: "mobile", med: "网页", plan: "免费版", cat: "无关", nat: "填表人", scene: "操作引导/功能咨询", dur: 120, turns: 1, way: "", reason: "", uid: "u3", baid: "b3" },
   { t: `${day(-16)}T14:00:00Z`, st: "仅 Jiri", jiri: "能", ch: "gd_next", dev: "pc", med: "网页", plan: "免费版", cat: "无关", nat: "有效", scene: "操作引导/功能咨询", dur: 90, turns: 1, way: "", reason: "", uid: "u4", baid: "b4" },
+  // 复问样例（合成）：同一用户隔天再问同一件事，rep/repFrom 由上游写进质检表
+  { t: `${day(-2)}T09:20:00Z`, url: "https://example.invalid/conversations/prev-a", st: "仅 Jiri", jiri: "未标记", ch: "gd_next", dev: "pc", med: "网页", plan: "免费版", cat: "无关", nat: "有效", scene: "操作引导/功能咨询", dur: 0, turns: 2, way: "", reason: "", uid: "u10", baid: "b10", rep: false, repFrom: "" },
+  { t: `${day(-1)}T08:40:00Z`, url: "https://example.invalid/conversations/rep-a", st: "仅 Jiri", jiri: "未标记", ch: "gd_next", dev: "pc", med: "网页", plan: "免费版", cat: "无关", nat: "有效", scene: "操作引导/功能咨询", dur: 0, turns: 3, way: "", reason: "", uid: "u10", baid: "b10", rep: true, repFrom: "https://example.invalid/conversations/prev-a" },
+  { t: `${day(0)}T11:05:00Z`, url: "https://example.invalid/conversations/rep-b", st: "仅人工", jiri: "部分", ch: "gd_app", dev: "mobile", med: "应用", plan: "专业版", cat: "无关", nat: "有效", scene: "操作引导/功能咨询", dur: 600, turns: 4, way: "沟通后转", reason: "AI答不了(KB缺口)", uid: "u2", baid: "b2", rep: true, repFrom: "https://example.invalid/conversations/prev-b" },
 ];
 
 const fullStats = {
@@ -36,8 +40,8 @@ const scratch = new Map();
 
 const cache = {
   async get(key) {
-    if (key === "hive:entries:v3") return rows;
-    if (key === "hive:stats:v6") return fullStats;
+    if (key === "hive:entries:v4") return rows;
+    if (key === "hive:stats:v7") return fullStats;
     if (key === "hive:weekly:v1") return [];
     if (key === "hive:loop:v1") return { weeks: [], types: [], overall: { applicable: 0, yes: 0, no: 0, pending: 0, rate: null } };
     if (key === "hive:meta:v1") return { status: "ok", updatedAt, total: rows.length };
