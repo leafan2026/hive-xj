@@ -1463,7 +1463,7 @@ function rollupDays(byDay, grain) {
     const key = periodKeyOf(day, grain);
     if (!key) continue;
     if (!map[key]) {
-      map[key] = { total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0, rep: 0, jl: 0, jy: 0, jc: 0, jp: 0, dev: {}, ch: {}, nat: {} };
+      map[key] = { total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0, rep: 0, dev: {}, ch: {}, nat: {} };
       order.push(key);
     }
     const t = map[key], b = byDay[day];
@@ -1472,8 +1472,8 @@ function rollupDays(byDay, grain) {
     t.durCount += b.durCount;
     t.transfer += b.transfer;
     t.turns += b.turns;
-    // 复问数与「Jiri 是否能解答」四计数：旧缓存里没有这几个键，按 0 处理
-    for (const f of ["rep", "jl", "jy", "jc", "jp"]) t[f] += b[f] || 0;
+    // 复问数：旧缓存里没有这个键，按 0 处理
+    t.rep += b.rep || 0;
     for (const f of ["dev", "ch", "nat"]) {
       for (const [k, v] of Object.entries(b[f] || {})) t[f][k] = (t[f][k] || 0) + v;
     }
@@ -1537,7 +1537,6 @@ function drawReceptChart(s) {
 }
 
 let repeatGrain = "week";
-let cannotGrain = "week";
 
 // 复问率：复问会话数（柱）+ 复问率 %（折线，右轴）。
 // 口径来自质检表 field_33（上游 算复问.py：同一 user_id 隔 6~36 小时再进线且一句话总结相似度 ≥0.3，计后一场），
@@ -1559,32 +1558,6 @@ function drawRepeatChart(s) {
   const total = buckets.reduce((a, b) => a + b.total, 0);
   const el = $("totalRepeat");
   if (el) el.innerHTML = "区间：复问 <b>" + fmtNum(rep) + "</b> / 会话 <b>" + fmtNum(total) + "</b> = <b>" + (total ? ((rep / total) * 100).toFixed(2) : "0") + "%</b>";
-}
-
-// 人工会话中 Jiri 能解答占比：能 / 不能 / 部分 堆叠柱（分母 = 仅人工且人工质检过「Jiri 是否能解答」的会话）+ 能解答占比 %（折线）。
-// 与服务概览「人工接待会话 Jiri 能否解答」同口径，只是拆到时间轴上；未质检的会话不参与。
-function drawCannotChart(s) {
-  const g = RECEPT_GRAINS[cannotGrain] || RECEPT_GRAINS.week;
-  const { keys, buckets } = rollupDays(s.byDay, cannotGrain);
-  const multiYear = new Set(keys.map((k) => k.slice(0, 4))).size > 1;
-  const labels = keys.map((k) => periodLabel(k, cannotGrain, multiYear));
-  const rate = (b) => (b.jl ? Number(((b.jy / b.jl) * 100).toFixed(1)) : null);
-
-  drawCombo(
-    "cannot", "chartCannot", labels,
-    [
-      // 组合图的柱色按序号取三色阶（紫 / 粉 / 深蓝）：能=紫（与折线同色系）、不能=粉、部分=深蓝
-      { label: "能", data: buckets.map((b) => b.jy) },
-      { label: "不能", data: buckets.map((b) => b.jc) },
-      { label: "部分", data: buckets.map((b) => b.jp) },
-    ],
-    [{ label: "能解答占比", data: buckets.map(rate), color: "#8676FF", axis: "y1", unit: "%" }],
-    { maxLabels: g.maxLabels, rotate: g.rotate, yLabel: "已质检人工会话数", y1Label: "%" }
-  );
-  const jl = buckets.reduce((a, b) => a + b.jl, 0);
-  const jy = buckets.reduce((a, b) => a + b.jy, 0);
-  const el = $("totalCannot");
-  if (el) el.innerHTML = "区间：能 <b>" + fmtNum(jy) + "</b> / 已质检人工会话 <b>" + fmtNum(jl) + "</b> = <b>" + (jl ? ((jy / jl) * 100).toFixed(1) : "0") + "%</b>";
 }
 
 // 复问明细：时间 / 本场会话地址 / 复问自（前一场会话地址）。服务端只下发 复问=是 的行，按时间倒序。
@@ -1610,7 +1583,6 @@ function renderTrend(s) {
   // 会话接待分布：粒度可切（天/周/月/季/年），见 drawReceptChart
   drawReceptChart(s);
   drawRepeatChart(s);
-  drawCannotChart(s);
   drawUniqChart(s);
   renderRepeatsTable(s);
 
@@ -2137,6 +2109,18 @@ function renderWeekly(week) {
       delta: pg ? delta(g.guideShare, pg.guideShare, "pp") : "",
       note: "目标把操作引导类问题交给 Jiri，人工时长占比压到 10% 以内",
     },
+    // 按这些会话的「Jiri 是否能解答」拆成四段，整数 pp 之和 = 上一行的占比；说明里给精确到一位小数的值
+    ...(g.guideSplit || []).filter((x) => x.sessions > 0 || x.pp > 0).map((x) => {
+      const prev = pg && pg.guideSplit ? pg.guideSplit.find((y) => y.label === x.label) : null;
+      return {
+        sub: true,
+        name: "　其中 · Jiri " + (x.label === "未标记" ? "未质检" : x.label + "解答"),
+        target: "",
+        value: x.pp + "%",
+        delta: prev ? delta(x.exact, prev.exact, "pp") : "",
+        note: "精确 " + x.exact + "% · " + x.sessions + " 场 · " + x.durMin + " 分钟",
+      };
+    }),
     ...g.mustHuman.map((m, k) => {
       const prev = pg ? pg.mustHuman[k] : null;
       return {
@@ -2152,9 +2136,9 @@ function renderWeekly(week) {
   $("tblGoals").innerHTML =
     '<thead><tr><th>目标</th><th class="num">目标值</th><th class="num">本周</th><th class="num">达成</th><th class="num">环比</th><th>说明</th></tr></thead><tbody>' +
     rows.map((r) =>
-      "<tr><td>" + r.name + '</td><td class="num">' + r.target + "</td>" +
-      '<td class="num strong">' + r.value + "</td>" +
-      '<td class="num"><span class="pill ' + (r.ok ? "good" : "bad") + '">' + (r.ok ? "达成" : "未达成") + "</span></td>" +
+      '<tr class="' + (r.sub ? "sub" : "") + '"><td>' + r.name + '</td><td class="num">' + (r.target || "—") + "</td>" +
+      '<td class="num ' + (r.sub ? "" : "strong") + '">' + r.value + "</td>" +
+      '<td class="num">' + (r.sub ? "—" : '<span class="pill ' + (r.ok ? "good" : "bad") + '">' + (r.ok ? "达成" : "未达成") + "</span>") + "</td>" +
       '<td class="num">' + (r.delta || "—") + "</td>" +
       '<td class="dim">' + r.note + "</td></tr>"
     ).join("") + "</tbody>";
@@ -2393,15 +2377,6 @@ function initActions() {
     granR.addEventListener("change", () => {
       repeatGrain = RECEPT_GRAINS[granR.value] ? granR.value : "week";
       if (LAST_STATS) drawRepeatChart(LAST_STATS);
-    });
-  }
-
-  const granC = $("granCannot");
-  if (granC) {
-    granC.value = cannotGrain;
-    granC.addEventListener("change", () => {
-      cannotGrain = RECEPT_GRAINS[granC.value] ? granC.value : "week";
-      if (LAST_STATS) drawCannotChart(LAST_STATS);
     });
   }
 

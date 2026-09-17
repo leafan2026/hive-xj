@@ -5,12 +5,12 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 // v6 在 manualBusy 里下发时段定义（起点/格宽/格数），前端不再硬编码。
 // v3 的明细去掉了全链路无消费者的 sn/url/sm/inWindow/creator。
 // v7 / v4（2026-09-17）：明细加回 url（会话地址）并新增 rep/repFrom（复问、复问自，读质检表 field_33/34），
-// 日/周桶新增 rep 与 jl/jy/jc/jp（人工质检会话里 Jiri 能否解答的四个计数），stats 新增 repeats 明细。
+// 日/周桶新增 rep（复问数），stats 新增 repeats 明细。weekly v2：目标追踪加 guideSplit（操作引导占比按 Jiri 能否解答拆分）。
 // 旧 v3 明细没有这些字段，读到会把复问率画成全 0，所以三个键一起换，让首次访问后台重建。
 // 保留旧版本键，不删除既有 KV，首次访问会安全地后台重建新缓存。
 const K_STATS = "hive:stats:v7";
 const K_ENTRIES = "hive:entries:v4";
-const K_WEEKLY = "hive:weekly:v1";
+const K_WEEKLY = "hive:weekly:v2";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
 // 筛选结果记忆缓存：键里带 meta.updatedAt，数据一刷新自然失效；
@@ -165,8 +165,7 @@ function bucket() {
   return {
     total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0,
     aiOnly: 0, avoidable: 0,
-    // 复问会话数；jl/jy/jc/jp = 人工质检过的会话里「Jiri 是否能解答」已标 / 能 / 不能 / 部分
-    rep: 0, jl: 0, jy: 0, jc: 0, jp: 0,
+    rep: 0,                        // 复问会话数（质检表 field_33=是）
     dev: {}, ch: {}, nat: {},
   };
 }
@@ -327,13 +326,6 @@ function buildStats(rows) {
         if (r.st === "仅 Jiri") b.aiOnly++;
         if (AVOIDABLE_REASONS.has(r.reason)) b.avoidable++;
         if (r.rep) b.rep++;
-        // 「Jiri 是否能解答」只在人工质检过的会话上有值；这里再限定 仅人工，与图名「人工会话中」一致
-        if (r.st === "仅人工" && r.jiri !== "未标记") {
-          b.jl++;
-          if (r.jiri === "能") b.jy++;
-          else if (r.jiri === "不能") b.jc++;
-          else if (r.jiri === "部分") b.jp++;
-        }
       }
       if (r.rep) s.repeats.push({ t: r.t, url: r.url, from: r.repFrom });
     }
@@ -417,6 +409,31 @@ const MUST_HUMAN = [
 
 const GUIDE_SCENE = "操作引导/功能咨询";
 const GUIDE_TARGET = 10; // 操作引导类人工时长占比目标 ≤10%
+
+// 操作引导类人工时长占比，按这些会话的「Jiri 是否能解答」标注拆成四段（能 / 不能 / 部分 / 未质检）。
+// 分子分母与 sceneWorkload 的 share 完全一致：分母 = 全部有效人工会话时长，分子 = 操作引导类里各标注的时长。
+// exact 是一位小数的精确占比；pp 是按「最大余数法」凑成整数、四段之和恰好等于表头那个整数占比（用户定：加起来要等于 22%）。
+const GUIDE_LABELS = ["能", "不能", "部分", "未标记"];
+function guideSplitOf(effManual, totalShare) {
+  const totalSec = effManual.reduce((a, r) => a + (r.dur || 0), 0);
+  const sec = { "能": 0, "不能": 0, "部分": 0, "未标记": 0 };
+  const cnt = { "能": 0, "不能": 0, "部分": 0, "未标记": 0 };
+  for (const r of effManual) {
+    if (r.scene !== GUIDE_SCENE) continue;
+    const k = GUIDE_LABELS.includes(r.jiri) ? r.jiri : "未标记";
+    sec[k] += r.dur || 0;
+    cnt[k] += 1;
+  }
+  const raw = GUIDE_LABELS.map((k) => (totalSec ? (sec[k] / totalSec) * 100 : 0));
+  const floors = raw.map((v) => Math.floor(v));
+  let rest = Math.max(0, totalShare - floors.reduce((a, b) => a + b, 0));
+  const order = raw.map((v, i) => [v - floors[i], i]).sort((x, y) => y[0] - x[0]);
+  for (const [, i] of order) { if (rest <= 0) break; floors[i] += 1; rest -= 1; }
+  return GUIDE_LABELS.map((k, i) => ({
+    label: k, sessions: cnt[k], durMin: Math.round(sec[k] / 60),
+    exact: Number(raw[i].toFixed(1)), pp: floors[i],
+  }));
+}
 
 // 星期序号，周一 = 0
 function dowOf(day) {
@@ -576,6 +593,7 @@ function buildWeekly(rows) {
 
     const direct = effManual.filter((r) => r.way === "直接转").length;
     const guide = scenes.find((s) => s.scene === GUIDE_SCENE);
+    const guideSplit = guideSplitOf(effManual, guide ? guide.share : 0);
 
     return {
       week,
@@ -594,6 +612,7 @@ function buildWeekly(rows) {
       goals: {
         guideShare: guide ? guide.share : 0,
         guideTarget: GUIDE_TARGET,
+        guideSplit,
         mustHuman: MUST_HUMAN.map((m) => {
           const hit = scenes.find((s) => s.scene === m.scene);
           return {
@@ -1126,21 +1145,6 @@ async function renderPage(env, user) {
           <span class="chart-hint">复问 = 同一用户隔 6～36 小时再进线、且问的是同一件事；复问率 = 复问会话数 ÷ 会话数</span>
         </div>
         <canvas id="chartRepeat"></canvas>
-      </div>
-      <div class="chart-card wide tall">
-        <div class="chart-head">
-          <h3>人工会话中 Jiri 能解答占比</h3>
-          <select id="granCannot" class="chart-grain" title="聚合粒度">
-            <option value="day">按天</option>
-            <option value="week">按周</option>
-            <option value="month">按月</option>
-            <option value="quarter">按季度</option>
-            <option value="year">按年</option>
-          </select>
-          <span class="chart-total" id="totalCannot"></span>
-          <span class="chart-hint">能解答占比 = 能 ÷ 人工质检过「Jiri 是否能解答」的会话；顶部业务场景选「操作引导/功能咨询」即得操作引导类的占比</span>
-        </div>
-        <canvas id="chartCannot"></canvas>
       </div>
       <div class="chart-card wide tall">
         <div class="chart-head">
