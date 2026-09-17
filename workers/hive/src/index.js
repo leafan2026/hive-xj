@@ -5,12 +5,12 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 // v6 在 manualBusy 里下发时段定义（起点/格宽/格数），前端不再硬编码。
 // v3 的明细去掉了全链路无消费者的 sn/url/sm/inWindow/creator。
 // v7 / v4（2026-09-17）：明细加回 url（会话地址）并新增 rep/repFrom（复问、复问自，读质检表 field_33/34），
-// 日/周桶新增 rep（复问数），stats 新增 repeats 明细。weekly v2：目标追踪加 guideSplit（操作引导占比按 Jiri 能否解答拆分）；v3：加 jiri（JIRI 接待现状板块，读 field_35/36）。
+// 日/周桶新增 rep（复问数），stats 新增 repeats 明细。weekly v2：目标追踪加 guideSplit（操作引导占比按 Jiri 能否解答拆分）；v3：加 jiri（JIRI 接待现状板块，读 field_35/36）；v4：加 agents/agentsCum（客服接待评估，读 field_37~39）。
 // 旧 v3 明细没有这些字段，读到会把复问率画成全 0，所以三个键一起换，让首次访问后台重建。
 // 保留旧版本键，不删除既有 KV，首次访问会安全地后台重建新缓存。
 const K_STATS = "hive:stats:v7";
 const K_ENTRIES = "hive:entries:v4";
-const K_WEEKLY = "hive:weekly:v3";
+const K_WEEKLY = "hive:weekly:v4";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
 // 筛选结果记忆缓存：键里带 meta.updatedAt，数据一刷新自然失效；
@@ -124,6 +124,9 @@ function trim(e) {
     repFrom: e.field_34 || "",      // 复问自：前一场会话地址
     uturns: e.field_35 === "" || e.field_35 === null || e.field_35 === undefined || isNaN(Number(e.field_35)) ? null : Number(e.field_35),  // 用户轮次（客户说话条数，上游 推轮次与at到质检表.py）
     atJiri: e.field_36 === "是",    // 人工中@jiri：仅人工会话里客服有没有 @jiri
+    csFirst: e.field_37 || "",      // 首接客服（仅人工行；上游从转录发言人读）
+    csLast: e.field_38 || "",       // 末接客服
+    csAll: Array.isArray(e.field_39) ? e.field_39 : (e.field_39 ? [e.field_39] : []),  // 全部客服（多选）
   };
 }
 
@@ -588,7 +591,45 @@ function weekMetrics(rows) {
   };
 }
 
+// 按接待客服评估（2026-09-17 用户定，只看仅人工；口径见 hive 仓库 skills/统计口径.md「按接待客服评估」）：
+// - 接待人次：一场里出现的每位客服各记 1（全部客服列）
+// - 秒转率：归首接客服——秒转（转人工方式=直接转）是用户进来就要人工，发生在任何客服接手之前；分母 = 首接的有效人工场次
+// - 复问率：归末接客服——谁收尾谁负责；分母 = 末接场次。复问算在**被复问的那一场（前一场）**所在的周：
+//   后一场（复问=是）的「复问自」指向前一场，前一场若是仅人工就记到它的末接客服头上
+// - 参与口径：被复问的会话里出现过的每位客服各记 1，作参考
+// repeatedUrls = 全表里「被复问过」的前一场会话地址集合（跨周：本周的会话可能被下周的会话复问，靠全量 rows 算）
+function agentStats(manualRows, repeatedUrls) {
+  const by = {};
+  const slot = (k) => by[k] || (by[k] = { visits: 0, first: 0, firstEff: 0, direct: 0, last: 0, repeated: 0, involved: 0 });
+  const team = { visits: 0, first: 0, firstEff: 0, direct: 0, last: 0, repeated: 0, involved: 0 };
+  for (const r of manualRows) {
+    const all = r.csAll.length ? r.csAll : (r.csFirst ? [r.csFirst] : []);
+    const wasRepeated = repeatedUrls.has(r.url);
+    for (const a of all) { slot(a).visits++; team.visits++; if (wasRepeated) { slot(a).involved++; } }
+    if (r.csFirst) {
+      const f = slot(r.csFirst); f.first++; team.first++;
+      if (r.nat === "有效") { f.firstEff++; team.firstEff++; if (r.way === "直接转") { f.direct++; team.direct++; } }
+    }
+    if (r.csLast) {
+      const l = slot(r.csLast); l.last++; team.last++;
+      if (wasRepeated) { l.repeated++; team.repeated++; }
+    }
+    if (wasRepeated) team.involved++;
+  }
+  const fin = (name, x) => ({
+    name, ...x,
+    directRate: x.firstEff ? Number(((x.direct / x.firstEff) * 100).toFixed(1)) : null,
+    repeatRate: x.last ? Number(((x.repeated / x.last) * 100).toFixed(1)) : null,
+  });
+  return {
+    team: fin("团队基线", team),
+    agents: Object.entries(by).map(([n, x]) => fin(n, x)).sort((a, b) => b.visits - a.visits),
+  };
+}
+
 function buildWeekly(rows) {
+  // 被复问过的前一场：复问=是 的行的「复问自」
+  const repeatedUrls = new Set(rows.filter((r) => r.rep && r.repFrom).map((r) => r.repFrom));
   const grouped = {};
   for (const r of rows) {
     const day = (r.t || "").slice(0, 10);
@@ -620,6 +661,10 @@ function buildWeekly(rows) {
     const direct = effManual.filter((r) => r.way === "直接转").length;
     const guide = scenes.find((s) => s.scene === GUIDE_SCENE);
     const guideSplit = guideSplitOf(effManual, guide ? guide.share : 0);
+    // 客服接待评估：本周 + 累计到本周（复问样本小，累计才看得出差异）
+    const agents = agentStats(manual, repeatedUrls);
+    const cumManual = weekKeys.filter((k) => k <= week).flatMap((k) => grouped[k]).filter((r) => r.st === "仅人工");
+    const agentsCum = agentStats(cumManual, repeatedUrls);
 
     return {
       week,
@@ -628,6 +673,7 @@ function buildWeekly(rows) {
       lastDay: [...days].sort().pop(),
       ...overview(all),
       jiri: jiriStats(all, manual, effJiri),
+      agents, agentsCum, cumFromWeek: weekKeys[0],
       bizTypes: bizTypeStats(all),
       eff,
       allManual,
@@ -1056,6 +1102,17 @@ async function renderPage(env, user) {
     <div class="report-block">
       <h3>六、仅 Jiri 有效场景</h3>
       <div class="table-wrapper"><table class="report-table" id="tblJiriScenes"></table></div>
+    </div>
+
+    <div class="report-block">
+      <h3>七、客服接待评估（只看仅人工）</h3>
+      <div class="report-bar" style="margin-bottom:10px">
+        <label>范围</label>
+        <select id="agentScope"><option value="week">本周</option><option value="cum">累计（第 27 周起到本周）</option></select>
+        <span class="report-hint" id="agentHint"></span>
+      </div>
+      <div class="table-wrapper"><table class="report-table" id="tblAgents"></table></div>
+      <div class="note" id="agentNote"></div>
     </div>
 
 

@@ -2306,6 +2306,45 @@ function renderWeekly(week) {
     '<tr class="sum"><td>合计</td>' + num(w.jiriSceneTotal) + num("100%") +
     (cmp ? ratio(w.jiriSceneTotal, cmp.prev.jiriSceneTotal) : num("—")) +
     (cmp && cmp.yoy ? ratio(w.jiriSceneTotal, cmp.yoy.jiriSceneTotal) : num("—")) + "</tr></tbody>";
+
+  // 七、客服接待评估
+  state.agentWeek = w;
+  renderAgents();
+}
+
+// 七、客服接待评估：本周 / 累计 两个范围，同一张表；口径见 README「客服接待评估」
+function renderAgents() {
+  const w = state.agentWeek;
+  const tbl = $("tblAgents");
+  if (!w || !tbl) return;
+  const scopeSel = $("agentScope");
+  const scope = scopeSel && scopeSel.value === "cum" ? "cum" : "week";
+  const data = scope === "cum" ? w.agentsCum : w.agents;
+  const hint = $("agentHint");
+  if (hint) hint.textContent = scope === "cum"
+    ? "第 " + Number(String(w.cumFromWeek || "").slice(5)) + " 周 ～ 第 " + Number(w.week.slice(5)) + " 周累计"
+    : "第 " + Number(w.week.slice(5)) + " 周（" + w.firstDay + " ~ " + w.lastDay + "）";
+  if (!data || !data.agents.length) {
+    tbl.innerHTML = '<tbody><tr><td>本范围内没有带客服标注的人工会话</td></tr></tbody>';
+    return;
+  }
+  const num = (v) => '<td class="num">' + (v === null || v === undefined ? "—" : v) + "</td>";
+  const pctv = (v) => (v === null || v === undefined ? "—" : v + "%");
+  const row = (x, cls) =>
+    '<tr class="' + (cls || "") + '"><td>' + escHtml(x.name) + "</td>" +
+    num(x.visits) + num(x.first) + num(x.direct + " / " + x.firstEff) + num(pctv(x.directRate)) +
+    num(x.last) + num(x.repeated) + num(pctv(x.repeatRate)) + num(x.involved) + "</tr>";
+  tbl.innerHTML =
+    "<thead><tr><th>客服</th><th class=\"num\">接待人次</th><th class=\"num\">首接场次</th><th class=\"num\">秒转 / 首接有效</th><th class=\"num\">秒转率</th>" +
+    "<th class=\"num\">末接场次</th><th class=\"num\">复问（末接）</th><th class=\"num\">复问率</th><th class=\"num\">复问（参与）</th></tr></thead><tbody>" +
+    row(data.team, "sum hl") + data.agents.map((x) => row(x)).join("") + "</tbody>";
+  const note = $("agentNote");
+  if (note) note.innerHTML =
+    '<span class="dim-note">口径：只看处理状态「仅人工」。接待人次 = 一场里出现的每位客服各记 1；' +
+    "秒转率 = 首接客服的有效人工场次里「直接转」的占比（秒转发生在任何客服接手之前，归首接）；" +
+    "复问率 = 末接客服的场次里、之后 6～36 小时被同一用户再问同一件事的占比（谁收尾谁负责，人工侧相似度阈值 0.15）；" +
+    "复问（参与）= 被复问的会话里出现过的每位客服各记 1，作参考。三人各接一段的会话中间那位只记人次。" +
+    "复问记在被复问的那一场所在的周，本周的数会随下周的复问补进来而变。</span>";
 }
 
 // ============== 交互 ==============
@@ -2400,6 +2439,9 @@ function initActions() {
       if (LAST_STATS) drawReceptChart(LAST_STATS);
     });
   }
+
+  const agentScope = $("agentScope");
+  if (agentScope) agentScope.addEventListener("change", renderAgents);
 
   const granR = $("granRepeat");
   if (granR) {
