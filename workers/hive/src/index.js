@@ -594,18 +594,17 @@ function weekMetrics(rows) {
 // 按接待客服评估（2026-09-17 用户定，只看仅人工；口径见 hive 仓库 skills/统计口径.md「按接待客服评估」）：
 // - 接待人次：一场里出现的每位客服各记 1（全部客服列）
 // - 秒转率：归首接客服——秒转（转人工方式=直接转）是用户进来就要人工，发生在任何客服接手之前；分母 = 首接的有效人工场次
-// - 复问率：归末接客服——谁收尾谁负责；分母 = 末接场次。复问算在**被复问的那一场（前一场）**所在的周：
-//   后一场（复问=是）的「复问自」指向前一场，前一场若是仅人工就记到它的末接客服头上
-// - 参与口径：被复问的会话里出现过的每位客服各记 1，作参考
+// - 复问率：记到**原来接待的那个人**（前一场 A 的末接客服）——用户在 A 问了 x、隔 6~36h 又在 B 问 x，复问算 A 的接待人，
+//   不算 B 的；分母 = 末接场次。复问算在 A 所在的周：后一场 B（复问=是）的「复问自」指向 A，A 若是仅人工就记到它的末接客服头上
 // repeatedUrls = 全表里「被复问过」的前一场会话地址集合（跨周：本周的会话可能被下周的会话复问，靠全量 rows 算）
 function agentStats(manualRows, repeatedUrls) {
   const by = {};
-  const slot = (k) => by[k] || (by[k] = { visits: 0, first: 0, firstEff: 0, direct: 0, last: 0, repeated: 0, involved: 0 });
-  const team = { visits: 0, first: 0, firstEff: 0, direct: 0, last: 0, repeated: 0, involved: 0 };
+  const slot = (k) => by[k] || (by[k] = { visits: 0, first: 0, firstEff: 0, direct: 0, last: 0, repeated: 0 });
+  const team = { visits: 0, first: 0, firstEff: 0, direct: 0, last: 0, repeated: 0 };
   for (const r of manualRows) {
     const all = r.csAll.length ? r.csAll : (r.csFirst ? [r.csFirst] : []);
     const wasRepeated = repeatedUrls.has(r.url);
-    for (const a of all) { slot(a).visits++; team.visits++; if (wasRepeated) { slot(a).involved++; } }
+    for (const a of all) { slot(a).visits++; team.visits++; }
     if (r.csFirst) {
       const f = slot(r.csFirst); f.first++; team.first++;
       if (r.nat === "有效") { f.firstEff++; team.firstEff++; if (r.way === "直接转") { f.direct++; team.direct++; } }
@@ -614,7 +613,6 @@ function agentStats(manualRows, repeatedUrls) {
       const l = slot(r.csLast); l.last++; team.last++;
       if (wasRepeated) { l.repeated++; team.repeated++; }
     }
-    if (wasRepeated) team.involved++;
   }
   const fin = (name, x) => ({
     name, ...x,

@@ -2318,7 +2318,7 @@ function renderAgents(w) {
   const row = (x, cls) =>
     '<tr class="' + (cls || "") + '"><td>' + escHtml(x.name) + "</td>" +
     num(x.visits) + num(x.first) + num(x.direct + " / " + x.firstEff) + num(pctv(x.directRate)) +
-    num(x.last) + num(x.repeated) + num(pctv(x.repeatRate)) + num(x.involved) + "</tr>";
+    num(x.last) + num(x.repeated) + num(pctv(x.repeatRate)) + "</tr>";
   const table = (id, data) => {
     const tbl = $(id);
     if (!tbl) return;
@@ -2328,7 +2328,7 @@ function renderAgents(w) {
     }
     tbl.innerHTML =
       "<thead><tr><th>客服</th><th class=\"num\">接待人次</th><th class=\"num\">首接场次</th><th class=\"num\">秒转 / 首接有效</th><th class=\"num\">秒转率</th>" +
-      "<th class=\"num\">末接场次</th><th class=\"num\">复问（末接）</th><th class=\"num\">复问率</th><th class=\"num\">复问（参与）</th></tr></thead><tbody>" +
+      "<th class=\"num\">末接场次</th><th class=\"num\">复问</th><th class=\"num\">复问率</th></tr></thead><tbody>" +
       row(data.team, "sum hl") + data.agents.map((x) => row(x)).join("") + "</tbody>";
   };
   const wk = Number(w.week.slice(5));
@@ -2342,8 +2342,8 @@ function renderAgents(w) {
   if (note) note.innerHTML =
     '<span class="dim-note">口径：只看处理状态「仅人工」。接待人次 = 一场里出现的每位客服各记 1；' +
     "秒转率 = 首接客服的有效人工场次里「直接转」的占比（秒转发生在任何客服接手之前，归首接）；" +
-    "复问率 = 末接客服的场次里、之后 6～36 小时被同一用户再问同一件事的占比（谁收尾谁负责，人工侧相似度阈值 0.15）；" +
-    "复问（参与）= 被复问的会话里出现过的每位客服各记 1，作参考。三人各接一段的会话中间那位只记人次。" +
+    "复问记到原来接待的人身上：用户在 A 场问了 x、隔 6～36 小时又在 B 场问 x，这 1 场复问算 A 的（末接）客服，不算 B 的；复问率 = 复问 ÷ 末接场次（人工侧相似度阈值 0.15）。" +
+    "三人各接一段的会话中间那位只记人次。" +
     "复问记在被复问的那一场所在的周，本周的数会随下周的复问补进来而变。</span>";
 }
 
