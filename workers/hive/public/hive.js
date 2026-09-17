@@ -2307,23 +2307,34 @@ function renderWeekly(week) {
     (cmp ? ratio(w.jiriSceneTotal, cmp.prev.jiriSceneTotal) : num("—")) +
     (cmp && cmp.yoy ? ratio(w.jiriSceneTotal, cmp.yoy.jiriSceneTotal) : num("—")) + "</tr></tbody>";
 
-  // 七、客服接待评估
+  // 七、客服接待评估：跟随上方「统计周」，下拉里也能单独换周或看累计
   state.agentWeek = w;
+  const agentSel = $("agentScope");
+  if (agentSel && [...agentSel.options].some((o) => o.value === w.week)) agentSel.value = w.week;
   renderAgents();
 }
 
-// 七、客服接待评估：本周 / 累计 两个范围，同一张表；口径见 README「客服接待评估」
+// 七、客服接待评估：范围下拉列出每一周 + 累计，默认跟随上方「统计周」；口径见 README「客服接待评估」
 function renderAgents() {
-  const w = state.agentWeek;
-  const tbl = $("tblAgents");
-  if (!w || !tbl) return;
-  const scopeSel = $("agentScope");
-  const scope = scopeSel && scopeSel.value === "cum" ? "cum" : "week";
+  const tbl = $("tblAgents"), sel = $("agentScope");
+  if (!tbl || !sel || !state.weeks.length) return;
+  const latest = state.weeks[state.weeks.length - 1];
+  // 下拉选项只建一次（周数变了再重建）：累计 + 每一周（新的在前）
+  const wantKeys = ["cum", ...state.weeks.map((x) => x.week).reverse()];
+  if ([...sel.options].map((o) => o.value).join(",") !== wantKeys.join(",")) {
+    sel.innerHTML = wantKeys.map((k) => {
+      if (k === "cum") return '<option value="cum">累计（第 ' + Number(String(latest.cumFromWeek || "").slice(5)) + " 周起至今）</option>";
+      return '<option value="' + k + '">第 ' + Number(k.slice(5)) + " 周</option>";
+    }).join("");
+    sel.value = state.agentWeek ? state.agentWeek.week : latest.week;
+  }
+  const scope = sel.value;
+  const w = scope === "cum" ? latest : (state.weeks.find((x) => x.week === scope) || latest);
   const data = scope === "cum" ? w.agentsCum : w.agents;
   const hint = $("agentHint");
   if (hint) hint.textContent = scope === "cum"
-    ? "第 " + Number(String(w.cumFromWeek || "").slice(5)) + " 周 ～ 第 " + Number(w.week.slice(5)) + " 周累计"
-    : "第 " + Number(w.week.slice(5)) + " 周（" + w.firstDay + " ~ " + w.lastDay + "）";
+    ? "第 " + Number(String(w.cumFromWeek || "").slice(5)) + " 周 ～ 第 " + Number(w.week.slice(5)) + " 周累计" + (w.dayCount < 7 ? "（本周尚不完整）" : "")
+    : w.firstDay + " ~ " + w.lastDay + "（" + w.dayCount + " 天" + (w.dayCount < 7 ? "，尚不完整" : "") + "）";
   if (!data || !data.agents.length) {
     tbl.innerHTML = '<tbody><tr><td>本范围内没有带客服标注的人工会话</td></tr></tbody>';
     return;

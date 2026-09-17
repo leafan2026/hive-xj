@@ -1108,7 +1108,7 @@ async function renderPage(env, user) {
       <h3>七、客服接待评估（只看仅人工）</h3>
       <div class="report-bar" style="margin-bottom:10px">
         <label>范围</label>
-        <select id="agentScope"><option value="week">本周</option><option value="cum">累计（第 27 周起到本周）</option></select>
+        <select id="agentScope"></select>
         <span class="report-hint" id="agentHint"></span>
       </div>
       <div class="table-wrapper"><table class="report-table" id="tblAgents"></table></div>
