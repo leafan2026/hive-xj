@@ -122,7 +122,7 @@ function trim(e) {
     loop: e.field_30 || "",         // 业务闭环
     rep: e.field_33 === "是",       // 复问（上游 算复问.py 算好写回：同用户隔 6~36h 再进线且一句话总结相似）
     repFrom: e.field_34 || "",      // 复问自：前一场会话地址
-    uturns: typeof e.field_35 === "number" ? e.field_35 : null,  // 用户轮次（客户说话条数，上游 推轮次与at到质检表.py）
+    uturns: e.field_35 === "" || e.field_35 === null || e.field_35 === undefined || isNaN(Number(e.field_35)) ? null : Number(e.field_35),  // 用户轮次（客户说话条数，上游 推轮次与at到质检表.py）
     atJiri: e.field_36 === "是",    // 人工中@jiri：仅人工会话里客服有没有 @jiri
   };
 }

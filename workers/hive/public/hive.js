@@ -2163,7 +2163,8 @@ function renderWeekly(week) {
     ];
     $("tblJiri").innerHTML =
       "<thead><tr><th>指标</th><th>结果</th>" + (pj ? "<th>上周同期" + (jscope ? "（" + jscope + "）" : "") + "</th>" : "") + "</tr></thead><tbody>" +
-      jrows.map((r) => "<tr><td>" + r[0] + '</td><td class="dim">' + r[1] + "</td>" + (pj ? '<td class="dim">' + r[2] + "</td>" : "") + "</tr>").join("") +
+      // 本周结果用正文色（数字加粗），上周同期灰色作参照
+      jrows.map((r) => "<tr><td>" + r[0] + '</td><td class="jiri-result">' + r[1].replace(/(\d[\d,.]*%?)/g, "<b>$1</b>") + "</td>" + (pj ? '<td class="dim">' + r[2] + "</td>" : "") + "</tr>").join("") +
       "</tbody>";
     $("jiriNote").innerHTML =
       '<span class="dim-note">口径：轮次三档的分母 = 仅 Jiri 且有效 ' + j.base + " 场；三档之和比分母少 " + j.zero +
