@@ -1106,12 +1106,10 @@ async function renderPage(env, user) {
 
     <div class="report-block">
       <h3>七、客服接待评估（只看仅人工）</h3>
-      <div class="report-bar" style="margin-bottom:10px">
-        <label>范围</label>
-        <select id="agentScope"></select>
-        <span class="report-hint" id="agentHint"></span>
-      </div>
+      <div class="report-hint" id="agentHint" style="margin-bottom:10px"></div>
       <div class="table-wrapper"><table class="report-table" id="tblAgents"></table></div>
+      <div class="report-hint" id="agentHintCum" style="margin:18px 0 10px"></div>
+      <div class="table-wrapper"><table class="report-table" id="tblAgentsCum"></table></div>
       <div class="note" id="agentNote"></div>
     </div>
 

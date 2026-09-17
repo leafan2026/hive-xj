@@ -2307,48 +2307,37 @@ function renderWeekly(week) {
     (cmp ? ratio(w.jiriSceneTotal, cmp.prev.jiriSceneTotal) : num("—")) +
     (cmp && cmp.yoy ? ratio(w.jiriSceneTotal, cmp.yoy.jiriSceneTotal) : num("—")) + "</tr></tbody>";
 
-  // 七、客服接待评估：跟随上方「统计周」，下拉里也能单独换周或看累计
-  state.agentWeek = w;
-  const agentSel = $("agentScope");
-  if (agentSel && [...agentSel.options].some((o) => o.value === w.week)) agentSel.value = w.week;
-  renderAgents();
+  // 七、客服接待评估：跟随上方「统计周」
+  renderAgents(w);
 }
 
-// 七、客服接待评估：范围下拉列出每一周 + 累计，默认跟随上方「统计周」；口径见 README「客服接待评估」
-function renderAgents() {
-  const tbl = $("tblAgents"), sel = $("agentScope");
-  if (!tbl || !sel || !state.weeks.length) return;
-  const latest = state.weeks[state.weeks.length - 1];
-  // 下拉选项只建一次（周数变了再重建）：累计 + 每一周（新的在前）
-  const wantKeys = ["cum", ...state.weeks.map((x) => x.week).reverse()];
-  if ([...sel.options].map((o) => o.value).join(",") !== wantKeys.join(",")) {
-    sel.innerHTML = wantKeys.map((k) => {
-      if (k === "cum") return '<option value="cum">累计（第 ' + Number(String(latest.cumFromWeek || "").slice(5)) + " 周起至今）</option>";
-      return '<option value="' + k + '">第 ' + Number(k.slice(5)) + " 周</option>";
-    }).join("");
-    sel.value = state.agentWeek ? state.agentWeek.week : latest.week;
-  }
-  const scope = sel.value;
-  const w = scope === "cum" ? latest : (state.weeks.find((x) => x.week === scope) || latest);
-  const data = scope === "cum" ? w.agentsCum : w.agents;
-  const hint = $("agentHint");
-  if (hint) hint.textContent = scope === "cum"
-    ? "第 " + Number(String(w.cumFromWeek || "").slice(5)) + " 周 ～ 第 " + Number(w.week.slice(5)) + " 周累计" + (w.dayCount < 7 ? "（本周尚不完整）" : "")
-    : w.firstDay + " ~ " + w.lastDay + "（" + w.dayCount + " 天" + (w.dayCount < 7 ? "，尚不完整" : "") + "）";
-  if (!data || !data.agents.length) {
-    tbl.innerHTML = '<tbody><tr><td>本范围内没有带客服标注的人工会话</td></tr></tbody>';
-    return;
-  }
+// 七、客服接待评估：跟随上方「统计周」，两张表——本周、累计到本周（第 27 周起）；口径见 README「客服接待评估」
+function renderAgents(w) {
   const num = (v) => '<td class="num">' + (v === null || v === undefined ? "—" : v) + "</td>";
   const pctv = (v) => (v === null || v === undefined ? "—" : v + "%");
   const row = (x, cls) =>
     '<tr class="' + (cls || "") + '"><td>' + escHtml(x.name) + "</td>" +
     num(x.visits) + num(x.first) + num(x.direct + " / " + x.firstEff) + num(pctv(x.directRate)) +
     num(x.last) + num(x.repeated) + num(pctv(x.repeatRate)) + num(x.involved) + "</tr>";
-  tbl.innerHTML =
-    "<thead><tr><th>客服</th><th class=\"num\">接待人次</th><th class=\"num\">首接场次</th><th class=\"num\">秒转 / 首接有效</th><th class=\"num\">秒转率</th>" +
-    "<th class=\"num\">末接场次</th><th class=\"num\">复问（末接）</th><th class=\"num\">复问率</th><th class=\"num\">复问（参与）</th></tr></thead><tbody>" +
-    row(data.team, "sum hl") + data.agents.map((x) => row(x)).join("") + "</tbody>";
+  const table = (id, data) => {
+    const tbl = $(id);
+    if (!tbl) return;
+    if (!data || !data.agents.length) {
+      tbl.innerHTML = '<tbody><tr><td>没有带客服标注的人工会话</td></tr></tbody>';
+      return;
+    }
+    tbl.innerHTML =
+      "<thead><tr><th>客服</th><th class=\"num\">接待人次</th><th class=\"num\">首接场次</th><th class=\"num\">秒转 / 首接有效</th><th class=\"num\">秒转率</th>" +
+      "<th class=\"num\">末接场次</th><th class=\"num\">复问（末接）</th><th class=\"num\">复问率</th><th class=\"num\">复问（参与）</th></tr></thead><tbody>" +
+      row(data.team, "sum hl") + data.agents.map((x) => row(x)).join("") + "</tbody>";
+  };
+  const wk = Number(w.week.slice(5));
+  const hint = $("agentHint");
+  if (hint) hint.textContent = "本周：第 " + wk + " 周（" + w.firstDay + " ~ " + w.lastDay + "，" + w.dayCount + " 天" + (w.dayCount < 7 ? "，尚不完整" : "") + "）";
+  table("tblAgents", w.agents);
+  const hintCum = $("agentHintCum");
+  if (hintCum) hintCum.textContent = "累计：第 " + Number(String(w.cumFromWeek || "").slice(5)) + " 周 ～ 第 " + wk + " 周（复问样本小，看趋势用这张）";
+  table("tblAgentsCum", w.agentsCum);
   const note = $("agentNote");
   if (note) note.innerHTML =
     '<span class="dim-note">口径：只看处理状态「仅人工」。接待人次 = 一场里出现的每位客服各记 1；' +
@@ -2450,9 +2439,6 @@ function initActions() {
       if (LAST_STATS) drawReceptChart(LAST_STATS);
     });
   }
-
-  const agentScope = $("agentScope");
-  if (agentScope) agentScope.addEventListener("change", renderAgents);
 
   const granR = $("granRepeat");
   if (granR) {
