@@ -14,14 +14,15 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 // 2026-09-18 补：bump 之后页面卡在「正在构建」整整几小时，原因是后台刷新死在半路、
 // meta 一直停在 running 把重试全挡掉。现在 stats/weekly/loop 缺失时会直接从 K_ENTRIES 现算（见「派生」），
 // 所以只有 K_ENTRIES 这个键是真正要靠拉数重建的，另外三个换键已经不会再让页面空着。
-const K_STATS = "hive:stats:v9";
+// stats v10 / weekly v7 / q v5（2026-09-18）：情绪里加 emoList（负向 + 正向会话的时间/地址/末接客服），照规矩 bump。
+const K_STATS = "hive:stats:v10";
 const K_ENTRIES = "hive:entries:v5";
-const K_WEEKLY = "hive:weekly:v6";
+const K_WEEKLY = "hive:weekly:v7";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
 // 筛选结果记忆缓存：键里带 meta.updatedAt，数据一刷新自然失效；
 // TTL 只用来回收过期键，不承担正确性。
-const K_QUERY_PREFIX = "hive:q:v4:";
+const K_QUERY_PREFIX = "hive:q:v5:";
 const QUERY_CACHE_TTL_S = 3600;
 
 // 金数据 per_page 实际封顶 50；next 是 serial_number 偏移，可并行取页
@@ -595,8 +596,13 @@ function emotionStats(manual) {
   };
   const team = blank();
   const byAgent = {}, byScene = {}, byPair = {};
+  const emoList = [];
   for (const r of manual) {
     add(team, r);
+    // 负向 / 正向明细：上表只看得到「几次」，要回原文得有链接，所以逐场留下地址
+    if (r.emo === "负向" || r.emo === "正向") {
+      emoList.push({ t: r.t || "", url: r.url || "", agent: r.csLast || "", emo: r.emo });
+    }
     if (r.csLast) {
       add(byAgent[r.csLast] || (byAgent[r.csLast] = blank()), r);
       const key = r.csLast + "\u0000" + r.scene;
@@ -619,6 +625,8 @@ function emotionStats(manual) {
       .sort((a, b) => b.neg - a.neg || b.pos - a.pos || b.total - a.total),
     scenes: Object.entries(byScene).map(([name, o]) => withRate({ name, ...o }))
       .sort((a, b) => b.neg - a.neg || b.total - a.total),
+    // 负向在前、正向在后，各自按时间倒序
+    emoList: emoList.sort((a, b) => (a.emo === b.emo ? (b.t || "").localeCompare(a.t || "") : a.emo === "负向" ? -1 : 1)),
   };
 }
 
@@ -1292,6 +1300,8 @@ async function renderPage(env, user) {
       <div class="table-wrapper"><table class="report-table" id="tblAgentSceneWk"></table></div>
       <div class="report-hint" id="emoHintWk" style="margin:18px 0 10px"></div>
       <div class="table-wrapper"><table class="report-table" id="tblEmotionWk"></table></div>
+      <div class="report-hint" id="negHintWk" style="margin:18px 0 10px"></div>
+      <div class="table-wrapper"><table class="report-table" id="tblEmotionNegWk"></table></div>
       <div class="note" id="emoNoteWk"></div>
     </div>
 
@@ -1320,6 +1330,8 @@ async function renderPage(env, user) {
       <div class="table-wrapper"><table class="report-table" id="tblEmotion"></table></div>
       <div class="report-hint" style="margin:18px 0 10px">按业务场景汇总（只算有情绪标注的接待）</div>
       <div class="table-wrapper"><table class="report-table" id="tblEmotionScene"></table></div>
+      <div class="report-hint" id="negHint" style="margin:18px 0 10px"></div>
+      <div class="table-wrapper"><table class="report-table" id="tblEmotionNeg"></table></div>
       <div class="note" id="emoNote"></div>
     </div>
   

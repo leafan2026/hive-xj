@@ -1231,6 +1231,7 @@ function renderCharts(s) {
     : "全部区间（跟随顶部筛选栏）";
   renderAgentScene("tblAgentScene", "asHint", "asNote", s.agentScene, rangeHint);
   renderEmotion("tblEmotion", "tblEmotionScene", "emoHint", "emoNote", s.emotion, rangeHint);
+  renderEmoList("tblEmotionNeg", "negHint", (s.emotion || {}).emoList);
   renderTrend(s);
   renderScene(s);
   renderCost(s);
@@ -1653,6 +1654,32 @@ function renderAgentScene(id, hintId, noteId, data, hint) {
 }
 
 // 用户情绪 · 每个人的负向场景分布：行 = 客服 × 场景，只列有负向或正向的格子
+// 负向 / 正向明细：把上表里那几个数字落到具体会话上，能直接点进去看原文
+function renderEmoList(id, hintId, list) {
+  const tbl = $(id);
+  if (!tbl) return;
+  const rows = Array.isArray(list) ? list : null;
+  if (!rows) {              // 旧形状缓存没有 emoList
+    tbl.innerHTML = '<tbody><tr><td>数据缓存是旧版本，点右上角「重新拉取数据」后本表才会出数</td></tr></tbody>';
+    return;
+  }
+  const neg = rows.filter((r) => r.emo === "负向").length;
+  if (hintId && $(hintId)) {
+    $(hintId).textContent = "负向 / 正向会话明细（负向 " + neg + " 场、正向 " + (rows.length - neg) +
+      " 场，负向在前，各自按时间倒序）；上面几张表按接待次数、本表按场次，一场转了几次人工就记几次，所以两处数字可能对不上";
+  }
+  const link = (u) => (u ? '<a href="' + escHtml(u) + '" target="_blank" rel="noopener">' + escHtml(u.replace(/^https?:\/\//, "")) + "</a>" : "—");
+  const tag = (e) => '<b style="color:' + (e === "负向" ? "#d9484d" : "#199c58") + '">' + escHtml(e) + "</b>";
+  tbl.innerHTML =
+    "<thead><tr><th>情绪</th><th>时间</th><th>会话地址</th><th>接待客服</th></tr></thead><tbody>" +
+    (rows.length
+      ? rows.map((r) =>
+        "<tr><td>" + tag(r.emo) + "</td><td>" + escHtml(String(r.t || "").slice(0, 16).replace("T", " ")) + "</td><td>" + link(r.url) +
+        "</td><td>" + escHtml(r.agent || "—") + "</td></tr>").join("")
+      : '<tr><td colspan="4">范围内没有负向或正向情绪的人工会话</td></tr>') +
+    "</tbody>";
+}
+
 function renderEmotion(id, sceneId, hintId, noteId, data, hint) {
   const tbl = $(id);
   if (!tbl) return;
@@ -2460,6 +2487,7 @@ function renderWeekly(week) {
   const wkLabel = "第 " + Number(w.week.slice(5)) + " 周（" + w.firstDay + " ~ " + w.lastDay + "）";
   renderAgentScene("tblAgentSceneWk", "asHintWk", null, w.agentScene, "场景 × 客服 · 单次接待时长中位数 · " + wkLabel);
   renderEmotion("tblEmotionWk", null, "emoHintWk", "emoNoteWk", w.emotion, "用户情绪 · " + wkLabel);
+  renderEmoList("tblEmotionNegWk", "negHintWk", (w.emotion || {}).emoList);
 }
 
 // 七、客服接待评估：跟随上方「统计周」，两张表——本周、累计到本周（第 27 周起）；口径见 README「客服接待评估」
