@@ -523,14 +523,14 @@ function secondTransferByScene(effManual) {
 // 客服 × 场景 · 单次接待时长中位数（2026-09-18 用户定）。只看有效人工，且**排除多客服接力的会话**——
 // 一个会话只有一个总时长，没法拆给几个人（累计 11.6% 场次、24.2% 时长）。归属取首接客服（单客服会话里首接=末接）。
 // 每格 = 该客服该场景「时长 ÷ 接待次数」的中位数 + 场次；胶囊 = 该格中位数 − 该列全员中位线（pooled median）。
-const AGENT_SCENE_COLS = 6;
+// 列 = 该范围内出现过的全部业务场景（按场次降序）。表格容器本身横向可滚，不截断场景（2026-09-18 用户指出「场景不全」）。
 function agentSceneDuration(effManual) {
   const rows = effManual.filter((r) =>
     (r.csAll || []).length === 1 && r.csFirst && typeof r.dur === "number" && r.dur > 0 && typeof r.turns === "number" && r.turns > 0);
   const per = (r) => r.dur / r.turns / 60;
   const sceneCount = {};
   for (const r of rows) sceneCount[r.scene] = (sceneCount[r.scene] || 0) + 1;
-  const cols = Object.entries(sceneCount).sort((a, b) => b[1] - a[1]).slice(0, AGENT_SCENE_COLS).map((x) => x[0]);
+  const cols = Object.entries(sceneCount).sort((a, b) => b[1] - a[1]).map((x) => x[0]);
   // median() 是给秒用的（取整），这里先换成秒再换回分钟，保留一位小数
   const cell = (list) => (list.length ? { v: Number((median(list.map((x) => x * 60)) / 60).toFixed(1)), n: list.length } : null);
   const baseline = cols.map((s) => cell(rows.filter((r) => r.scene === s).map(per)));
@@ -1190,15 +1190,17 @@ async function renderPage(env, user) {
       <h3>四、人工接待现状</h3>
       <div class="table-wrapper"><table class="report-table" id="tblManual"></table></div>
       <div class="note" id="manualNote"></div>
-      <div class="report-hint" id="stHint" style="margin:18px 0 10px"></div>
-      <div class="table-wrapper"><table class="report-table" id="tblSecond"></table></div>
-      <div class="note"><span class="dim-note">人工有效·秒转·jiri 可解答 = 有效人工里「转人工方式 = 直接转」且「Jiri 是否能解答 = 能」的场次，
-      即用户没给 Jiri 机会、而 Jiri 本来答得了的那批。与「可避免转人工」（四类可避免原因 ÷ 全部转人工）和逐场读原文的「不愿沟通率」是三个不同的数。</span></div>
     </div>
 
     <div class="report-block">
       <h3>五、有效人工场景 × 工作量（占比按时长）</h3>
       <div class="table-wrapper"><table class="report-table" id="tblScenes"></table></div>
+      <div class="note"><span class="dim-note">注意上表的「接待次数」是 <b>次数</b>（取「转人工会话接待次数」，一场会话转了几次人工就记几次），
+      不是场次；下表的「有效人工场次」才是<b>会话数</b>。同一场景两个数不等是正常的——如第 38 周操作引导 40 场 / 51 次。</span></div>
+      <div class="report-hint" id="stHint" style="margin:18px 0 10px"></div>
+      <div class="table-wrapper"><table class="report-table" id="tblSecond"></table></div>
+      <div class="note"><span class="dim-note">人工有效·秒转·jiri 可解答 = 有效人工里「转人工方式 = 直接转」且「Jiri 是否能解答 = 能」的<b>会话数</b>，
+      即用户没给 Jiri 机会、而 Jiri 本来答得了的那批。与「可避免转人工」（四类可避免原因 ÷ 全部转人工）和逐场读原文的「不愿沟通率」是三个不同的数。</span></div>
     </div>
 
     <div class="report-block">

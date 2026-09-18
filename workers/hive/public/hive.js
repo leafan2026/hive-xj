@@ -1622,7 +1622,7 @@ function renderAgentScene(id, hintId, noteId, data, hint) {
   if (noteId && $(noteId)) $(noteId).innerHTML =
     '<span class="dim-note">只看有效人工，单次时长 = 每场「人工时长 ÷ 接待次数」，格内取中位数；' +
     "胶囊 = 该格中位数 − 该列全员中位线（把该场景全部会话合在一起取的中位数），红 = 比中位线慢、绿 = 快。" +
-    "<b>已排除 " + data.excludedMulti + " 场多客服接力的会话</b>——一个会话只有一个总时长，没法拆给几个人；其余按首接客服归属。列取场次前 6 的场景。</span>";
+    "<b>已排除 " + data.excludedMulti + " 场多客服接力的会话</b>——一个会话只有一个总时长，没法拆给几个人；其余按首接客服归属。列 = 范围内出现过的全部场景，按场次降序，表格可横向滚动。</span>";
 }
 
 // 用户情绪：三档计数覆盖该客服接的全部仅人工会话（不剔无效/填表人），「其中有效」作参照
@@ -2369,30 +2369,6 @@ function renderWeekly(week) {
     '（表单里「人工接待次数」两个字段全为空）；单次中位 = 每场「时长 ÷ 接待次数」的中位数。' +
     '环比对比上周同期，同比对比 4 周前同期，都按相同星期对齐。</span>';
 
-  // 四下：人工有效·秒转·jiri 可解答（按场景）
-  const st = w.secondTransfer;
-  const pst = cmp ? cmp.prev.secondTransfer : null;
-  if (st) {
-    const hint = $("stHint");
-    if (hint) hint.innerHTML = "人工有效·秒转·jiri 可解答：<b>" + st.total + " / " + st.base + " = " +
-      (st.base ? ((st.total / st.base) * 100).toFixed(1) : 0) + "%</b>（分母 = 有效人工）";
-    const prevRate = (scene) => {
-      if (!pst) return null;
-      const p = pst.scenes.find((x) => x.scene === scene);
-      return p ? p.rate : null;
-    };
-    $("tblSecond").innerHTML =
-      '<thead><tr><th>业务场景</th><th class="num">有效人工</th><th class="num">秒转·可解答</th><th class="num">占比</th>' +
-      (pst ? '<th class="num">环比' + (scope ? "（" + scope + "）" : "") + "</th>" : "") + "</tr></thead><tbody>" +
-      st.scenes.map((x) => {
-        const pr = prevRate(x.scene);
-        return "<tr><td>" + escHtml(x.scene) + '</td><td class="num">' + x.base + '</td><td class="num strong">' + x.hit +
-          '</td><td class="num">' + x.rate + "%</td>" + (pst ? '<td class="num">' + (pr === null ? '<span class="dl flat">新</span>' : deltaPill(Number((x.rate - pr).toFixed(1)), "pp")) + "</td>" : "") + "</tr>";
-      }).join("") +
-      '<tr class="sum"><td>合计</td><td class="num">' + st.base + '</td><td class="num">' + st.total + '</td><td class="num">' +
-      (st.base ? ((st.total / st.base) * 100).toFixed(1) : 0) + "%</td>" + (pst ? '<td class="num"></td>' : "") + "</tr></tbody>";
-  }
-
   // 五、有效人工场景 × 工作量
   const sceneVal = (src, scene, field) => {
     const hit = src && src.scenes ? src.scenes[scene] : null;
@@ -2415,6 +2391,30 @@ function renderWeekly(week) {
     num("100%") + num(Number(w.eff.medianMin).toFixed(1)) + num(Number(w.eff.avgMin).toFixed(1)) +
     (cmp ? ratio(w.eff.durMin, cmp.prev.eff.durMin) : num("—")) +
     (cmp && cmp.yoy ? ratio(w.eff.durMin, cmp.yoy.eff.durMin) : num("—")) + "</tr></tbody>";
+
+  // 五下：人工有效·秒转·jiri 可解答（按场景）
+  const st = w.secondTransfer;
+  const pst = cmp ? cmp.prev.secondTransfer : null;
+  if (st) {
+    const hint = $("stHint");
+    if (hint) hint.innerHTML = "人工有效·秒转·jiri 可解答：<b>" + st.total + " / " + st.base + " = " +
+      (st.base ? ((st.total / st.base) * 100).toFixed(1) : 0) + "%</b>（分母 = 有效人工<b>会话数</b>，不是上表的接待次数）";
+    const prevRate = (scene) => {
+      if (!pst) return null;
+      const p = pst.scenes.find((x) => x.scene === scene);
+      return p ? p.rate : null;
+    };
+    $("tblSecond").innerHTML =
+      '<thead><tr><th>业务场景</th><th class="num">有效人工场次</th><th class="num">秒转·可解答</th><th class="num">占比</th>' +
+      (pst ? '<th class="num">环比' + (scope ? "（" + scope + "）" : "") + "</th>" : "") + "</tr></thead><tbody>" +
+      st.scenes.map((x) => {
+        const pr = prevRate(x.scene);
+        return "<tr><td>" + escHtml(x.scene) + '</td><td class="num">' + x.base + '</td><td class="num strong">' + x.hit +
+          '</td><td class="num">' + x.rate + "%</td>" + (pst ? '<td class="num">' + (pr === null ? '<span class="dl flat">新</span>' : deltaPill(Number((x.rate - pr).toFixed(1)), "pp")) + "</td>" : "") + "</tr>";
+      }).join("") +
+      '<tr class="sum"><td>合计</td><td class="num">' + st.base + '</td><td class="num">' + st.total + '</td><td class="num">' +
+      (st.base ? ((st.total / st.base) * 100).toFixed(1) : 0) + "%</td>" + (pst ? '<td class="num"></td>' : "") + "</tr></tbody>";
+  }
 
   // 六、仅 Jiri 有效场景
   $("tblJiriScenes").innerHTML =
