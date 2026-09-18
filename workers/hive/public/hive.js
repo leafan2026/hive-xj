@@ -1618,13 +1618,15 @@ function renderAgentScene(id, hintId, noteId, data, hint) {
   const cell = (c) => (c
     ? '<td class="num"><div class="c2"><b>' + c.v + "分 / " + c.n + "次</b>" + deltaPill(c.d, "分") + "</div></td>"
     : '<td class="num"></td>');
+  // 全员中位线放最右（2026-09-18 用户定）：左边先看各人，右边一列是这条场景的基准
   tbl.innerHTML =
-    '<thead><tr><th>业务场景</th><th class="num">全员中位线</th>' +
-    data.agents.map((a) => '<th class="num">' + escHtml(a) + "</th>").join("") + "</tr></thead><tbody>" +
+    "<thead><tr><th>业务场景</th>" +
+    data.agents.map((a) => '<th class="num">' + escHtml(a) + "</th>").join("") +
+    '<th class="num">全员中位线</th></tr></thead><tbody>' +
     data.rows.map((r) =>
-      "<tr><td>" + escHtml(r.scene) + '</td><td class="num"><div class="c2"><b>' +
-      (r.base ? r.base.v + "分 / " + r.base.n + "次" : "—") + "</b></div></td>" +
-      r.cells.map(cell).join("") + "</tr>").join("") +
+      "<tr><td>" + escHtml(r.scene) + "</td>" + r.cells.map(cell).join("") +
+      '<td class="num"><div class="c2"><b>' + (r.base ? r.base.v + "分 / " + r.base.n + "次" : "—") + "</b></div></td>" +
+      "</tr>").join("") +
     "</tbody>";
   if (noteId && $(noteId)) $(noteId).innerHTML =
     '<span class="dim-note">只看有效人工，单次时长 = 每场「人工时长 ÷ 接待次数」，格内取中位数；' +
