@@ -1711,11 +1711,8 @@ function renderEmotion(id, sceneId, hintId, noteId, data, hint) {
         '</td><td class="num strong">' + x.neg + '</td><td class="num">' + pct(x.negRate) +
         '</td><td class="num">' + x.neu + '</td><td class="num">' + x.pos + "</td></tr>").join("")
       : '<tr><td colspan="6">范围内没有带情绪标注的接待</td></tr>') + "</tbody>";
-  if (noteId && $(noteId)) $(noteId).innerHTML =
-    '<span class="dim-note">用户情绪由系统自动标注（负向/中性/正向），本项目只透传不改判。' +
-    "本表是<b>每个人的负向场景分布</b>：行 = 客服 × 业务场景，只列出有负向或正向的格子（全是中性的格子不占版面），按负向降序。" +
-    "口径统一按<b>接待次数</b>；负向比 / 正向比的分母 = 该格<b>有情绪标注</b>的接待次数（第 27～30 周导出还没有这一列，第 31 周起 100% 覆盖）。" +
-    "归属取末接客服（谁收尾算谁）。负向反映的是这次会话里用户遇到了什么（退款被拒、表单被封、故障未解决），<b>不等于客服服务差</b>——按场景负向率能差 10 倍。</span>";
+  // 2026-09-18 用户定：情绪表下方那段长口径说明不要了，口径仍留在 skills/统计口径.md
+  if (noteId && $(noteId)) $(noteId).innerHTML = "";
 }
 
 // 复问明细：时间// 复问明细：时间 / 本场会话地址 / 复问自（前一场会话地址）。服务端只下发 复问=是 的行，按时间倒序。

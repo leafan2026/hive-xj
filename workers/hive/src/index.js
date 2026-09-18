@@ -1302,7 +1302,6 @@ async function renderPage(env, user) {
       <div class="table-wrapper"><table class="report-table" id="tblEmotionWk"></table></div>
       <div class="report-hint" id="negHintWk" style="margin:18px 0 10px"></div>
       <div class="table-wrapper"><table class="report-table" id="tblEmotionNegWk"></table></div>
-      <div class="note" id="emoNoteWk"></div>
     </div>
 
 
@@ -1332,7 +1331,6 @@ async function renderPage(env, user) {
       <div class="table-wrapper"><table class="report-table" id="tblEmotionScene"></table></div>
       <div class="report-hint" id="negHint" style="margin:18px 0 10px"></div>
       <div class="table-wrapper"><table class="report-table" id="tblEmotionNeg"></table></div>
-      <div class="note" id="emoNote"></div>
     </div>
   
 
