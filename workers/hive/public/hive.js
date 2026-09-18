@@ -1630,40 +1630,42 @@ function renderAgentScene(id, hintId, noteId, data, hint) {
     "行 = 范围内出现过的全部场景、列 = 全部客服，都按接待次数降序，不截断；表格可横向滚动。</span>";
 }
 
-// 用户情绪：三档计数覆盖该客服接的全部仅人工会话（不剔无效/填表人），「其中有效」作参照
+// 用户情绪 · 每个人的负向场景分布：行 = 客服 × 场景，只列有负向或正向的格子
 function renderEmotion(id, sceneId, hintId, noteId, data, hint) {
   const tbl = $(id);
   if (!tbl) return;
   if (hintId && $(hintId)) $(hintId).textContent = hint;
-  if (!data || !data.agents.length) {
-    tbl.innerHTML = '<tbody><tr><td>范围内没有带客服标注的人工会话</td></tr></tbody>';
-    return;
-  }
-  const row = (x, cls) =>
-    '<tr class="' + (cls || "") + '"><td>' + escHtml(x.name) + '</td><td class="num">' + x.total +
-    '</td><td class="num strong">' + x.eff + '</td><td class="num"><b style="color:#d9484d">' + x.neg +
-    '</b></td><td class="num">' + x.neu + '</td><td class="num"><b style="color:#199c58">' + x.pos +
-    '</b></td><td class="num dim">' + x.none + "</td></tr>";
+  if (!data) return;
+  const pct = (v) => (v === null || v === undefined ? "—" : v + "%");
   tbl.innerHTML =
-    '<thead><tr><th>客服</th><th class="num">接待会话</th><th class="num">其中有效</th><th class="num">负向</th>' +
-    '<th class="num">中性</th><th class="num">正向</th><th class="num">无标注</th></tr></thead><tbody>' +
-    data.agents.map((x) => row(x)).join("") + row(data.team, "sum hl") + "</tbody>";
+    '<thead><tr><th>姓名</th><th>场景</th><th class="num">接待次数</th>' +
+    '<th class="num">负向</th><th class="num">负向比</th><th class="num">正向</th><th class="num">正向比</th></tr></thead><tbody>' +
+    (data.pairs && data.pairs.length
+      ? data.pairs.map((x) =>
+        "<tr><td>" + escHtml(x.agent) + "</td><td>" + escHtml(x.scene) + '</td><td class="num">' + x.total +
+        '</td><td class="num"><b style="color:#d9484d">' + x.neg + '</b></td><td class="num">' + pct(x.negRate) +
+        '</td><td class="num"><b style="color:#199c58">' + x.pos + '</b></td><td class="num">' + pct(x.posRate) + "</td></tr>").join("")
+      : '<tr><td colspan="7">范围内没有负向或正向情绪的人工接待</td></tr>') +
+    '<tr class="sum hl"><td>合计</td><td>全部场景</td><td class="num">' + data.team.total +
+    '</td><td class="num">' + data.team.neg + '</td><td class="num">' + pct(data.team.negRate) +
+    '</td><td class="num">' + data.team.pos + '</td><td class="num">' + pct(data.team.posRate) + "</td></tr></tbody>";
   const st = $(sceneId);
   if (st) st.innerHTML =
-    '<thead><tr><th>业务场景</th><th class="num">负向</th><th class="num">中性</th><th class="num">正向</th><th class="num">负向率</th></tr></thead><tbody>' +
+    '<thead><tr><th>业务场景</th><th class="num">接待次数</th><th class="num">负向</th><th class="num">负向比</th>' +
+    '<th class="num">中性</th><th class="num">正向</th></tr></thead><tbody>' +
     (data.scenes.length
-      ? data.scenes.map((x) => "<tr><td>" + escHtml(x.name) + '</td><td class="num strong">' + x.neg +
-        '</td><td class="num">' + x.neu + '</td><td class="num">' + x.pos + '</td><td class="num">' +
-        (x.negRate === null ? "—" : x.negRate + "%") + "</td></tr>").join("")
-      : '<tr><td colspan="5">范围内没有带情绪标注的会话</td></tr>') + "</tbody>";
+      ? data.scenes.map((x) => "<tr><td>" + escHtml(x.name) + '</td><td class="num">' + x.total +
+        '</td><td class="num strong">' + x.neg + '</td><td class="num">' + pct(x.negRate) +
+        '</td><td class="num">' + x.neu + '</td><td class="num">' + x.pos + "</td></tr>").join("")
+      : '<tr><td colspan="6">范围内没有带情绪标注的接待</td></tr>') + "</tbody>";
   if (noteId && $(noteId)) $(noteId).innerHTML =
     '<span class="dim-note">用户情绪由系统自动标注（负向/中性/正向），本项目只透传不改判。' +
-    "三档计数覆盖该客服接的<b>全部</b>仅人工会话，不剔无效与填表人；「其中有效」只作参照。归属取末接客服（谁收尾算谁）。" +
-    "「无标注」= 第 27～30 周的导出还没有这一列，第 31 周起 100% 覆盖。" +
-    "负向反映的是这次会话里用户遇到了什么（退款被拒、表单被封、故障未解决），<b>不等于客服服务差</b>——按场景负向率能差 10 倍。</span>";
+    "本表是<b>每个人的负向场景分布</b>：行 = 客服 × 业务场景，只列出有负向或正向的格子（全是中性的格子不占版面），按负向降序。" +
+    "口径统一按<b>接待次数</b>；负向比 / 正向比的分母 = 该格<b>有情绪标注</b>的接待次数（第 27～30 周导出还没有这一列，第 31 周起 100% 覆盖）。" +
+    "归属取末接客服（谁收尾算谁）。负向反映的是这次会话里用户遇到了什么（退款被拒、表单被封、故障未解决），<b>不等于客服服务差</b>——按场景负向率能差 10 倍。</span>";
 }
 
-// 复问明细：时间 / 本场会话地址 / 复问自（前一场会话地址）。服务端只下发 复问=是 的行，按时间倒序。
+// 复问明细：时间// 复问明细：时间 / 本场会话地址 / 复问自（前一场会话地址）。服务端只下发 复问=是 的行，按时间倒序。
 function renderRepeatsTable(s) {
   const tbl = $("tblRepeats");
   if (!tbl) return;

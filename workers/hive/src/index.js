@@ -558,35 +558,46 @@ function agentSceneDuration(effManual) {
   return { agents, rows: table, excludedMulti: effManual.length - rows.length };
 }
 
-// 用户情绪（2026-09-18 用户定）：三档直接显示。**三档计数覆盖该客服接的全部仅人工会话、不剔无效与填表人**；
-// 「其中有效」另给一列作参照。归属取末接客服（谁收尾算谁，与复问一致）。第 27~28 周导出没这列，计入「无标注」。
+// 用户情绪（2026-09-18 用户定）：三档直接显示，本项目只透传不改判。
+// 同日改版：主表改成**每个人的负向场景分布**——行 = 客服 × 业务场景，给负向/正向的次数与占比。
+// 口径统一按**接待次数**（一场会话的情绪套在它的接待次数上），分母 = 该客服该场景的接待次数。
+// 归属取末接客服（谁收尾算谁，与复问一致）。第 27~30 周导出没这列，计入「无标注」。
 function emotionStats(manual) {
-  const byAgent = {};
-  const teamScene = {};
   const blank = () => ({ total: 0, eff: 0, neg: 0, neu: 0, pos: 0, none: 0 });
   const add = (o, r) => {
-    o.total++;
-    if (r.nat === "有效") o.eff++;
-    if (r.emo === "负向") o.neg++;
-    else if (r.emo === "中性") o.neu++;
-    else if (r.emo === "正向") o.pos++;
-    else o.none++;
+    const n = receptions(r);
+    o.total += n;
+    if (r.nat === "有效") o.eff += n;
+    if (r.emo === "负向") o.neg += n;
+    else if (r.emo === "中性") o.neu += n;
+    else if (r.emo === "正向") o.pos += n;
+    else o.none += n;
   };
   const team = blank();
+  const byAgent = {}, byScene = {}, byPair = {};
   for (const r of manual) {
     add(team, r);
-    if (r.csLast) add(byAgent[r.csLast] || (byAgent[r.csLast] = blank()), r);
+    if (r.csLast) {
+      add(byAgent[r.csLast] || (byAgent[r.csLast] = blank()), r);
+      const key = r.csLast + "\u0000" + r.scene;
+      const cell = byPair[key] || (byPair[key] = { agent: r.csLast, scene: r.scene, ...blank() });
+      add(cell, r);
+    }
     // 按场景只算有情绪标注的行，否则负向率会被没这列的老周稀释
-    if (r.emo) add(teamScene[r.scene] || (teamScene[r.scene] = blank()), r);
+    if (r.emo) add(byScene[r.scene] || (byScene[r.scene] = blank()), r);
   }
-  const rate = (o) => {
+  const rate = (n, o) => {
     const d = o.neg + o.neu + o.pos;
-    return d ? Number(((o.neg / d) * 100).toFixed(1)) : null;
+    return d ? Number(((n / d) * 100).toFixed(1)) : null;
   };
+  const withRate = (o) => ({ ...o, negRate: rate(o.neg, o), posRate: rate(o.pos, o) });
   return {
-    team: { name: "合计", ...team },
-    agents: Object.entries(byAgent).map(([name, o]) => ({ name, ...o })).sort((a, b) => b.total - a.total),
-    scenes: Object.entries(teamScene).map(([name, o]) => ({ name, ...o, negRate: rate(o) }))
+    team: withRate({ name: "合计", ...team }),
+    agents: Object.entries(byAgent).map(([name, o]) => withRate({ name, ...o })).sort((a, b) => b.total - a.total),
+    // 负向场景分布：只列出有负向或正向的格子，按负向次数降序（全是中性的格子没有可看的东西）
+    pairs: Object.values(byPair).map(withRate).filter((x) => x.neg > 0 || x.pos > 0)
+      .sort((a, b) => b.neg - a.neg || b.pos - a.pos || b.total - a.total),
+    scenes: Object.entries(byScene).map(([name, o]) => withRate({ name, ...o }))
       .sort((a, b) => b.neg - a.neg || b.total - a.total),
   };
 }
@@ -1259,7 +1270,7 @@ async function renderPage(env, user) {
       <h3>用户情绪</h3>
       <div class="report-hint" id="emoHint" style="margin-bottom:10px"></div>
       <div class="table-wrapper"><table class="report-table" id="tblEmotion"></table></div>
-      <div class="report-hint" style="margin:18px 0 10px">按业务场景（只算有情绪标注的会话）</div>
+      <div class="report-hint" style="margin:18px 0 10px">按业务场景汇总（只算有情绪标注的接待）</div>
       <div class="table-wrapper"><table class="report-table" id="tblEmotionScene"></table></div>
       <div class="note" id="emoNote"></div>
     </div>
