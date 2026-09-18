@@ -9,7 +9,7 @@ const PALETTE = [
   "#9289e9", "#70bdf7", "#d3b1ef", "#ffbe9d", "#a9afc7",
 ];
 
-const state = { stats: null, facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null, loop: null, loopLoaded: false, hourlyDay: null, manualBusyMode: "active" };
+const state = { stats: null, resolvedFrom: "", resolvedTo: "", facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null, loop: null, loopLoaded: false, hourlyDay: null, manualBusyMode: "active" };
 const charts = {};
 
 // 筛选项 → 接口参数名；选项值来自首次全量结果，筛选后不再改动
@@ -1172,6 +1172,8 @@ async function loadDashboard() {
       return;
     }
     state.stats = json.stats;
+    state.resolvedFrom = json.resolvedFrom || "";
+    state.resolvedTo = json.resolvedTo || "";
     fillFacets(json.facets);
     if (json.latestDay) state.latestDay = json.latestDay;
     // 预设区间回显服务端换算出的起止日期
@@ -1207,6 +1209,12 @@ let LAST_STATS = null;
 function renderCharts(s) {
   LAST_STATS = s;
   renderAI(s);
+  // 服务概览的两张表：跟随顶部筛选栏（区间 = 当前筛选结果）
+  const rangeHint = (state.resolvedFrom && state.resolvedTo)
+    ? "区间 " + state.resolvedFrom + " ~ " + state.resolvedTo + "（跟随顶部筛选栏）"
+    : "全部区间（跟随顶部筛选栏）";
+  renderAgentScene("tblAgentScene", "asHint", "asNote", s.agentScene, rangeHint);
+  renderEmotion("tblEmotion", "tblEmotionScene", "emoHint", "emoNote", s.emotion, rangeHint);
   renderTrend(s);
   renderScene(s);
   renderCost(s);
@@ -1463,7 +1471,7 @@ function rollupDays(byDay, grain) {
     const key = periodKeyOf(day, grain);
     if (!key) continue;
     if (!map[key]) {
-      map[key] = { total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0, rep: 0, dev: {}, ch: {}, nat: {} };
+      map[key] = { total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0, rep: 0, sj: 0, sjBase: 0, dev: {}, ch: {}, nat: {} };
       order.push(key);
     }
     const t = map[key], b = byDay[day];
@@ -1474,6 +1482,8 @@ function rollupDays(byDay, grain) {
     t.turns += b.turns;
     // 复问数：旧缓存里没有这个键，按 0 处理
     t.rep += b.rep || 0;
+    t.sj += b.sj || 0;
+    t.sjBase += b.sjBase || 0;
     for (const f of ["dev", "ch", "nat"]) {
       for (const [k, v] of Object.entries(b[f] || {})) t[f][k] = (t[f][k] || 0) + v;
     }
@@ -1537,6 +1547,29 @@ function drawReceptChart(s) {
 }
 
 let repeatGrain = "week";
+let secondGrain = "week";
+
+// 人工有效·秒转·jiri 可解答：场次（柱）+ 占有效人工 %（折线，右轴）
+function drawSecondChart(s) {
+  const g = RECEPT_GRAINS[secondGrain] || RECEPT_GRAINS.week;
+  const { keys, buckets } = rollupDays(s.byDay, secondGrain);
+  const multiYear = new Set(keys.map((k) => k.slice(0, 4))).size > 1;
+  const labels = keys.map((k) => periodLabel(k, secondGrain, multiYear));
+  const rate = (b) => (b.sjBase ? Number(((b.sj / b.sjBase) * 100).toFixed(1)) : null);
+
+  drawCombo(
+    "second", "chartSecond", labels,
+    [{ label: "秒转·可解答场次", data: buckets.map((b) => b.sj) }],
+    [{ label: "占有效人工", data: buckets.map(rate), color: "#FF708B", axis: "y1", unit: "%" }],
+    { maxLabels: g.maxLabels, rotate: g.rotate, yLabel: "场次", y1Label: "%" }
+  );
+  const hit = buckets.reduce((a, b) => a + b.sj, 0);
+  const base = buckets.reduce((a, b) => a + b.sjBase, 0);
+  const el = $("totalSecond");
+  if (el) el.innerHTML = "区间：<b>" + fmtNum(hit) + "</b> / 有效人工 <b>" + fmtNum(base) + "</b> = <b>" +
+    (base ? ((hit / base) * 100).toFixed(1) : "0") + "%</b>";
+}
+
 
 // 复问率：复问会话数（柱）+ 复问率 %（折线，右轴）。
 // 口径来自质检表 field_33（上游 算复问.py：同一 user_id 隔 6~36 小时再进线且一句话总结相似度 ≥0.3，计后一场），
@@ -1558,6 +1591,71 @@ function drawRepeatChart(s) {
   const total = buckets.reduce((a, b) => a + b.total, 0);
   const el = $("totalRepeat");
   if (el) el.innerHTML = "区间：复问 <b>" + fmtNum(rep) + "</b> / 会话 <b>" + fmtNum(total) + "</b> = <b>" + (total ? ((rep / total) * 100).toFixed(2) : "0") + "%</b>";
+}
+
+// 差值胶囊：红=数值更大（更慢/更差），绿=更小。带单位。
+function deltaPill(v, unit) {
+  if (v === null || v === undefined) return "";
+  if (Math.abs(v) < 0.05) return '<span class="dl flat">±0.0 ' + unit + "</span>";
+  return '<span class="dl ' + (v > 0 ? "up" : "down") + '">' + (v > 0 ? "+" : "") + v.toFixed(1) + " " + unit + "</span>";
+}
+
+// 客服 × 场景 · 单次接待时长中位数：每格两行「6.5分 / 20场」+ 与该列全员中位线差的胶囊
+function renderAgentScene(id, hintId, noteId, data, hint) {
+  const tbl = $(id);
+  if (!tbl) return;
+  if (hintId && $(hintId)) $(hintId).textContent = hint;
+  if (!data || !data.cols.length) {
+    tbl.innerHTML = '<tbody><tr><td>范围内没有可算单次时长的有效人工会话</td></tr></tbody>';
+    if (noteId && $(noteId)) $(noteId).innerHTML = "";
+    return;
+  }
+  const cell = (c) => (c
+    ? '<td class="num"><div class="c2"><b>' + c.v + "分 / " + c.n + "场</b>" + deltaPill(c.d, "分") + "</div></td>"
+    : '<td class="num"></td>');
+  tbl.innerHTML =
+    "<thead><tr><th>客服</th>" + data.cols.map((c) => '<th class="num">' + escHtml(c.split("/")[0]) + "</th>").join("") + "</tr></thead><tbody>" +
+    data.agents.map((a) => "<tr><td>" + escHtml(a.name) + "</td>" + a.cells.map(cell).join("") + "</tr>").join("") +
+    '<tr class="sum hl"><td>全员中位线</td>' +
+    data.baseline.map((b) => '<td class="num"><div class="c2"><b>' + (b ? b.v + "分 / " + b.n + "场" : "—") + "</b></div></td>").join("") +
+    "</tr></tbody>";
+  if (noteId && $(noteId)) $(noteId).innerHTML =
+    '<span class="dim-note">只看有效人工，单次时长 = 每场「人工时长 ÷ 接待次数」，格内取中位数；' +
+    "胶囊 = 该格中位数 − 该列全员中位线（把该场景全部会话合在一起取的中位数），红 = 比中位线慢、绿 = 快。" +
+    "<b>已排除 " + data.excludedMulti + " 场多客服接力的会话</b>——一个会话只有一个总时长，没法拆给几个人；其余按首接客服归属。列取场次前 6 的场景。</span>";
+}
+
+// 用户情绪：三档计数覆盖该客服接的全部仅人工会话（不剔无效/填表人），「其中有效」作参照
+function renderEmotion(id, sceneId, hintId, noteId, data, hint) {
+  const tbl = $(id);
+  if (!tbl) return;
+  if (hintId && $(hintId)) $(hintId).textContent = hint;
+  if (!data || !data.agents.length) {
+    tbl.innerHTML = '<tbody><tr><td>范围内没有带客服标注的人工会话</td></tr></tbody>';
+    return;
+  }
+  const row = (x, cls) =>
+    '<tr class="' + (cls || "") + '"><td>' + escHtml(x.name) + '</td><td class="num">' + x.total +
+    '</td><td class="num strong">' + x.eff + '</td><td class="num"><b style="color:#d9484d">' + x.neg +
+    '</b></td><td class="num">' + x.neu + '</td><td class="num"><b style="color:#199c58">' + x.pos +
+    '</b></td><td class="num dim">' + x.none + "</td></tr>";
+  tbl.innerHTML =
+    '<thead><tr><th>客服</th><th class="num">接待会话</th><th class="num">其中有效</th><th class="num">负向</th>' +
+    '<th class="num">中性</th><th class="num">正向</th><th class="num">无标注</th></tr></thead><tbody>' +
+    data.agents.map((x) => row(x)).join("") + row(data.team, "sum hl") + "</tbody>";
+  const st = $(sceneId);
+  if (st) st.innerHTML =
+    '<thead><tr><th>业务场景</th><th class="num">负向</th><th class="num">中性</th><th class="num">正向</th><th class="num">负向率</th></tr></thead><tbody>' +
+    (data.scenes.length
+      ? data.scenes.map((x) => "<tr><td>" + escHtml(x.name) + '</td><td class="num strong">' + x.neg +
+        '</td><td class="num">' + x.neu + '</td><td class="num">' + x.pos + '</td><td class="num">' +
+        (x.negRate === null ? "—" : x.negRate + "%") + "</td></tr>").join("")
+      : '<tr><td colspan="5">范围内没有带情绪标注的会话</td></tr>') + "</tbody>";
+  if (noteId && $(noteId)) $(noteId).innerHTML =
+    '<span class="dim-note">用户情绪由系统自动标注（负向/中性/正向），本项目只透传不改判。' +
+    "三档计数覆盖该客服接的<b>全部</b>仅人工会话，不剔无效与填表人；「其中有效」只作参照。归属取末接客服（谁收尾算谁）。" +
+    "「无标注」= 第 27～30 周的导出还没有这一列，第 31 周起 100% 覆盖。" +
+    "负向反映的是这次会话里用户遇到了什么（退款被拒、表单被封、故障未解决），<b>不等于客服服务差</b>——按场景负向率能差 10 倍。</span>";
 }
 
 // 复问明细：时间 / 本场会话地址 / 复问自（前一场会话地址）。服务端只下发 复问=是 的行，按时间倒序。
@@ -1583,6 +1681,7 @@ function renderTrend(s) {
   // 会话接待分布：粒度可切（天/周/月/季/年），见 drawReceptChart
   drawReceptChart(s);
   drawRepeatChart(s);
+  drawSecondChart(s);
   drawUniqChart(s);
   renderRepeatsTable(s);
 
@@ -2270,6 +2369,30 @@ function renderWeekly(week) {
     '（表单里「人工接待次数」两个字段全为空）；单次中位 = 每场「时长 ÷ 接待次数」的中位数。' +
     '环比对比上周同期，同比对比 4 周前同期，都按相同星期对齐。</span>';
 
+  // 四下：人工有效·秒转·jiri 可解答（按场景）
+  const st = w.secondTransfer;
+  const pst = cmp ? cmp.prev.secondTransfer : null;
+  if (st) {
+    const hint = $("stHint");
+    if (hint) hint.innerHTML = "人工有效·秒转·jiri 可解答：<b>" + st.total + " / " + st.base + " = " +
+      (st.base ? ((st.total / st.base) * 100).toFixed(1) : 0) + "%</b>（分母 = 有效人工）";
+    const prevRate = (scene) => {
+      if (!pst) return null;
+      const p = pst.scenes.find((x) => x.scene === scene);
+      return p ? p.rate : null;
+    };
+    $("tblSecond").innerHTML =
+      '<thead><tr><th>业务场景</th><th class="num">有效人工</th><th class="num">秒转·可解答</th><th class="num">占比</th>' +
+      (pst ? '<th class="num">环比' + (scope ? "（" + scope + "）" : "") + "</th>" : "") + "</tr></thead><tbody>" +
+      st.scenes.map((x) => {
+        const pr = prevRate(x.scene);
+        return "<tr><td>" + escHtml(x.scene) + '</td><td class="num">' + x.base + '</td><td class="num strong">' + x.hit +
+          '</td><td class="num">' + x.rate + "%</td>" + (pst ? '<td class="num">' + (pr === null ? '<span class="dl flat">新</span>' : deltaPill(Number((x.rate - pr).toFixed(1)), "pp")) + "</td>" : "") + "</tr>";
+      }).join("") +
+      '<tr class="sum"><td>合计</td><td class="num">' + st.base + '</td><td class="num">' + st.total + '</td><td class="num">' +
+      (st.base ? ((st.total / st.base) * 100).toFixed(1) : 0) + "%</td>" + (pst ? '<td class="num"></td>' : "") + "</tr></tbody>";
+  }
+
   // 五、有效人工场景 × 工作量
   const sceneVal = (src, scene, field) => {
     const hit = src && src.scenes ? src.scenes[scene] : null;
@@ -2309,6 +2432,9 @@ function renderWeekly(week) {
 
   // 七、客服接待评估：跟随上方「统计周」
   renderAgents(w);
+  const wkLabel = "第 " + Number(w.week.slice(5)) + " 周（" + w.firstDay + " ~ " + w.lastDay + "）";
+  renderAgentScene("tblAgentSceneWk", "asHintWk", null, w.agentScene, "客服 × 场景 · 单次接待时长中位数 · " + wkLabel);
+  renderEmotion("tblEmotionWk", null, "emoHintWk", "emoNoteWk", w.emotion, "用户情绪 · " + wkLabel);
 }
 
 // 七、客服接待评估：跟随上方「统计周」，两张表——本周、累计到本周（第 27 周起）；口径见 README「客服接待评估」
@@ -2446,6 +2572,15 @@ function initActions() {
     granR.addEventListener("change", () => {
       repeatGrain = RECEPT_GRAINS[granR.value] ? granR.value : "week";
       if (LAST_STATS) drawRepeatChart(LAST_STATS);
+    });
+  }
+
+  const granS = $("granSecond");
+  if (granS) {
+    granS.value = secondGrain;
+    granS.addEventListener("change", () => {
+      secondGrain = RECEPT_GRAINS[granS.value] ? granS.value : "week";
+      if (LAST_STATS) drawSecondChart(LAST_STATS);
     });
   }
 

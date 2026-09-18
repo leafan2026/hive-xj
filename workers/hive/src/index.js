@@ -5,17 +5,17 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 // v6 在 manualBusy 里下发时段定义（起点/格宽/格数），前端不再硬编码。
 // v3 的明细去掉了全链路无消费者的 sn/url/sm/inWindow/creator。
 // v7 / v4（2026-09-17）：明细加回 url（会话地址）并新增 rep/repFrom（复问、复问自，读质检表 field_33/34），
-// 日/周桶新增 rep（复问数），stats 新增 repeats 明细。weekly v2：目标追踪加 guideSplit（操作引导占比按 Jiri 能否解答拆分）；v3：加 jiri（JIRI 接待现状板块，读 field_35/36）；v4：加 agents/agentsCum（客服接待评估，读 field_37~39）。
+// 日/周桶新增 rep（复问数），stats 新增 repeats 明细。weekly v2：目标追踪加 guideSplit（操作引导占比按 Jiri 能否解答拆分）；v3：加 jiri（JIRI 接待现状板块，读 field_35/36）；v4：加 agents/agentsCum（客服接待评估，读 field_37~39）；stats v8 / entries v5 / weekly v5（2026-09-18）：明细加 emo（field_40 用户情绪），新增 秒转·可解答、客服×场景时长、用户情绪三项。
 // 旧 v3 明细没有这些字段，读到会把复问率画成全 0，所以三个键一起换，让首次访问后台重建。
 // 保留旧版本键，不删除既有 KV，首次访问会安全地后台重建新缓存。
-const K_STATS = "hive:stats:v7";
-const K_ENTRIES = "hive:entries:v4";
-const K_WEEKLY = "hive:weekly:v4";
+const K_STATS = "hive:stats:v8";
+const K_ENTRIES = "hive:entries:v5";
+const K_WEEKLY = "hive:weekly:v5";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
 // 筛选结果记忆缓存：键里带 meta.updatedAt，数据一刷新自然失效；
 // TTL 只用来回收过期键，不承担正确性。
-const K_QUERY_PREFIX = "hive:q:v2:";
+const K_QUERY_PREFIX = "hive:q:v3:";
 const QUERY_CACHE_TTL_S = 3600;
 
 // 金数据 per_page 实际封顶 50；next 是 serial_number 偏移，可并行取页
@@ -127,6 +127,7 @@ function trim(e) {
     csFirst: e.field_37 || "",      // 首接客服（仅人工行；上游从转录发言人读）
     csLast: e.field_38 || "",       // 末接客服
     csAll: Array.isArray(e.field_39) ? e.field_39 : (e.field_39 ? [e.field_39] : []),  // 全部客服（多选）
+    emo: e.field_40 || "",          // 用户情绪（负向/中性/正向；系统自动标注，第 31 周起 100% 覆盖）
   };
 }
 
@@ -171,6 +172,8 @@ function bucket() {
     total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0,
     aiOnly: 0, avoidable: 0,
     rep: 0,                        // 复问会话数（质检表 field_33=是）
+    // 人工有效·秒转·jiri 可解答：sjBase = 有效人工场次（分母），sj = 其中「直接转 且 Jiri能答」
+    sj: 0, sjBase: 0,
     dev: {}, ch: {}, nat: {},
   };
 }
@@ -331,6 +334,10 @@ function buildStats(rows) {
         if (r.st === "仅 Jiri") b.aiOnly++;
         if (AVOIDABLE_REASONS.has(r.reason)) b.avoidable++;
         if (r.rep) b.rep++;
+        if (r.st === "仅人工" && r.nat === "有效") {
+          b.sjBase++;
+          if (r.way === "直接转" && r.jiri === "能") b.sj++;
+        }
       }
       if (r.rep) s.repeats.push({ t: r.t, url: r.url, from: r.repFrom });
     }
@@ -395,6 +402,10 @@ function buildStats(rows) {
   }
   s.uniqAll = { users: allUsers.size, orgs: allOrgs.size };
   s.repeats.sort((a, b) => (b.t || "").localeCompare(a.t || ""));
+  // 服务概览的两张表：都跑在当前筛选后的行上（区间表、情绪表）
+  const manualRows = rows.filter((r) => r.st === "仅人工");
+  s.agentScene = agentSceneDuration(manualRows.filter((r) => r.nat === "有效"));
+  s.emotion = emotionStats(manualRows);
 
   return s;
 }
@@ -489,6 +500,89 @@ function groupStats(rows) {
 }
 
 // 场景 × 工作量（有效人工）
+// 人工有效·秒转·jiri 可解答（2026-09-18 用户定名）：有效人工里「转人工方式=直接转 且 Jiri是否能解答=能」的场次。
+// 与已有两个指标的区别（别混）：「可避免转人工」= 四类可避免原因 ÷ 全部转人工，宽得多；
+// 「不愿和 Jiri 沟通率」是逐场读原文的严口径子集。本指标分母 = 有效人工，口径见 hive 仓库 skills/统计口径.md。
+function isSecondTransfer(r) {
+  return r.way === "直接转" && r.jiri === "能";
+}
+
+// 按场景拆：给周报表用。返回按命中数降序的数组。
+function secondTransferByScene(effManual) {
+  const agg = {};
+  for (const r of effManual) {
+    const a = agg[r.scene] || (agg[r.scene] = { scene: r.scene, base: 0, hit: 0 });
+    a.base++;
+    if (isSecondTransfer(r)) a.hit++;
+  }
+  return Object.values(agg)
+    .map((a) => ({ ...a, rate: a.base ? Number(((a.hit / a.base) * 100).toFixed(1)) : 0 }))
+    .sort((x, y) => y.hit - x.hit || y.base - x.base);
+}
+
+// 客服 × 场景 · 单次接待时长中位数（2026-09-18 用户定）。只看有效人工，且**排除多客服接力的会话**——
+// 一个会话只有一个总时长，没法拆给几个人（累计 11.6% 场次、24.2% 时长）。归属取首接客服（单客服会话里首接=末接）。
+// 每格 = 该客服该场景「时长 ÷ 接待次数」的中位数 + 场次；胶囊 = 该格中位数 − 该列全员中位线（pooled median）。
+const AGENT_SCENE_COLS = 6;
+function agentSceneDuration(effManual) {
+  const rows = effManual.filter((r) =>
+    (r.csAll || []).length === 1 && r.csFirst && typeof r.dur === "number" && r.dur > 0 && typeof r.turns === "number" && r.turns > 0);
+  const per = (r) => r.dur / r.turns / 60;
+  const sceneCount = {};
+  for (const r of rows) sceneCount[r.scene] = (sceneCount[r.scene] || 0) + 1;
+  const cols = Object.entries(sceneCount).sort((a, b) => b[1] - a[1]).slice(0, AGENT_SCENE_COLS).map((x) => x[0]);
+  // median() 是给秒用的（取整），这里先换成秒再换回分钟，保留一位小数
+  const cell = (list) => (list.length ? { v: Number((median(list.map((x) => x * 60)) / 60).toFixed(1)), n: list.length } : null);
+  const baseline = cols.map((s) => cell(rows.filter((r) => r.scene === s).map(per)));
+  const byAgent = {};
+  for (const r of rows) (byAgent[r.csFirst] || (byAgent[r.csFirst] = [])).push(r);
+  const agents = Object.entries(byAgent)
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([name, list]) => ({
+      name, total: list.length,
+      cells: cols.map((s, i) => {
+        const c = cell(list.filter((r) => r.scene === s).map(per));
+        if (!c) return null;
+        const base = baseline[i];
+        return { ...c, d: base ? Number((c.v - base.v).toFixed(1)) : null };
+      }),
+    }));
+  return { cols, baseline, agents, excludedMulti: effManual.length - rows.length };
+}
+
+// 用户情绪（2026-09-18 用户定）：三档直接显示。**三档计数覆盖该客服接的全部仅人工会话、不剔无效与填表人**；
+// 「其中有效」另给一列作参照。归属取末接客服（谁收尾算谁，与复问一致）。第 27~28 周导出没这列，计入「无标注」。
+function emotionStats(manual) {
+  const byAgent = {};
+  const teamScene = {};
+  const blank = () => ({ total: 0, eff: 0, neg: 0, neu: 0, pos: 0, none: 0 });
+  const add = (o, r) => {
+    o.total++;
+    if (r.nat === "有效") o.eff++;
+    if (r.emo === "负向") o.neg++;
+    else if (r.emo === "中性") o.neu++;
+    else if (r.emo === "正向") o.pos++;
+    else o.none++;
+  };
+  const team = blank();
+  for (const r of manual) {
+    add(team, r);
+    if (r.csLast) add(byAgent[r.csLast] || (byAgent[r.csLast] = blank()), r);
+    // 按场景只算有情绪标注的行，否则负向率会被没这列的老周稀释
+    if (r.emo) add(teamScene[r.scene] || (teamScene[r.scene] = blank()), r);
+  }
+  const rate = (o) => {
+    const d = o.neg + o.neu + o.pos;
+    return d ? Number(((o.neg / d) * 100).toFixed(1)) : null;
+  };
+  return {
+    team: { name: "合计", ...team },
+    agents: Object.entries(byAgent).map(([name, o]) => ({ name, ...o })).sort((a, b) => b.total - a.total),
+    scenes: Object.entries(teamScene).map(([name, o]) => ({ name, ...o, negRate: rate(o) }))
+      .sort((a, b) => b.neg - a.neg || b.total - a.total),
+  };
+}
+
 function sceneWorkload(effManual) {
   const agg = {};
   for (const r of effManual) {
@@ -581,6 +675,9 @@ function weekMetrics(rows) {
   return {
     ...overview(rows),
     jiri: jiriStats(rows, manual, effJiri),
+    secondTransfer: { total: effManual.filter(isSecondTransfer).length, base: effManual.length, scenes: secondTransferByScene(effManual) },
+    agentScene: agentSceneDuration(effManual),
+    emotion: emotionStats(manual),
     eff: groupStats(effManual),
     allManual: groupStats(manual),
     directTransfer: effManual.filter((r) => r.way === "直接转").length,
@@ -671,6 +768,9 @@ function buildWeekly(rows) {
       lastDay: [...days].sort().pop(),
       ...overview(all),
       jiri: jiriStats(all, manual, effJiri),
+      secondTransfer: { total: effManual.filter(isSecondTransfer).length, base: effManual.length, scenes: secondTransferByScene(effManual) },
+      agentScene: agentSceneDuration(effManual),
+      emotion: emotionStats(manual),
       agents, agentsCum, cumFromWeek: weekKeys[0],
       bizTypes: bizTypeStats(all),
       eff,
@@ -1090,6 +1190,10 @@ async function renderPage(env, user) {
       <h3>四、人工接待现状</h3>
       <div class="table-wrapper"><table class="report-table" id="tblManual"></table></div>
       <div class="note" id="manualNote"></div>
+      <div class="report-hint" id="stHint" style="margin:18px 0 10px"></div>
+      <div class="table-wrapper"><table class="report-table" id="tblSecond"></table></div>
+      <div class="note"><span class="dim-note">人工有效·秒转·jiri 可解答 = 有效人工里「转人工方式 = 直接转」且「Jiri 是否能解答 = 能」的场次，
+      即用户没给 Jiri 机会、而 Jiri 本来答得了的那批。与「可避免转人工」（四类可避免原因 ÷ 全部转人工）和逐场读原文的「不愿沟通率」是三个不同的数。</span></div>
     </div>
 
     <div class="report-block">
@@ -1109,6 +1213,11 @@ async function renderPage(env, user) {
       <div class="report-hint" id="agentHintCum" style="margin:18px 0 10px"></div>
       <div class="table-wrapper"><table class="report-table" id="tblAgentsCum"></table></div>
       <div class="note" id="agentNote"></div>
+      <div class="report-hint" id="asHintWk" style="margin:18px 0 10px"></div>
+      <div class="table-wrapper"><table class="report-table" id="tblAgentSceneWk"></table></div>
+      <div class="report-hint" id="emoHintWk" style="margin:18px 0 10px"></div>
+      <div class="table-wrapper"><table class="report-table" id="tblEmotionWk"></table></div>
+      <div class="note" id="emoNoteWk"></div>
     </div>
 
 
@@ -1122,6 +1231,22 @@ async function renderPage(env, user) {
       <div class="chart-card wide"><h3>转人工原因分布</h3><canvas id="chartReason"></canvas></div>
     </div>
     <div class="note" id="noteAvoidable"></div>
+
+    <div class="report-block">
+      <h3>客服 × 场景 · 单次接待时长中位数</h3>
+      <div class="report-hint" id="asHint" style="margin-bottom:10px"></div>
+      <div class="table-wrapper"><table class="report-table" id="tblAgentScene"></table></div>
+      <div class="note" id="asNote"></div>
+    </div>
+
+    <div class="report-block">
+      <h3>用户情绪</h3>
+      <div class="report-hint" id="emoHint" style="margin-bottom:10px"></div>
+      <div class="table-wrapper"><table class="report-table" id="tblEmotion"></table></div>
+      <div class="report-hint" style="margin:18px 0 10px">按业务场景（只算有情绪标注的会话）</div>
+      <div class="table-wrapper"><table class="report-table" id="tblEmotionScene"></table></div>
+      <div class="note" id="emoNote"></div>
+    </div>
   
 
     <div class="grid">
@@ -1231,6 +1356,21 @@ async function renderPage(env, user) {
           <span class="chart-hint">复问 = 同一用户隔 6～36 小时再进线、且问的是同一件事；复问率 = 复问会话数 ÷ 会话数</span>
         </div>
         <canvas id="chartRepeat"></canvas>
+      </div>
+      <div class="chart-card wide tall">
+        <div class="chart-head">
+          <h3>人工有效·秒转·jiri 可解答</h3>
+          <select id="granSecond" class="chart-grain" title="聚合粒度">
+            <option value="day">按天</option>
+            <option value="week">按周</option>
+            <option value="month">按月</option>
+            <option value="quarter">按季度</option>
+            <option value="year">按年</option>
+          </select>
+          <span class="chart-total" id="totalSecond"></span>
+          <span class="chart-hint">用户直接要人工、而 Jiri 本来答得了的场次；占比分母 = 有效人工</span>
+        </div>
+        <canvas id="chartSecond"></canvas>
       </div>
       <div class="chart-card wide tall">
         <div class="chart-head">

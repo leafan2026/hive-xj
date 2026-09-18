@@ -531,6 +531,9 @@ td a:hover { text-decoration: underline; }
 .report-table tr.sub { color: var(--muted); background: #fcfcfe; }
 /* 复问明细：三列都是内容列，首列不吃宽度；链接列可换行，避免长地址把表撑出容器 */
 #tblRepeats th:first-child, #tblRepeats td:first-child { width: auto; }
+/* 客服 × 场景时长表：每格两行——「6.5分 / 20场」+ 与全员中位线差的胶囊 */
+.report-table td .c2 { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; line-height: 1.35; }
+.report-table td .c2 b { font-weight: 650; font-variant-numeric: tabular-nums; }
 /* JIRI 接待现状：本周结果正文色、数字加粗；对照列沿用 .dim */
 .report-table td.jiri-result { color: var(--ink); white-space: normal; min-width: 260px; }
 .report-table td.jiri-result b { font-weight: 650; }
