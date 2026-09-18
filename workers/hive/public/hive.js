@@ -1559,14 +1559,14 @@ function drawSecondChart(s) {
 
   drawCombo(
     "second", "chartSecond", labels,
-    [{ label: "秒转·可解答场次", data: buckets.map((b) => b.sj) }],
+    [{ label: "秒转·可解答（接待次数）", data: buckets.map((b) => b.sj) }],
     [{ label: "占有效人工", data: buckets.map(rate), color: "#FF708B", axis: "y1", unit: "%" }],
-    { maxLabels: g.maxLabels, rotate: g.rotate, yLabel: "场次", y1Label: "%" }
+    { maxLabels: g.maxLabels, rotate: g.rotate, yLabel: "接待次数", y1Label: "%" }
   );
   const hit = buckets.reduce((a, b) => a + b.sj, 0);
   const base = buckets.reduce((a, b) => a + b.sjBase, 0);
   const el = $("totalSecond");
-  if (el) el.innerHTML = "区间：<b>" + fmtNum(hit) + "</b> / 有效人工 <b>" + fmtNum(base) + "</b> = <b>" +
+  if (el) el.innerHTML = "区间：<b>" + fmtNum(hit) + "</b> / 有效人工接待 <b>" + fmtNum(base) + "</b> 次 = <b>" +
     (base ? ((hit / base) * 100).toFixed(1) : "0") + "%</b>";
 }
 
@@ -1600,29 +1600,33 @@ function deltaPill(v, unit) {
   return '<span class="dl ' + (v > 0 ? "up" : "down") + '">' + (v > 0 ? "+" : "") + v.toFixed(1) + " " + unit + "</span>";
 }
 
-// 客服 × 场景 · 单次接待时长中位数：每格两行「6.5分 / 20场」+ 与该列全员中位线差的胶囊
+// 场景 × 客服 · 单次接待时长中位数：行=场景、列=客服（都不截断），每格两行「6.5分 / 20次」+ 与该行全员中位线差的胶囊
 function renderAgentScene(id, hintId, noteId, data, hint) {
   const tbl = $(id);
   if (!tbl) return;
   if (hintId && $(hintId)) $(hintId).textContent = hint;
-  if (!data || !data.cols.length) {
-    tbl.innerHTML = '<tbody><tr><td>范围内没有可算单次时长的有效人工会话</td></tr></tbody>';
+  if (!data || !data.rows || !data.rows.length) {
+    tbl.innerHTML = '<tbody><tr><td>范围内没有可算单次时长的有效人工接待</td></tr></tbody>';
     if (noteId && $(noteId)) $(noteId).innerHTML = "";
     return;
   }
   const cell = (c) => (c
-    ? '<td class="num"><div class="c2"><b>' + c.v + "分 / " + c.n + "场</b>" + deltaPill(c.d, "分") + "</div></td>"
+    ? '<td class="num"><div class="c2"><b>' + c.v + "分 / " + c.n + "次</b>" + deltaPill(c.d, "分") + "</div></td>"
     : '<td class="num"></td>');
   tbl.innerHTML =
-    "<thead><tr><th>客服</th>" + data.cols.map((c) => '<th class="num">' + escHtml(c.split("/")[0]) + "</th>").join("") + "</tr></thead><tbody>" +
-    data.agents.map((a) => "<tr><td>" + escHtml(a.name) + "</td>" + a.cells.map(cell).join("") + "</tr>").join("") +
-    '<tr class="sum hl"><td>全员中位线</td>' +
-    data.baseline.map((b) => '<td class="num"><div class="c2"><b>' + (b ? b.v + "分 / " + b.n + "场" : "—") + "</b></div></td>").join("") +
-    "</tr></tbody>";
+    '<thead><tr><th>业务场景</th><th class="num">全员中位线</th>' +
+    data.agents.map((a) => '<th class="num">' + escHtml(a) + "</th>").join("") + "</tr></thead><tbody>" +
+    data.rows.map((r) =>
+      "<tr><td>" + escHtml(r.scene) + '</td><td class="num"><div class="c2"><b>' +
+      (r.base ? r.base.v + "分 / " + r.base.n + "次" : "—") + "</b></div></td>" +
+      r.cells.map(cell).join("") + "</tr>").join("") +
+    "</tbody>";
   if (noteId && $(noteId)) $(noteId).innerHTML =
     '<span class="dim-note">只看有效人工，单次时长 = 每场「人工时长 ÷ 接待次数」，格内取中位数；' +
-    "胶囊 = 该格中位数 − 该列全员中位线（把该场景全部会话合在一起取的中位数），红 = 比中位线慢、绿 = 快。" +
-    "<b>已排除 " + data.excludedMulti + " 场多客服接力的会话</b>——一个会话只有一个总时长，没法拆给几个人；其余按首接客服归属。列 = 范围内出现过的全部场景，按场次降序，表格可横向滚动。</span>";
+    "括号里是<b>接待次数</b>（人工侧口径统一用接待次数，不用场次）；胶囊 = 该格中位数 − <b>该行全员中位线</b>" +
+    "（把该场景全部会话合在一起取的中位数），红 = 比中位线慢、绿 = 快。" +
+    "<b>已排除 " + data.excludedMulti + " 场多客服接力的会话</b>——一个会话只有一个总时长，没法拆给几个人；其余按首接客服归属。" +
+    "行 = 范围内出现过的全部场景、列 = 全部客服，都按接待次数降序，不截断；表格可横向滚动。</span>";
 }
 
 // 用户情绪：三档计数覆盖该客服接的全部仅人工会话（不剔无效/填表人），「其中有效」作参照
@@ -2369,15 +2373,28 @@ function renderWeekly(week) {
     '（表单里「人工接待次数」两个字段全为空）；单次中位 = 每场「时长 ÷ 接待次数」的中位数。' +
     '环比对比上周同期，同比对比 4 周前同期，都按相同星期对齐。</span>';
 
-  // 五、有效人工场景 × 工作量
+  // 五、有效人工场景 × 工作量（2026-09-18 起把「秒转·可解答」三列并进来，同口径同单位：接待次数）
   const sceneVal = (src, scene, field) => {
     const hit = src && src.scenes ? src.scenes[scene] : null;
     return hit ? hit[field] : null;
   };
+  const st = w.secondTransfer || { total: 0, base: 0, scenes: [] };
+  const pst = cmp ? (cmp.prev.secondTransfer || null) : null;
+  const stOf = (src, scene) => (src ? (src.scenes || []).find((x) => x.scene === scene) : null);
+  const stCells = (scene) => {
+    const cur = stOf(st, scene);
+    const prev = stOf(pst, scene);
+    if (!cur) return num("—") + num("—") + num("—");
+    return '<td class="num strong">' + cur.hit + "</td>" + num(cur.rate + "%") +
+      '<td class="num">' + (prev ? deltaPill(Number((cur.rate - prev.rate).toFixed(1)), "pp") : '<span class="dl flat">新</span>') + "</td>";
+  };
+  const stRate = st.base ? Number(((st.total / st.base) * 100).toFixed(1)) : 0;
+  const pstRate = pst && pst.base ? Number(((pst.total / pst.base) * 100).toFixed(1)) : null;
   $("tblScenes").innerHTML =
     '<thead><tr><th>场景</th><th class="num">接待次数</th><th class="num">总时长（分）</th>' +
     '<th class="num">占总时长</th><th class="num">单次中位</th><th class="num">单次平均</th>' +
-    '<th class="num">时长环比</th><th class="num">时长同比</th></tr></thead><tbody>' +
+    '<th class="num">时长环比</th><th class="num">时长同比</th>' +
+    '<th class="num">秒转·可解答</th><th class="num">占比</th><th class="num">占比环比</th></tr></thead><tbody>' +
     w.scenes.map((x) => {
       const isGuide = x.scene === "操作引导/功能咨询";
       return "<tr" + (isGuide ? ' class="warn-row"' : "") + "><td>" + escHtml(x.scene) + "</td>" +
@@ -2385,36 +2402,15 @@ function renderWeekly(week) {
         '<td class="num strong">' + x.share + "%" + (isGuide ? "（目标 ≤ 10%）" : "") + "</td>" +
         num(Number(x.medianMin).toFixed(1)) + num(Number(x.avgMin).toFixed(1)) +
         (cmp ? ratio(x.durMin, sceneVal(cmp.prev, x.scene, "durMin")) : num("—")) +
-        (cmp && cmp.yoy ? ratio(x.durMin, sceneVal(cmp.yoy, x.scene, "durMin")) : num("—")) + "</tr>";
+        (cmp && cmp.yoy ? ratio(x.durMin, sceneVal(cmp.yoy, x.scene, "durMin")) : num("—")) +
+        stCells(x.scene) + "</tr>";
     }).join("") +
     '<tr class="sum"><td>合计</td>' + num(w.eff.receptions) + num(w.eff.durMin) +
     num("100%") + num(Number(w.eff.medianMin).toFixed(1)) + num(Number(w.eff.avgMin).toFixed(1)) +
     (cmp ? ratio(w.eff.durMin, cmp.prev.eff.durMin) : num("—")) +
-    (cmp && cmp.yoy ? ratio(w.eff.durMin, cmp.yoy.eff.durMin) : num("—")) + "</tr></tbody>";
-
-  // 五下：人工有效·秒转·jiri 可解答（按场景）
-  const st = w.secondTransfer;
-  const pst = cmp ? cmp.prev.secondTransfer : null;
-  if (st) {
-    const hint = $("stHint");
-    if (hint) hint.innerHTML = "人工有效·秒转·jiri 可解答：<b>" + st.total + " / " + st.base + " = " +
-      (st.base ? ((st.total / st.base) * 100).toFixed(1) : 0) + "%</b>（分母 = 有效人工<b>会话数</b>，不是上表的接待次数）";
-    const prevRate = (scene) => {
-      if (!pst) return null;
-      const p = pst.scenes.find((x) => x.scene === scene);
-      return p ? p.rate : null;
-    };
-    $("tblSecond").innerHTML =
-      '<thead><tr><th>业务场景</th><th class="num">有效人工场次</th><th class="num">秒转·可解答</th><th class="num">占比</th>' +
-      (pst ? '<th class="num">环比' + (scope ? "（" + scope + "）" : "") + "</th>" : "") + "</tr></thead><tbody>" +
-      st.scenes.map((x) => {
-        const pr = prevRate(x.scene);
-        return "<tr><td>" + escHtml(x.scene) + '</td><td class="num">' + x.base + '</td><td class="num strong">' + x.hit +
-          '</td><td class="num">' + x.rate + "%</td>" + (pst ? '<td class="num">' + (pr === null ? '<span class="dl flat">新</span>' : deltaPill(Number((x.rate - pr).toFixed(1)), "pp")) + "</td>" : "") + "</tr>";
-      }).join("") +
-      '<tr class="sum"><td>合计</td><td class="num">' + st.base + '</td><td class="num">' + st.total + '</td><td class="num">' +
-      (st.base ? ((st.total / st.base) * 100).toFixed(1) : 0) + "%</td>" + (pst ? '<td class="num"></td>' : "") + "</tr></tbody>";
-  }
+    (cmp && cmp.yoy ? ratio(w.eff.durMin, cmp.yoy.eff.durMin) : num("—")) +
+    '<td class="num strong">' + st.total + "</td>" + num(stRate + "%") +
+    '<td class="num">' + (pstRate === null ? "—" : deltaPill(Number((stRate - pstRate).toFixed(1)), "pp")) + "</td></tr></tbody>";
 
   // 六、仅 Jiri 有效场景
   $("tblJiriScenes").innerHTML =
@@ -2433,7 +2429,7 @@ function renderWeekly(week) {
   // 七、客服接待评估：跟随上方「统计周」
   renderAgents(w);
   const wkLabel = "第 " + Number(w.week.slice(5)) + " 周（" + w.firstDay + " ~ " + w.lastDay + "）";
-  renderAgentScene("tblAgentSceneWk", "asHintWk", null, w.agentScene, "客服 × 场景 · 单次接待时长中位数 · " + wkLabel);
+  renderAgentScene("tblAgentSceneWk", "asHintWk", null, w.agentScene, "场景 × 客服 · 单次接待时长中位数 · " + wkLabel);
   renderEmotion("tblEmotionWk", null, "emoHintWk", "emoNoteWk", w.emotion, "用户情绪 · " + wkLabel);
 }
 

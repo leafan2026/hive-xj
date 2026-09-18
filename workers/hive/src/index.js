@@ -335,8 +335,8 @@ function buildStats(rows) {
         if (AVOIDABLE_REASONS.has(r.reason)) b.avoidable++;
         if (r.rep) b.rep++;
         if (r.st === "仅人工" && r.nat === "有效") {
-          b.sjBase++;
-          if (r.way === "直接转" && r.jiri === "能") b.sj++;
+          b.sjBase += receptions(r);
+          if (isSecondTransfer(r)) b.sj += receptions(r);
         }
       }
       if (r.rep) s.repeats.push({ t: r.t, url: r.url, from: r.repFrom });
@@ -507,47 +507,55 @@ function isSecondTransfer(r) {
   return r.way === "直接转" && r.jiri === "能";
 }
 
+// **全站人工口径统一用「接待次数」，不用场次**（2026-09-18 用户定：「要口径一直用接待次数不要场次」）。
+// 取 field_13 转人工会话接待次数——一场会话转了几次人工就记几次；没记录的按 1 次兜底，免得整场消失。
+function receptions(r) {
+  return typeof r.turns === "number" && r.turns > 0 ? r.turns : 1;
+}
+
 // 按场景拆：给周报表用。返回按命中数降序的数组。
 function secondTransferByScene(effManual) {
   const agg = {};
   for (const r of effManual) {
     const a = agg[r.scene] || (agg[r.scene] = { scene: r.scene, base: 0, hit: 0 });
-    a.base++;
-    if (isSecondTransfer(r)) a.hit++;
+    a.base += receptions(r);
+    if (isSecondTransfer(r)) a.hit += receptions(r);
   }
   return Object.values(agg)
     .map((a) => ({ ...a, rate: a.base ? Number(((a.hit / a.base) * 100).toFixed(1)) : 0 }))
     .sort((x, y) => y.hit - x.hit || y.base - x.base);
 }
 
-// 客服 × 场景 · 单次接待时长中位数（2026-09-18 用户定）。只看有效人工，且**排除多客服接力的会话**——
-// 一个会话只有一个总时长，没法拆给几个人（累计 11.6% 场次、24.2% 时长）。归属取首接客服（单客服会话里首接=末接）。
-// 每格 = 该客服该场景「时长 ÷ 接待次数」的中位数 + 场次；胶囊 = 该格中位数 − 该列全员中位线（pooled median）。
-// 列 = 该范围内出现过的全部业务场景（按场次降序）。表格容器本身横向可滚，不截断场景（2026-09-18 用户指出「场景不全」）。
+// 场景 × 客服 · 单次接待时长中位数（2026-09-18 用户定；同日改成场景作行、客服作列，行列都不截断）。
+// 只看有效人工，且**排除多客服接力的会话**——一个会话只有一个总时长，没法拆给几个人（累计 11.6% 场次、24.2% 时长）。
+// 归属取首接客服（单客服会话里首接=末接）。格 = 该场景该客服「时长 ÷ 接待次数」的中位数 + **接待次数**（口径统一，不用场次）；
+// 胶囊 = 该格中位数 − 该行全员中位线（把该场景全部会话合在一起取的 pooled median）。
 function agentSceneDuration(effManual) {
   const rows = effManual.filter((r) =>
     (r.csAll || []).length === 1 && r.csFirst && typeof r.dur === "number" && r.dur > 0 && typeof r.turns === "number" && r.turns > 0);
-  const per = (r) => r.dur / r.turns / 60;
-  const sceneCount = {};
-  for (const r of rows) sceneCount[r.scene] = (sceneCount[r.scene] || 0) + 1;
-  const cols = Object.entries(sceneCount).sort((a, b) => b[1] - a[1]).map((x) => x[0]);
-  // median() 是给秒用的（取整），这里先换成秒再换回分钟，保留一位小数
-  const cell = (list) => (list.length ? { v: Number((median(list.map((x) => x * 60)) / 60).toFixed(1)), n: list.length } : null);
-  const baseline = cols.map((s) => cell(rows.filter((r) => r.scene === s).map(per)));
-  const byAgent = {};
-  for (const r of rows) (byAgent[r.csFirst] || (byAgent[r.csFirst] = [])).push(r);
-  const agents = Object.entries(byAgent)
-    .sort((a, b) => b[1].length - a[1].length)
-    .map(([name, list]) => ({
-      name, total: list.length,
-      cells: cols.map((s, i) => {
-        const c = cell(list.filter((r) => r.scene === s).map(per));
-        if (!c) return null;
-        const base = baseline[i];
-        return { ...c, d: base ? Number((c.v - base.v).toFixed(1)) : null };
+  const per = (r) => ({ min: r.dur / r.turns / 60, cnt: receptions(r) });
+  // v = 单次接待时长中位数（分钟）；n = 接待次数
+  const cell = (list) => (list.length
+    ? { v: Number((median(list.map((x) => x.min * 60)) / 60).toFixed(1)), n: list.reduce((a, x) => a + x.cnt, 0) }
+    : null);
+  const cnt = (obj, k, r) => { obj[k] = (obj[k] || 0) + receptions(r); };
+  const sceneCount = {}, agentCount = {};
+  for (const r of rows) { cnt(sceneCount, r.scene, r); cnt(agentCount, r.csFirst, r); }
+  // 行 = 全部场景、列 = 全部客服，都按接待次数降序，不截断
+  const scenes = Object.entries(sceneCount).sort((a, b) => b[1] - a[1]).map((x) => x[0]);
+  const agents = Object.entries(agentCount).sort((a, b) => b[1] - a[1]).map((x) => x[0]);
+  const table = scenes.map((sc) => {
+    const inScene = rows.filter((r) => r.scene === sc);
+    const base = cell(inScene.map(per));
+    return {
+      scene: sc, base,
+      cells: agents.map((ag) => {
+        const c = cell(inScene.filter((r) => r.csFirst === ag).map(per));
+        return c ? { ...c, d: base ? Number((c.v - base.v).toFixed(1)) : null } : null;
       }),
-    }));
-  return { cols, baseline, agents, excludedMulti: effManual.length - rows.length };
+    };
+  });
+  return { agents, rows: table, excludedMulti: effManual.length - rows.length };
 }
 
 // 用户情绪（2026-09-18 用户定）：三档直接显示。**三档计数覆盖该客服接的全部仅人工会话、不剔无效与填表人**；
@@ -675,7 +683,11 @@ function weekMetrics(rows) {
   return {
     ...overview(rows),
     jiri: jiriStats(rows, manual, effJiri),
-    secondTransfer: { total: effManual.filter(isSecondTransfer).length, base: effManual.length, scenes: secondTransferByScene(effManual) },
+    secondTransfer: {
+      total: effManual.filter(isSecondTransfer).reduce((a, r) => a + receptions(r), 0),
+      base: effManual.reduce((a, r) => a + receptions(r), 0),
+      scenes: secondTransferByScene(effManual),
+    },
     agentScene: agentSceneDuration(effManual),
     emotion: emotionStats(manual),
     eff: groupStats(effManual),
@@ -768,7 +780,11 @@ function buildWeekly(rows) {
       lastDay: [...days].sort().pop(),
       ...overview(all),
       jiri: jiriStats(all, manual, effJiri),
-      secondTransfer: { total: effManual.filter(isSecondTransfer).length, base: effManual.length, scenes: secondTransferByScene(effManual) },
+      secondTransfer: {
+        total: effManual.filter(isSecondTransfer).reduce((a, r) => a + receptions(r), 0),
+        base: effManual.reduce((a, r) => a + receptions(r), 0),
+        scenes: secondTransferByScene(effManual),
+      },
       agentScene: agentSceneDuration(effManual),
       emotion: emotionStats(manual),
       agents, agentsCum, cumFromWeek: weekKeys[0],
@@ -1195,11 +1211,8 @@ async function renderPage(env, user) {
     <div class="report-block">
       <h3>五、有效人工场景 × 工作量（占比按时长）</h3>
       <div class="table-wrapper"><table class="report-table" id="tblScenes"></table></div>
-      <div class="note"><span class="dim-note">注意上表的「接待次数」是 <b>次数</b>（取「转人工会话接待次数」，一场会话转了几次人工就记几次），
-      不是场次；下表的「有效人工场次」才是<b>会话数</b>。同一场景两个数不等是正常的——如第 38 周操作引导 40 场 / 51 次。</span></div>
-      <div class="report-hint" id="stHint" style="margin:18px 0 10px"></div>
-      <div class="table-wrapper"><table class="report-table" id="tblSecond"></table></div>
-      <div class="note"><span class="dim-note">人工有效·秒转·jiri 可解答 = 有效人工里「转人工方式 = 直接转」且「Jiri 是否能解答 = 能」的<b>会话数</b>，
+      <div class="note"><span class="dim-note">全表按 <b>接待次数</b>（「转人工会话接待次数」，一场会话转了几次人工就记几次），不用场次。
+      末三列「秒转·可解答 / 占比 / 占比环比」= 有效人工里「转人工方式 = 直接转」且「Jiri 是否能解答 = 能」的接待次数、占本行接待次数的比、以及与上周同期的百分点差——
       即用户没给 Jiri 机会、而 Jiri 本来答得了的那批。与「可避免转人工」（四类可避免原因 ÷ 全部转人工）和逐场读原文的「不愿沟通率」是三个不同的数。</span></div>
     </div>
 
@@ -1235,7 +1248,7 @@ async function renderPage(env, user) {
     <div class="note" id="noteAvoidable"></div>
 
     <div class="report-block">
-      <h3>客服 × 场景 · 单次接待时长中位数</h3>
+      <h3>场景 × 客服 · 单次接待时长中位数</h3>
       <div class="report-hint" id="asHint" style="margin-bottom:10px"></div>
       <div class="table-wrapper"><table class="report-table" id="tblAgentScene"></table></div>
       <div class="note" id="asNote"></div>
@@ -1370,7 +1383,7 @@ async function renderPage(env, user) {
             <option value="year">按年</option>
           </select>
           <span class="chart-total" id="totalSecond"></span>
-          <span class="chart-hint">用户直接要人工、而 Jiri 本来答得了的场次；占比分母 = 有效人工</span>
+          <span class="chart-hint">用户直接要人工、而 Jiri 本来答得了的接待次数；分母 = 有效人工接待次数</span>
         </div>
         <canvas id="chartSecond"></canvas>
       </div>
