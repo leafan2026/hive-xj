@@ -1606,7 +1606,11 @@ function renderAgentScene(id, hintId, noteId, data, hint) {
   const tbl = $(id);
   if (!tbl) return;
   if (hintId && $(hintId)) $(hintId).textContent = hint;
-  if (!data || !data.rows || !data.rows.length) {
+  if (data && !data.rows) {   // 旧形状缓存（转置前的 {cols, baseline, agents}），提示刷新而不是谎报"没有数据"
+    tbl.innerHTML = '<tbody><tr><td>数据缓存是旧版本，点右上角「重新拉取数据」后本表才会出数</td></tr></tbody>';
+    return;
+  }
+  if (!data || !data.rows.length) {
     tbl.innerHTML = '<tbody><tr><td>范围内没有可算单次时长的有效人工接待</td></tr></tbody>';
     if (noteId && $(noteId)) $(noteId).innerHTML = "";
     return;
@@ -1636,6 +1640,10 @@ function renderEmotion(id, sceneId, hintId, noteId, data, hint) {
   if (!tbl) return;
   if (hintId && $(hintId)) $(hintId).textContent = hint;
   if (!data) return;
+  if (!data.pairs) {          // 同上：旧形状缓存没有 pairs
+    tbl.innerHTML = '<tbody><tr><td>数据缓存是旧版本，点右上角「重新拉取数据」后本表才会出数</td></tr></tbody>';
+    return;
+  }
   const pct = (v) => (v === null || v === undefined ? "—" : v + "%");
   tbl.innerHTML =
     '<thead><tr><th>姓名</th><th>场景</th><th class="num">接待次数</th>' +

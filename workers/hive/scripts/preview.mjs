@@ -47,8 +47,8 @@ const scratch = new Map();
 const cache = {
   async get(key) {
     if (key === "hive:entries:v5") return rows;
-    if (key === "hive:stats:v8") return fullStats;
-    if (key === "hive:weekly:v5") return [];
+    if (key === "hive:stats:v9") return fullStats;
+    if (key === "hive:weekly:v6") return [];
     if (key === "hive:loop:v1") return { weeks: [], types: [], overall: { applicable: 0, yes: 0, no: 0, pending: 0, rate: null } };
     if (key === "hive:meta:v1") return { status: "ok", updatedAt, total: rows.length };
     const hit = scratch.get(key);

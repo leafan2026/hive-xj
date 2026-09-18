@@ -6,16 +6,19 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 // v3 的明细去掉了全链路无消费者的 sn/url/sm/inWindow/creator。
 // v7 / v4（2026-09-17）：明细加回 url（会话地址）并新增 rep/repFrom（复问、复问自，读质检表 field_33/34），
 // 日/周桶新增 rep（复问数），stats 新增 repeats 明细。weekly v2：目标追踪加 guideSplit（操作引导占比按 Jiri 能否解答拆分）；v3：加 jiri（JIRI 接待现状板块，读 field_35/36）；v4：加 agents/agentsCum（客服接待评估，读 field_37~39）；stats v8 / entries v5 / weekly v5（2026-09-18）：明细加 emo（field_40 用户情绪），新增 秒转·可解答、客服×场景时长、用户情绪三项。
+// **stats v9 / weekly v6 / q v4（2026-09-18 当天）：教训——同日把 agentScene 转置成 {agents, rows}、emotion 加 pairs/negRate，
+// 改了 payload 形状却没 bump 键，结果页面是新前端 + 旧形状缓存，两张表直接空白。
+// 规矩：`buildStats` / `weekMetrics` 的返回结构一改，就必须 bump 对应的键，不能只靠"点一次重新拉取数据"。**
 // 旧 v3 明细没有这些字段，读到会把复问率画成全 0，所以三个键一起换，让首次访问后台重建。
 // 保留旧版本键，不删除既有 KV，首次访问会安全地后台重建新缓存。
-const K_STATS = "hive:stats:v8";
+const K_STATS = "hive:stats:v9";
 const K_ENTRIES = "hive:entries:v5";
-const K_WEEKLY = "hive:weekly:v5";
+const K_WEEKLY = "hive:weekly:v6";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
 // 筛选结果记忆缓存：键里带 meta.updatedAt，数据一刷新自然失效；
 // TTL 只用来回收过期键，不承担正确性。
-const K_QUERY_PREFIX = "hive:q:v3:";
+const K_QUERY_PREFIX = "hive:q:v4:";
 const QUERY_CACHE_TTL_S = 3600;
 
 // 金数据 per_page 实际封顶 50；next 是 serial_number 偏移，可并行取页
