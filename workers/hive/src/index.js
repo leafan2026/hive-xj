@@ -11,6 +11,9 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 // 规矩：`buildStats` / `weekMetrics` 的返回结构一改，就必须 bump 对应的键，不能只靠"点一次重新拉取数据"。**
 // 旧 v3 明细没有这些字段，读到会把复问率画成全 0，所以三个键一起换，让首次访问后台重建。
 // 保留旧版本键，不删除既有 KV，首次访问会安全地后台重建新缓存。
+// 2026-09-18 补：bump 之后页面卡在「正在构建」整整几小时，原因是后台刷新死在半路、
+// meta 一直停在 running 把重试全挡掉。现在 stats/weekly/loop 缺失时会直接从 K_ENTRIES 现算（见「派生」），
+// 所以只有 K_ENTRIES 这个键是真正要靠拉数重建的，另外三个换键已经不会再让页面空着。
 const K_STATS = "hive:stats:v9";
 const K_ENTRIES = "hive:entries:v5";
 const K_WEEKLY = "hive:weekly:v6";
@@ -24,7 +27,10 @@ const QUERY_CACHE_TTL_S = 3600;
 // 金数据 per_page 实际封顶 50；next 是 serial_number 偏移，可并行取页
 const PAGE_SIZE = 50;
 const CONCURRENCY = 10;
-const RUNNING_TTL_MS = 5 * 60 * 1000;
+const PAGE_TIMEOUT_MS = 20 * 1000;
+// 全量刷新实测 25～40 秒。超过 2 分钟还停在 running，就是后台任务已经死了
+// （被运行时回收或某页挂死），这时必须允许再起一次，而不是让页面干等。
+const RUNNING_TTL_MS = 2 * 60 * 1000;
 
 // 可避免的转人工原因（AI 本可以接住）
 const AVOIDABLE_REASONS = new Set([
@@ -36,19 +42,30 @@ const AVOIDABLE_REASONS = new Set([
 
 // ============== 取数 ==============
 
+// 一页最多等 PAGE_TIMEOUT_MS。没有超时的话，只要有一页挂住不返回，
+// 整个 refreshCache 就永远不结束，meta 会一直停在 running、把后续刷新全挡掉（2026-09-18 的故障现场）。
 async function fetchPage(auth, next) {
   const url = next ? `${JSJ_BASE}?next=${encodeURIComponent(next)}` : JSJ_BASE;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Basic ${auth}`,
-      Accept: "application/json",
-      "User-Agent": "WDL-Hive-QC/1.0",
-    },
-  });
-  if (!res.ok) {
-    throw new Error(`JinShuJu API ${res.status}: ${(await res.text()).slice(0, 160)}`);
+  let lastErr;
+  for (let 第几次 = 0; 第几次 < 2; 第几次++) {
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(PAGE_TIMEOUT_MS),
+        headers: {
+          Authorization: `Basic ${auth}`,
+          Accept: "application/json",
+          "User-Agent": "WDL-Hive-QC/1.0",
+        },
+      });
+      if (!res.ok) {
+        throw new Error(`JinShuJu API ${res.status}: ${(await res.text()).slice(0, 160)}`);
+      }
+      return await res.json();
+    } catch (err) {
+      lastErr = err;
+    }
   }
-  return res.json();
+  throw new Error(`取页失败（${next ?? "首页"}）：${lastErr && lastErr.message}`);
 }
 
 async function fetchAllEntries(env) {
@@ -936,22 +953,30 @@ async function refreshCache(env) {
   try {
     const { rows, total } = await fetchAllEntries(env);
     rows.sort((a, b) => (b.t || "").localeCompare(a.t || ""));
-    const stats = buildStats(rows);
+    // 先全部算完再写：allSettled 保证一个键写失败不会连累其它键（Promise.all 一拒绝，
+    // 剩下的 put 可能随上下文一起被掐掉），哪个失败也会记进 meta，不再「假装成功」。
+    const 要写 = [
+      [K_STATS, buildStats(rows)],
+      [K_ENTRIES, rows],
+      [K_WEEKLY, buildWeekly(rows)],
+      [K_LOOP, buildLoop(rows)],
+    ];
+    const 结果 = await Promise.allSettled(
+      要写.map(([k, v]) => env.CACHE.put(k, JSON.stringify(v)))
+    );
+    const 失败 = 要写
+      .map(([k], i) => (结果[i].status === "rejected" ? `${k}: ${结果[i].reason && 结果[i].reason.message}` : null))
+      .filter(Boolean);
     const meta = {
-      status: "ok",
+      status: 失败.length ? "error" : "ok",
       updatedAt: new Date().toISOString(),
       total: rows.length,
       reportedTotal: total,
       tookMs: Date.now() - startedAt,
+      ...(失败.length ? { error: `缓存写入失败 ${失败.join("；")}` } : {}),
     };
-    await Promise.all([
-      env.CACHE.put(K_STATS, JSON.stringify(stats)),
-      env.CACHE.put(K_ENTRIES, JSON.stringify(rows)),
-      env.CACHE.put(K_WEEKLY, JSON.stringify(buildWeekly(rows))),
-      env.CACHE.put(K_LOOP, JSON.stringify(buildLoop(rows))),
-      env.CACHE.put(K_META, JSON.stringify(meta)),
-    ]);
-    console.log("[refresh] ok", JSON.stringify(meta));
+    await env.CACHE.put(K_META, JSON.stringify(meta));
+    console.log("[refresh]", meta.status, JSON.stringify(meta));
     return meta;
   } catch (err) {
     const meta = {
@@ -1096,6 +1121,26 @@ function kickoff(env, ctx, meta) {
   if (isRunning(meta)) return false;
   ctx.waitUntil(refreshCache(env));
   return true;
+}
+
+// stats / weekly / loop 都是从明细 K_ENTRIES 现算出来的，实测各 0.1～0.2 秒。
+// 所以这三个键缺失时不该干等后台刷新：只要明细还在，就当场算、顺手回写。
+// 这样换缓存键（bump vN）不再让页面卡在「正在构建」，后台刷新死掉也不至于整页没数。
+async function 派生(env, ctx, key, build) {
+  const rows = await env.CACHE.get(K_ENTRIES, { type: "json" });
+  if (!rows) return null;
+  const value = build(rows);
+  ctx.waitUntil(
+    env.CACHE.put(key, JSON.stringify(value))
+      .catch((err) => console.error("[derive] put failed:", key, err.message))
+  );
+  return value;
+}
+
+// 明细也没有，才真的只能等后台拉数。顺便把 meta 原样带出去，前端好显示到底卡在哪。
+async function 构建中(env, ctx, meta) {
+  kickoff(env, ctx, meta);
+  return json({ success: true, building: true, meta: await readMeta(env) });
 }
 
 function json(data, status = 200) {
@@ -1758,14 +1803,12 @@ export default {
 
       // 无筛选走预聚合缓存（几 KB，最快）；有筛选才读明细现算
       if (!hasFilter) {
-        const [stats, meta] = await Promise.all([
+        const [cached, meta] = await Promise.all([
           env.CACHE.get(K_STATS, { type: "json" }),
           readMeta(env),
         ]);
-        if (!stats) {
-          kickoff(env, ctx, meta);
-          return json({ success: true, building: true, meta: await readMeta(env) });
-        }
+        const stats = cached || (await 派生(env, ctx, K_STATS, buildStats));
+        if (!stats) return 构建中(env, ctx, meta);
         return json({
           success: true, stats, meta, filtered: false,
           matched: stats.total, fullTotal: stats.total,
@@ -1784,14 +1827,13 @@ export default {
         if (hit) return json({ ...hit, meta });
       }
 
-      const [rows, full] = await Promise.all([
+      const [rows, cachedFull] = await Promise.all([
         env.CACHE.get(K_ENTRIES, { type: "json" }),
         env.CACHE.get(K_STATS, { type: "json" }),
       ]);
-      if (!rows) {
-        kickoff(env, ctx, meta);
-        return json({ success: true, building: true, meta: await readMeta(env) });
-      }
+      if (!rows) return 构建中(env, ctx, meta);
+      // 全量 stats 只用来出筛选项和最新一天；缓存键刚换过时它可能还没写，现算一份补上
+      const full = cachedFull || buildStats(rows);
       const filtered = applyFilters(rows, q, range);
       const previous = previousRange(range);
       const payload = {
@@ -1819,26 +1861,22 @@ export default {
     }
 
     if (path === "/api/loop") {
-      const [loop, meta] = await Promise.all([
+      const [cached, meta] = await Promise.all([
         env.CACHE.get(K_LOOP, { type: "json" }),
         readMeta(env),
       ]);
-      if (!loop) {
-        kickoff(env, ctx, meta);
-        return json({ success: true, building: true, meta: await readMeta(env) });
-      }
+      const loop = cached || (await 派生(env, ctx, K_LOOP, buildLoop));
+      if (!loop) return 构建中(env, ctx, meta);
       return json({ success: true, loop, meta });
     }
 
     if (path === "/api/weekly") {
-      const [weekly, meta] = await Promise.all([
+      const [cached, meta] = await Promise.all([
         env.CACHE.get(K_WEEKLY, { type: "json" }),
         readMeta(env),
       ]);
-      if (!weekly) {
-        kickoff(env, ctx, meta);
-        return json({ success: true, building: true, meta: await readMeta(env) });
-      }
+      const weekly = cached || (await 派生(env, ctx, K_WEEKLY, buildWeekly));
+      if (!weekly) return 构建中(env, ctx, meta);
       return json({ success: true, weeks: weekly, meta });
     }
 

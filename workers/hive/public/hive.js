@@ -1069,6 +1069,22 @@ const valueLabels = {
 
 // ============== 看板 ==============
 
+// 「正在构建」到底是在跑还是已经死了，用户看不见就只能干等。
+// 把 meta 里的状态、已跑多久、失败原因拼成一句人话。
+function buildingText(meta) {
+  const m = meta || {};
+  if (m.status === "error") {
+    return "上一次拉取数据失败：" + (m.error || "原因未知") + "。点右上角「重新拉取数据」重试。";
+  }
+  if (m.status === "running") {
+    const 秒 = m.startedAt ? Math.round((Date.now() - m.startedAt) / 1000) : 0;
+    return 秒 > 120
+      ? "上一次拉取已卡住 " + 秒 + " 秒，点右上角「重新拉取数据」重新发起。"
+      : "正在从金数据全量拉取（已 " + 秒 + " 秒，通常 30 秒左右），完成后自动显示。";
+  }
+  return "数据还没拉过，点右上角「重新拉取数据」。";
+}
+
 // 缓存还在构建时轮询，构建完自动渲染
 function pollUntilReady() {
   if (state.polling) return;
@@ -1167,7 +1183,7 @@ async function loadDashboard() {
     const json = await api("/api/dashboard" + (qs ? "?" + qs : ""));
     if (!json.success) throw new Error(json.error || "未知错误");
     if (json.building) {
-      banner("首次缓存正在构建：从金数据全量拉取 6600+ 条会话，约需 20 秒，完成后自动显示。", "info");
+      banner(buildingText(json.meta), (json.meta || {}).status === "error" ? "warn" : "info");
       pollUntilReady();
       return;
     }
@@ -2007,7 +2023,7 @@ async function loadLoop() {
     const json = await api("/api/loop");
     if (!json.success) throw new Error(json.error || "未知错误");
     if (json.building) {
-      $("hintLoopWeek").textContent = "数据正在构建，稍后重开此页签。";
+      $("hintLoopWeek").textContent = buildingText(json.meta);
       return;
     }
     state.loop = json.loop;
@@ -2176,7 +2192,7 @@ async function loadWeekly() {
     const json = await api("/api/weekly");
     if (!json.success) throw new Error(json.error || "未知错误");
     if (json.building) {
-      $("wkHint").textContent = "周报数据正在构建，稍后重开此页签。";
+      $("wkHint").textContent = buildingText(json.meta);
       return;
     }
     state.weeks = json.weeks || [];
