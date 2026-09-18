@@ -1596,8 +1596,9 @@ function drawRepeatChart(s) {
 // 差值胶囊：红=数值更大（更慢/更差），绿=更小。带单位。
 function deltaPill(v, unit) {
   if (v === null || v === undefined) return "";
-  if (Math.abs(v) < 0.05) return '<span class="dl flat">±0.0 ' + unit + "</span>";
-  return '<span class="dl ' + (v > 0 ? "up" : "down") + '">' + (v > 0 ? "+" : "") + v.toFixed(1) + " " + unit + "</span>";
+  const suffix = unit ? " " + unit : "";
+  if (Math.abs(v) < 0.05) return '<span class="dl flat">±0.0' + suffix + "</span>";
+  return '<span class="dl ' + (v > 0 ? "up" : "down") + '">' + (v > 0 ? "+" : "") + v.toFixed(1) + suffix + "</span>";
 }
 
 // 场景 × 客服 · 单次接待时长中位数：行=场景、列=客服（都不截断），每格两行「6.5分 / 20次」+ 与该行全员中位线差的胶囊
@@ -2386,15 +2387,15 @@ function renderWeekly(week) {
     const prev = stOf(pst, scene);
     if (!cur) return num("—") + num("—") + num("—");
     return '<td class="num strong">' + cur.hit + "</td>" + num(cur.rate + "%") +
-      '<td class="num">' + (prev ? deltaPill(Number((cur.rate - prev.rate).toFixed(1)), "pp") : '<span class="dl flat">新</span>') + "</td>";
+      '<td class="num">' + (prev ? deltaPill(Number((cur.rate - prev.rate).toFixed(1)), "") : '<span class="dl flat">新</span>') + "</td>";
   };
   const stRate = st.base ? Number(((st.total / st.base) * 100).toFixed(1)) : 0;
   const pstRate = pst && pst.base ? Number(((pst.total / pst.base) * 100).toFixed(1)) : null;
   $("tblScenes").innerHTML =
     '<thead><tr><th>场景</th><th class="num">接待次数</th><th class="num">总时长（分）</th>' +
     '<th class="num">占总时长</th><th class="num">单次中位</th><th class="num">单次平均</th>' +
-    '<th class="num">时长环比</th><th class="num">时长同比</th>' +
-    '<th class="num">秒转·可解答</th><th class="num">占比</th><th class="num">占比环比</th></tr></thead><tbody>' +
+    '<th class="num">时长环比（%）</th><th class="num">时长同比（%）</th>' +
+    '<th class="num">秒转·可解答</th><th class="num">占比</th><th class="num">占比环比（百分点）</th></tr></thead><tbody>' +
     w.scenes.map((x) => {
       const isGuide = x.scene === "操作引导/功能咨询";
       return "<tr" + (isGuide ? ' class="warn-row"' : "") + "><td>" + escHtml(x.scene) + "</td>" +
@@ -2410,7 +2411,7 @@ function renderWeekly(week) {
     (cmp ? ratio(w.eff.durMin, cmp.prev.eff.durMin) : num("—")) +
     (cmp && cmp.yoy ? ratio(w.eff.durMin, cmp.yoy.eff.durMin) : num("—")) +
     '<td class="num strong">' + st.total + "</td>" + num(stRate + "%") +
-    '<td class="num">' + (pstRate === null ? "—" : deltaPill(Number((stRate - pstRate).toFixed(1)), "pp")) + "</td></tr></tbody>";
+    '<td class="num">' + (pstRate === null ? "—" : deltaPill(Number((stRate - pstRate).toFixed(1)), "")) + "</td></tr></tbody>";
 
   // 六、仅 Jiri 有效场景
   $("tblJiriScenes").innerHTML =
