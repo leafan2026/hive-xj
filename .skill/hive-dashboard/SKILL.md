@@ -15,8 +15,10 @@ Make a source-faithful dashboard change in `workers/hive/`, validate it with the
 |---|---|
 | Fetching, aggregation, metric definitions, auth, cache, API routes | `workers/hive/src/index.js` |
 | Chart type, data binding, Chart.js plugin, tooltip/legend behavior | `workers/hive/public/hive.js` |
-| Layout, card dimensions, colors, glass effects, responsive behavior | `workers/hive/public/hive.css` |
+| Layout, card dimensions, colors, glass effects, responsive behavior | `workers/hive/DESIGN.md` first, then `workers/hive/public/hive.css` |
 | WDL bindings, cron, asset deployment | `workers/hive/wrangler.jsonc` |
+
+Read `workers/hive/DESIGN.md` before any visual change: it records the design tokens, the fixed semantic chart palettes, the two-tier bar-label thresholds, and the fixed red-up/green-down delta convention. A change that contradicts it must either be reverted or land together with an update to that file.
 
 Read `workers/hive/README.md` for metric/business definitions before changing a denominator, a filter, a weekly/loop calculation, or a meaning-bearing label.
 

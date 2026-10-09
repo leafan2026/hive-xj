@@ -13,6 +13,7 @@ The dashboard is a data product, not a mockup. Runtime data, API credentials, br
 | Work | Read first |
 |---|---|
 | Dashboard API, calculations, charts, visual design, filters, or local preview | `.skill/hive-dashboard/SKILL.md` |
+| Any visual change: colours, spacing, typography, chart styling | `workers/hive/DESIGN.md` (read before `hive.css`) |
 | Commit, push, WDL deployment, production verification, or rollback | `.skill/hive-release/SKILL.md` |
 
 The skills live in the repository by design. Keep all future repository-specific skills under `.skill/<skill-name>/SKILL.md`, not under a personal Codex directory.
@@ -24,6 +25,7 @@ The skills live in the repository by design. Keep all future repository-specific
 | `workers/hive/src/index.js` | Worker routes, authentication, 金数据 fetch, aggregation, KV cache, generated page shell |
 | `workers/hive/public/hive.js` | Dashboard state, API calls, Chart.js plugins and chart configuration |
 | `workers/hive/public/hive.css` | Dashboard layout, visual tokens, chart-card and tooltip styling |
+| `workers/hive/DESIGN.md` | Frontend style spec: design tokens, chart palettes, axis/label rules, semantic colours |
 | `workers/hive/public/chart.min.js` | Pinned Chart.js asset; do not edit for dashboard styling |
 | `workers/hive/wrangler.jsonc` | Worker name `hive`, KV `CACHE`, static assets, 30-minute cron |
 | `workers/hive/scripts/preview.mjs` | Local preview server; stubs the KV binding with synthetic data, no credentials |
