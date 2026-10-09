@@ -26,6 +26,7 @@ The skills live in the repository by design. Keep all future repository-specific
 | `workers/hive/public/hive.js` | Dashboard state, API calls, Chart.js plugins and chart configuration |
 | `workers/hive/public/hive.css` | Dashboard layout, visual tokens, chart-card and tooltip styling |
 | `workers/hive/DESIGN.md` | Frontend style spec: design tokens, chart palettes, axis/label rules, semantic colours |
+| `workers/hive/DESIGN-portable.md` | Project-agnostic version of the style spec with inlined CSS and a tested `comboChart()` kit, for reuse in other dashboards |
 | `workers/hive/public/chart.min.js` | Pinned Chart.js asset; do not edit for dashboard styling |
 | `workers/hive/wrangler.jsonc` | Worker name `hive`, KV `CACHE`, static assets, 30-minute cron |
 | `workers/hive/scripts/preview.mjs` | Local preview server; stubs the KV binding with synthetic data, no credentials |
