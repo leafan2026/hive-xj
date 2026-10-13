@@ -15,14 +15,16 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 // meta 一直停在 running 把重试全挡掉。现在 stats/weekly/loop 缺失时会直接从 K_ENTRIES 现算（见「派生」），
 // 所以只有 K_ENTRIES 这个键是真正要靠拉数重建的，另外三个换键已经不会再让页面空着。
 // stats v10 / weekly v7 / q v5（2026-09-18）：情绪里加 emoList（负向 + 正向会话的时间/地址/末接客服），照规矩 bump。
-const K_STATS = "hive:stats:v10";
-const K_ENTRIES = "hive:entries:v5";
+// entries v6 / stats v11 / q v6（2026-10-13 改版）：明细加 sum（field_11 一句话总结），复问明细改成按「复问链」合并：
+// 一行 = 首次提问摘要 + 复问了几次 + 最后一次谁接的。明细多了一个字段，所以 K_ENTRIES 也要换键、重新拉数。
+const K_STATS = "hive:stats:v13";
+const K_ENTRIES = "hive:entries:v6";
 const K_WEEKLY = "hive:weekly:v7";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
 // 筛选结果记忆缓存：键里带 meta.updatedAt，数据一刷新自然失效；
 // TTL 只用来回收过期键，不承担正确性。
-const K_QUERY_PREFIX = "hive:q:v5:";
+const K_QUERY_PREFIX = "hive:q:v8:";
 const QUERY_CACHE_TTL_S = 3600;
 
 // 金数据 per_page 实际封顶 50；next 是 serial_number 偏移，可并行取页
@@ -141,6 +143,7 @@ function trim(e) {
     gotData: e.field_25 || "",      // 对口表单收数据
     jiriBuilt: e.field_27 || "",    // Jiri 代建表单
     loop: e.field_30 || "",         // 业务闭环
+    sum: String(e.field_11 || "").trim().slice(0, 120),  // 一句话总结：复问明细的「首次提问摘要」，只留 120 字控制 KV 体积
     rep: e.field_33 === "是",       // 复问（上游 算复问.py 算好写回：同用户隔 6~36h 再进线且一句话总结相似）
     repFrom: e.field_34 || "",      // 复问自：前一场会话地址
     uturns: e.field_35 === "" || e.field_35 === null || e.field_35 === undefined || isNaN(Number(e.field_35)) ? null : Number(e.field_35),  // 用户轮次（客户说话条数，上游 推轮次与at到质检表.py）
@@ -195,7 +198,10 @@ function bucket() {
     rep: 0,                        // 复问会话数（质检表 field_33=是）
     // 人工有效·秒转·jiri 可解答：sjBase = 有效人工场次（分母），sj = 其中「直接转 且 Jiri能答」
     sj: 0, sjBase: 0,
-    dev: {}, ch: {}, nat: {},
+    // AI 表现「人工有效 · 秒转 · Jiri 可解答」三条周走势：manual = 仅人工场次，effManual = 其中有效，
+    // direct = 有效人工里「直接转」的场次，canA / canBase = 转人工会话里 Jiri 标了「能」/ 标了能否的场次
+    manual: 0, effManual: 0, direct: 0, canA: 0, canBase: 0,
+    dev: {}, ch: {}, nat: {}, natDur: {},
   };
 }
 
@@ -209,10 +215,13 @@ function timestampDayMinute(value) {
     : null;
 }
 
-const BUSY_START_MINUTE = 9 * 60 + 30;
-const BUSY_END_MINUTE = 19 * 60;
+// 忙闲图：全天 96 个 15 分钟格（2026-10 改版前只看 09:30–19:00、最近 7 天；现在看整个筛选区间，分工作日 / 周末取日均）
 const BUSY_SLOT_MINUTES = 15;
-const BUSY_SLOT_COUNT = (BUSY_END_MINUTE - BUSY_START_MINUTE) / BUSY_SLOT_MINUTES;
+const BUSY_SLOT_COUNT = (24 * 60) / BUSY_SLOT_MINUTES;
+const BUSY_CAPACITY = 6;   // 在岗容量：同时在线人工会话超过这个数就算超负荷（2026-10-13 用户定为 6）
+// 人工服务页两张时段图（24 小时节奏、忙闲）只看 09:30～18:30（2026-10-13 用户定）；服务端仍按全天 96 格统计，
+// 窗口随数据下发，前端照窗口裁，改窗口只改这里
+const SERVICE_WINDOW = { start: 9 * 60 + 30, end: 18 * 60 + 30 };
 
 function recentCalendarDays(latestDay, count = 7) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(latestDay || "")) return [];
@@ -231,6 +240,37 @@ function median(nums) {
   return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
 }
 
+// 复问明细：把同一用户的「首问 → 复问 → 再复问」串成一条链，一链一行。
+// 复问自（field_34）指向上一场，顺着指针找到链头（第一场不是复问的会话）；链头不在当前筛选范围内时，
+// 就以它的地址做键、信息取链里最早那场。返回按最后一次复问时间倒序。
+function repeatChains(repRows, rows) {
+  const byUrl = new Map();
+  for (const r of rows) if (r.url) byUrl.set(r.url, r);
+  const chains = new Map();
+  for (const r of repRows) {
+    let head = r, guard = 0;
+    while (head.rep && head.repFrom && byUrl.has(head.repFrom) && guard++ < 20) head = byUrl.get(head.repFrom);
+    const key = head.rep ? (head.repFrom || head.url) : head.url;
+    const c = chains.get(key) || { first: head.rep ? null : head, firstUrl: head.rep ? head.repFrom : head.url, reps: [] };
+    c.reps.push(r);
+    chains.set(key, c);
+  }
+  return [...chains.values()].map((c) => {
+    c.reps.sort((a, b) => (a.t || "").localeCompare(b.t || ""));
+    const last = c.reps[c.reps.length - 1];
+    const src = c.first || c.reps[0];
+    return {
+      t: last.t,                       // 最后一次复问的时间
+      scene: src.scene,                // 首问的业务场景
+      q: src.sum || last.sum || "",    // 首次提问摘要（链头不在范围内时退回第一次复问的总结）
+      n: c.reps.length,                // 复问了几次
+      who: last.st,                    // 最后一次复问是谁接的：仅人工 / 仅 Jiri
+      url: last.url,                   // 最后一次复问的会话地址
+      from: c.firstUrl,                // 首问的会话地址
+    };
+  }).sort((a, b) => (b.t || "").localeCompare(a.t || ""));
+}
+
 function buildStats(rows) {
   const s = {
     total: rows.length,
@@ -240,23 +280,15 @@ function buildStats(rows) {
     nature: {}, durSum: 0, durCount: 0, turnsSum: 0,
     // 按天 / 按周的复合桶，供堆叠柱 + 双轴折线用
     byDay: {}, byWeek: {},
-    // 最近 7 个自然日的逐小时服务节奏；小时以金数据记录的原始日历时间划分，
-    // 与现有按天统计保持同一口径。
-    hourly: { days: [], byDay: {} },
-    // 最近 7 个自然日的人工服务忙闲图。时段定义随数据一起下发（slot），
-    // 前端不再各写一份常量 —— 改窗口只需改这里。
-    // active   = 该格内同时处于人工接待中的会话数，靠时长铺开，所以**只统计有时长的会话**；
-    // incoming = 该格内新进入人工接待的会话数，不要求有时长。
-    // 两个口径的分母因此不同，差额记在 noDuration 里，由前端如实说明。
+    // 服务节奏：周一～周日 × 全天 96 个 15 分钟格的人工会话数（整个筛选区间合计），按金数据记录的原始日历时间落格；
+    // 页面只画 window（09:30～18:30）那一段
+    hourlyWeek: { manual: Array.from({ length: 7 }, () => Array(BUSY_SLOT_COUNT).fill(0)), dayCount: Array(7).fill(0), slotMinutes: BUSY_SLOT_MINUTES, window: SERVICE_WINDOW },
+    // 人工服务忙闲：全天 96 个 15 分钟格，每格 = 同时处于人工接待中的会话数（靠时长铺开，所以只统计有时长的会话），
+    // 按「工作日 / 周末」分别对区间内的自然日取平均；noDuration = 没有时长、进不了这张图的仅人工会话数。
     manualBusy: {
-      days: [], byDay: {},
-      slot: {
-        startMinute: BUSY_START_MINUTE,
-        endMinute: BUSY_END_MINUTE,
-        slotMinutes: BUSY_SLOT_MINUTES,
-        slotCount: BUSY_SLOT_COUNT,
-      },
-      noDuration: 0,
+      slotMinutes: BUSY_SLOT_MINUTES, slotCount: BUSY_SLOT_COUNT, capacity: BUSY_CAPACITY, window: SERVICE_WINDOW,
+      weekday: Array(BUSY_SLOT_COUNT).fill(0), weekend: Array(BUSY_SLOT_COUNT).fill(0),
+      weekdayDays: 0, weekendDays: 0, noDuration: 0,
     },
     // 接待人数（user_id 去重）/ 接待企业数（billing_account_id 去重）。
     // 去重计数不能跨周期相加——一个用户在两天各来一次，按天是 2、按月是 1——
@@ -266,20 +298,15 @@ function buildStats(rows) {
     uniqAll: { users: 0, orgs: 0 },
     // 交叉分布
     natureByDevice: {}, natureByChannel: {}, effectiveScene: {},
+    // 业务场景分布柱下的「AI 93%」：该场景有效会话里仅 Jiri 接待的场次（Jiri 独立解决率的分子；分母 = effectiveScene）
+    effectiveSceneAI: {},
     // 复问明细（时间 / 本场会话地址 / 前一场会话地址），给「复问明细」表；只含 复问=是 的行，量很小
     repeats: [],
   };
   const durations = [];
-  const latestRowDay = rows.map((r) => String(r.t || "").slice(0, 10))
-    .filter((day) => /^\d{4}-\d{2}-\d{2}$/.test(day)).sort().pop();
-  s.hourly.days = recentCalendarDays(latestRowDay);
-  for (const day of s.hourly.days) {
-    s.hourly.byDay[day] = Array.from({ length: 24 }, () => ({ jiri: 0, manual: 0, manualDur: 0 }));
-  }
-  s.manualBusy.days = [...s.hourly.days];
-  for (const day of s.manualBusy.days) {
-    s.manualBusy.byDay[day] = Array.from({ length: BUSY_SLOT_COUNT }, () => ({ active: 0, incoming: 0 }));
-  }
+  const repRows = [];     // 复问=是 的行，循环完再串成复问链
+  const daysSeen = new Set();   // 区间内出现过会话的自然日，用来数工作日 / 周末各几天、每个星期几各几天
+  const busyByDay = {};         // day → Int32Array(96)，循环完再按日型求平均
   // 中间态：每个粒度每个周期一组 Set，收尾时转成计数再下发（不然 payload 会很大）
   const uniqSets = {};
   for (const g of UNIQ_GRAINS) uniqSets[g] = {};
@@ -298,33 +325,23 @@ function buildStats(rows) {
 
     bump(s.natureByDevice, r.dev, r.nat);
     bump(s.natureByChannel, r.ch, r.nat);
-    if (r.nat === "有效") tally(s.effectiveScene, r.scene);
+    if (r.nat === "有效") { tally(s.effectiveScene, r.scene); if (r.st === "仅 Jiri") tally(s.effectiveSceneAI, r.scene); }
 
     const day = r.t ? r.t.slice(0, 10) : "";
     const hourSlot = timestampDayMinute(r.t);
-    if (hourSlot && s.hourly.byDay[hourSlot.day]) {
-      const hourly = s.hourly.byDay[hourSlot.day][hourSlot.hour];
-      if (r.st === "仅 Jiri") hourly.jiri++;
+    if (hourSlot) {
+      daysSeen.add(hourSlot.day);
       if (r.st === "仅人工") {
-        hourly.manual++;
-        if (typeof r.dur === "number" && r.dur > 0) hourly.manualDur += r.dur;
-      }
-    }
-    if (hourSlot && r.st === "仅人工" && s.manualBusy.byDay[hourSlot.day]) {
-      const slots = s.manualBusy.byDay[hourSlot.day];
-      const hasDuration = typeof r.dur === "number" && r.dur > 0;
-      if (hourSlot.minute >= BUSY_START_MINUTE && hourSlot.minute < BUSY_END_MINUTE) {
-        const incomingIndex = Math.floor((hourSlot.minute - BUSY_START_MINUTE) / BUSY_SLOT_MINUTES);
-        slots[incomingIndex].incoming++;
-        // 进了 incoming 却永远进不了 active 的会话，数出来让前端说清楚差额
+        const dow = dowOf(hourSlot.day);
+        if (dow >= 0) s.hourlyWeek.manual[dow][Math.floor(hourSlot.minute / BUSY_SLOT_MINUTES)]++;
+        const hasDuration = typeof r.dur === "number" && r.dur > 0;
         if (!hasDuration) s.manualBusy.noDuration++;
-      }
-      if (hasDuration) {
-        const serviceEnd = Math.min(hourSlot.minute + r.dur / 60, BUSY_END_MINUTE);
-        for (let index = 0; index < BUSY_SLOT_COUNT; index++) {
-          const slotStart = BUSY_START_MINUTE + index * BUSY_SLOT_MINUTES;
-          const slotEnd = slotStart + BUSY_SLOT_MINUTES;
-          if (hourSlot.minute < slotEnd && serviceEnd > slotStart) slots[index].active++;
+        else {
+          // 会话从记录时间起铺到 时长 结束，跨过午夜的部分截掉
+          const slots = busyByDay[hourSlot.day] || (busyByDay[hourSlot.day] = new Int32Array(BUSY_SLOT_COUNT));
+          const first = Math.floor(hourSlot.minute / BUSY_SLOT_MINUTES);
+          const last = Math.min(BUSY_SLOT_COUNT - 1, Math.floor((hourSlot.minute + r.dur / 60 - 1e-9) / BUSY_SLOT_MINUTES));
+          for (let index = first; index <= last; index++) slots[index]++;
         }
       }
     }
@@ -349,18 +366,26 @@ function buildStats(rows) {
         b.dev[r.dev] = (b.dev[r.dev] || 0) + 1;
         b.ch[r.ch] = (b.ch[r.ch] || 0) + 1;
         b.nat[r.nat] = (b.nat[r.nat] || 0) + 1;
-        if (typeof r.dur === "number" && r.dur > 0) { b.dur += r.dur; b.durCount++; }
+        if (typeof r.dur === "number" && r.dur > 0) {
+          b.dur += r.dur; b.durCount++;
+          b.natDur[r.nat] = (b.natDur[r.nat] || 0) + r.dur;   // 各会话性质的人工时长（秒），给「会话时长 · 按周」堆叠
+        }
         if (typeof r.turns === "number") b.turns += r.turns;
         if (r.way) b.transfer++;
         if (r.st === "仅 Jiri") b.aiOnly++;
         if (AVOIDABLE_REASONS.has(r.reason)) b.avoidable++;
         if (r.rep) b.rep++;
+        if (r.st === "仅人工") {
+          b.manual++;
+          if (r.nat === "有效") { b.effManual++; if (r.way === "直接转") b.direct++; }
+        }
+        if (r.way && r.jiri !== "未标记") { b.canBase++; if (r.jiri === "能") b.canA++; }
         if (r.st === "仅人工" && r.nat === "有效") {
           b.sjBase += receptions(r);
           if (isSecondTransfer(r)) b.sj += receptions(r);
         }
       }
-      if (r.rep) s.repeats.push({ t: r.t, url: r.url, from: r.repFrom });
+      if (r.rep) repRows.push(r);
     }
 
     if (r.way) { s.transferred++; tally(s.way, r.way); }
@@ -422,7 +447,22 @@ function buildStats(rows) {
     s.uniq[g] = out;
   }
   s.uniqAll = { users: allUsers.size, orgs: allOrgs.size };
-  s.repeats.sort((a, b) => (b.t || "").localeCompare(a.t || ""));
+  s.repeats = repeatChains(repRows, rows);
+
+  // 忙闲：按日型求平均。分母是区间内**有会话的**自然日（不是日历天数：区间首尾不完整，也避免长区间里的假期把平均摊薄）
+  for (const day of daysSeen) {
+    const dow = dowOf(day);
+    if (dow < 0) continue;
+    const weekend = dow >= 5;
+    if (weekend) s.manualBusy.weekendDays++; else s.manualBusy.weekdayDays++;
+    s.hourlyWeek.dayCount[dow]++;
+    const slots = busyByDay[day];
+    if (!slots) continue;
+    const target = weekend ? s.manualBusy.weekend : s.manualBusy.weekday;
+    for (let i = 0; i < BUSY_SLOT_COUNT; i++) target[i] += slots[i];
+  }
+  s.manualBusy.weekday = s.manualBusy.weekday.map((v) => (s.manualBusy.weekdayDays ? Number((v / s.manualBusy.weekdayDays).toFixed(2)) : 0));
+  s.manualBusy.weekend = s.manualBusy.weekend.map((v) => (s.manualBusy.weekendDays ? Number((v / s.manualBusy.weekendDays).toFixed(2)) : 0));
   // 服务概览的两张表：都跑在当前筛选后的行上（区间表、情绪表）
   const manualRows = rows.filter((r) => r.st === "仅人工");
   s.agentScene = agentSceneDuration(manualRows.filter((r) => r.nat === "有效"));
@@ -556,9 +596,12 @@ function agentSceneDuration(effManual) {
     (r.csAll || []).length === 1 && r.csFirst && typeof r.dur === "number" && r.dur > 0 && typeof r.turns === "number" && r.turns > 0);
   const per = (r) => ({ min: r.dur / r.turns / 60, cnt: receptions(r) });
   // v = 单次接待时长中位数（分钟）；n = 接待次数
-  const cell = (list) => (list.length
-    ? { v: Number((median(list.map((x) => x.min * 60)) / 60).toFixed(1)), n: list.reduce((a, x) => a + x.cnt, 0) }
-    : null);
+  // v = 中位数（分钟，1 位小数，周报用）；sec = 同一个中位数的整秒（人工服务页热力格写 m:ss 用）；n = 接待次数
+  const cell = (list) => {
+    if (!list.length) return null;
+    const sec = median(list.map((x) => x.min * 60));
+    return { v: Number((sec / 60).toFixed(1)), sec: Math.round(sec), n: list.reduce((a, x) => a + x.cnt, 0) };
+  };
   const cnt = (obj, k, r) => { obj[k] = (obj[k] || 0) + receptions(r); };
   const sceneCount = {}, agentCount = {};
   for (const r of rows) { cnt(sceneCount, r.scene, r); cnt(agentCount, r.csFirst, r); }
@@ -601,7 +644,7 @@ function emotionStats(manual) {
     add(team, r);
     // 负向 / 正向明细：上表只看得到「几次」，要回原文得有链接，所以逐场留下地址
     if (r.emo === "负向" || r.emo === "正向") {
-      emoList.push({ t: r.t || "", url: r.url || "", agent: r.csLast || "", emo: r.emo });
+      emoList.push({ t: r.t || "", url: r.url || "", agent: r.csLast || "", emo: r.emo, scene: r.scene, q: r.sum || "" });
     }
     if (r.csLast) {
       add(byAgent[r.csLast] || (byAgent[r.csLast] = blank()), r);
@@ -768,7 +811,7 @@ function agentStats(manualRows, repeatedUrls) {
     repeatRate: x.last ? Number(((x.repeated / x.last) * 100).toFixed(1)) : null,
   });
   return {
-    team: fin("团队基线", team),
+    team: fin("团队合计", team),
     agents: Object.entries(by).map(([n, x]) => fin(n, x)).sort((a, b) => b.visits - a.visits),
   };
 }
@@ -1166,11 +1209,13 @@ function escHtml(value) {
 }
 
 async function renderPage(env, user) {
-  // Chart.js 随静态资源部署，不走公共 CDN（jsdelivr 国内经常卡住，且是阻塞脚本）
-  const [cssUrl, jsUrl, chartUrl] = await Promise.all([
+  // 2026-10 改版后图表全部是 DOM / SVG（和 Design 原型同一套画法），不再加载 Chart.js
+  const [cssUrl, jsUrl, fontUrl] = await Promise.all([
     env.ASSETS.url("/hive.css"),
     env.ASSETS.url("/hive.js"),
-    env.ASSETS.url("/chart.min.js"),
+    // 数字与拉丁字母用自托管的 Urbanist（只含拉丁子集，约 28KB）；中文仍走系统字体。
+    // 不引 Google Fonts：国内访问不稳定。
+    env.ASSETS.url("/urbanist-latin.woff2"),
   ]);
 
   return new Response(
@@ -1180,29 +1225,70 @@ async function renderPage(env, user) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>hive 服务看板</title>
+<style>@font-face{font-family:"Urbanist";font-style:normal;font-weight:400 700;font-display:swap;src:url("${fontUrl}") format("woff2");unicode-range:U+0000-00FF,U+2000-206F,U+2191,U+2193,U+2212}</style>
 <link rel="stylesheet" href="${cssUrl}">
-<link rel="preload" as="script" href="${chartUrl}">
 </head>
-<body>
-<header class="header">
-  <div class="header-inner">
-    <h1>hive 服务看板</h1>
-    <div class="header-meta">
-      <span id="updatedAt">—</span>
-      <button class="btn" id="refreshBtn">重新拉取数据</button>
-      <span class="user-chip" title="当前登录账号">${escHtml(user)}</span>
-      <button class="btn-ghost" id="logoutBtn">退出</button>
-    </div>
+<body class="is-analysis">
+<div class="app">
+<aside class="side" aria-label="主导航">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5"></path></svg></span>
+    <span class="brand-text"><b>hive</b><small>服务看板</small></span>
   </div>
-</header>
+  <button type="button" class="menu-btn" id="menuBtn" aria-label="打开菜单" aria-expanded="false" aria-controls="sideBody"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg></button>
+  <div class="side-body" id="sideBody">
+  <div class="drawer-head"><span>菜单</span><button type="button" class="menu-close" id="menuClose" aria-label="关闭菜单"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></button></div>
+  <nav class="side-nav" aria-label="页面">
+    <div class="nav-group">
+      <div class="nav-group-head"><span>分析</span><small>随筛选变化</small></div>
+      <button type="button" class="tab nav-item active" data-tab="overview" data-kind="analysis" data-desc="会话量、AI 独立率与人工投入的整体走势"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"></path></svg><span>总览</span></button>
+      <button type="button" class="tab nav-item" data-tab="volume" data-kind="analysis" data-desc="量有多少、谁来的、从哪个入口来"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V11M10 20V5M15 20v-7M20 20V9"></path></svg><span>接待量与来源</span></button>
+      <button type="button" class="tab nav-item" data-tab="ai" data-kind="analysis" data-desc="Jiri 自己接住了多少、哪里接不住、用户有没有被迫再问一遍"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.5 6.5l2.6 2.6M14.9 14.9l2.6 2.6M6.5 17.5l2.6-2.6M14.9 9.1l2.6-2.6"></path></svg><span>AI 表现</span></button>
+      <button type="button" class="tab nav-item" data-tab="service" data-kind="analysis" data-desc="人工花了多少时间、什么时候最忙、为什么转人工，以及每位客服接待得怎样"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 14v-2a7.5 7.5 0 0 1 15 0v2M4.5 14a2 2 0 0 0 2 2h1v-5h-1a2 2 0 0 0-2 2zM19.5 14a2 2 0 0 1-2 2h-1v-5h1a2 2 0 0 1 2 2zM16.5 16v1a3 3 0 0 1-3 3H12"></path></svg><span>人工服务</span></button>
+      <button type="button" class="tab nav-item" data-tab="business" data-kind="analysis" data-desc="用户在问什么业务、是哪种套餐的用户、小金商户处在哪个阶段"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8zM3.5 12.5l8.5 4.5 8.5-4.5M3.5 16.5l8.5 4.5 8.5-4.5"></path></svg><span>业务与套餐</span></button>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-head"><span>报告</span><small>固定口径</small></div>
+      <button type="button" class="tab nav-item" data-tab="weekly" data-kind="report" data-desc="按自然周固定统计，不受顶部筛选影响"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13H7zM14 3v5h5M10 13h6M10 17h4"></path></svg><span>周报</span></button>
+      <button type="button" class="tab nav-item" data-tab="loop" data-kind="report" data-desc="咨询后 7 天内，用户的对口表单有没有真正收到数据"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 0 1 13.2-4.9M19.5 12a7.5 7.5 0 0 1-13.2 4.9M18 3.5v4h-4M6 20.5v-4h4"></path></svg><span>业务闭环</span></button>
+    </div>
+  </nav>
+  <div class="side-foot">
+    <span class="side-updated" id="updatedAt">—</span>
+    <button type="button" class="btn" id="refreshBtn">重新拉取数据</button>
+    <div class="side-user"><span class="user-chip" title="当前登录账号">${escHtml(user)}</span><button type="button" class="btn-ghost" id="logoutBtn">退出</button></div>
+  </div>
+  </div>
+</aside>
+<div class="menu-backdrop" id="menuBackdrop" aria-hidden="true"></div>
 
 <main class="main">
+  <header class="page-head">
+    <div class="page-title">
+      <div class="crumb" id="pageCrumb">分析 / 总览</div>
+      <h1 id="pageTitle">总览</h1>
+      <p id="pageDesc">会话量、AI 独立率与人工投入的整体走势</p>
+    </div>
+    <div class="page-tools">
+      <span class="live-chip" id="liveChip"><i aria-hidden="true"></i>随筛选变化</span>
+      <span class="match-info" id="matchInfo"></span>
+      <div class="report-bar" id="reportBar">
+        <label>统计周 <select id="wkSelect"></select></label>
+        <span class="report-hint" id="wkHint"></span>
+        <button type="button" class="btn-ghost notes-toggle" id="notesToggle" aria-pressed="false">显示口径说明</button>
+        <button type="button" class="btn-ghost notes-toggle" id="exportBtn">导出</button>
+      </div>
+    </div>
+  </header>
+
   <div id="banner" class="banner" hidden></div>
 
   <div class="filter-sentinel" id="filterSentinel" aria-hidden="true"></div>
   <div class="sticky-top" id="stickyTop">
-  <section class="filterbar" id="filterbar">
-    <div class="filter-row">
+  <section class="filterbar" id="filterbar" aria-label="筛选条件">
+    <button type="button" class="filter-toggle" id="filterToggle" aria-expanded="false" aria-controls="filterRow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"></path></svg><span id="filterSummary">筛选</span><i aria-hidden="true"></i></button>
+    <div class="filter-row" id="filterRow">
+      <label class="f-label">时间
       <select id="fRange" title="时间范围">
         <option value="">全部时间</option>
         <optgroup label="相对区间">
@@ -1225,297 +1311,315 @@ async function renderPage(env, user) {
         </optgroup>
         <option value="custom">自定义</option>
       </select>
-      <input type="date" id="fFrom" title="起始日期">
-      <span class="dash">至</span>
-      <input type="date" id="fTo" title="截止日期">
-      <select id="fDevice" data-dim="device"></select>
-      <select id="fScene" data-dim="scene"></select>
-      <select id="fNature" data-dim="nature"></select>
-      <button class="btn-ghost" id="resetBtn">重置筛选</button>
-      <span class="match-info" id="matchInfo"></span>
+      </label>
+      <label class="f-label">从 <input type="date" id="fFrom" title="起始日期"></label>
+      <label class="f-label">至 <input type="date" id="fTo" title="截止日期"></label>
+      <span class="filter-sep" aria-hidden="true"></span>
+      <label class="f-label">设备 <select id="fDevice" data-dim="device"></select></label>
+      <label class="f-label">业务场景 <select id="fScene" data-dim="scene"></select></label>
+      <label class="f-label">会话性质 <select id="fNature" data-dim="nature"></select></label>
+      <button type="button" class="btn-ghost reset-btn" id="resetBtn">重置</button>
     </div>
   </section>
-  <nav class="tabs">
-    <button class="tab active" data-tab="weekly">周报</button>
-    <button class="tab" data-tab="service">服务概览</button>
-    <button class="tab" data-tab="trend">会话量趋势与来源</button>
-    <button class="tab" data-tab="scene">业务场景与套餐</button>
-    <button class="tab" data-tab="loop">业务闭环</button>
-  </nav>
   </div>
 
-  <section class="cards" id="cards"></section>
+  <!-- ============ 分析 · 总览 ============ -->
+  <section class="panel active" id="panel-overview">
+    <section class="cards" id="cards"></section>
+    <section class="chart-card hero-card" aria-label="会话接待分布">
+      <div class="hero-head">
+        <div class="hero-title"><h3>会话接待分布</h3><div class="hero-big" id="heroTotal">—</div><div class="hero-caption" id="heroCaption"></div></div>
+        <div class="hero-right">
+          <div class="seg" id="granRecept" role="tablist" aria-label="聚合粒度"></div>
+          <div class="legend"><span><i style="background:#D3D2D6"></i>会话量</span><span><i style="background:#4A4A50"></i>当前周期</span><span><i class="ln" style="background:#0B0B0C"></i>人工接待时长（右轴）</span></div>
+        </div>
+      </div>
+      <div id="heroRecept"></div>
+    </section>
+    <div class="flex-row">
+      <section class="chart-card" style="flex:1 1 300px" aria-label="设备构成">
+        <div class="chart-head between"><h3>设备构成</h3><a href="#volume" class="more-link" id="devLink">来源详情 →</a></div>
+        <div class="dev-stack" id="devStack"></div>
+      </section>
+      <section class="chart-card" style="flex:2 1 600px" aria-label="接待人数与企业数">
+        <div class="chart-head between"><h3>接待人数与企业数</h3><span class="chart-hint">区间去重</span></div>
+        <div class="bignums">
+          <div><b id="ovUniqUsers">—</b><span><i style="background:#0B0B0C"></i>接待人数</span></div>
+          <div><b id="ovUniqOrgs">—</b><span><i style="background:#AAA9AB"></i>接待企业数</span></div>
+        </div>
+        <div class="pair-bars" id="ovUniqBars"></div>
+        <p class="chart-foot">按周去重，各周不可相加</p>
+      </section>
+    </div>
+  </section>
 
-  <section class="panel active" id="panel-weekly">
-    <div class="report-bar">
-      <label>统计周</label>
-      <select id="wkSelect"></select>
-      <span class="report-hint" id="wkHint"></span>
+  <!-- ============ 分析 · 接待量与来源 ============ -->
+  <section class="panel" id="panel-volume">
+    <section class="chart-card hero-card" aria-label="会话接待分布（按设备）">
+      <div class="hero-head">
+        <div class="hero-title"><h3>会话接待分布 · 按设备</h3><div class="hero-big sm" id="volDistTotal">—</div>
+          <div class="legend"><span><i style="background:#0B0B0C"></i>pc</span><span><i style="background:#AAA9AB"></i>mobile</span><span><i style="background:#DBDADD"></i>未知</span></div></div>
+        <div class="seg" id="granDist" role="tablist" aria-label="聚合粒度"></div>
+      </div>
+      <div id="volDist"></div>
+    </section>
+    <section class="chart-card hero-card" aria-label="接待人数与企业数">
+      <div class="hero-head">
+        <div class="hero-title"><h3>接待人数与企业数</h3>
+          <div class="bignums lg">
+            <div><b id="volUniqUsers">—</b><span><i style="background:#0B0B0C"></i>接待人数 · user_id 去重</span></div>
+            <div><b id="volUniqOrgs">—</b><span><i style="background:#AAA9AB"></i>接待企业数 · billing_account_id 去重</span></div>
+          </div></div>
+        <div class="hero-right"><div class="seg" id="granUniq" role="tablist" aria-label="聚合粒度"></div><span class="hint-pill">各周期独立去重，不可相加；总数为全区间去重</span></div>
+      </div>
+      <div id="volUniq"></div>
+    </section>
+    <section class="chart-card" aria-label="渠道来源">
+      <div class="chart-head between"><h3>渠道来源 · 每周会话数</h3><span class="chart-hint" id="hintWeekChannel"></span></div>
+      <div class="multiples" id="chanGrid"></div>
+    </section>
+    <section class="chart-card" aria-label="渠道 × 会话性质">
+      <div class="chart-head between"><h3>渠道 × 会话性质</h3><span class="chart-hint">颜色越深会话越多</span></div>
+      <div class="table-wrapper flat"><table class="heat-table" id="tblChannelNature"></table></div>
+    </section>
+    <div class="grid two">
+      <section class="chart-card" aria-label="设备 × 会话性质">
+        <div class="chart-head between"><h3>设备 × 会话性质</h3><span class="chart-hint">颜色越深会话越多</span></div>
+        <div class="table-wrapper flat"><table class="heat-table" id="tblDeviceNature"></table></div>
+      </section>
+      <section class="chart-card" aria-label="入口媒介 Top 12">
+        <div class="chart-head between"><h3>入口媒介 Top 12</h3><span class="chart-hint">会话数</span></div>
+        <ol class="medium-list" id="mediumList"></ol>
+      </section>
+    </div>
+  </section>
+
+  <!-- ============ 分析 · AI 表现 ============ -->
+  <section class="panel" id="panel-ai">
+    <div class="grid two">
+      <section class="chart-card" aria-label="最后接待对象">
+        <div class="chart-head between"><h3>AI 独立率 · 最后接待对象</h3><span class="pill" id="aiRatePill">—</span></div>
+        <div class="big-kpi"><b id="aiRateBig">—</b><span id="aiRateCaption"></span></div>
+        <div class="units" id="aiUnits" aria-hidden="true"></div>
+        <div class="legend lg" id="aiRateLegend"></div>
+      </section>
+      <section class="chart-card" aria-label="人工接待会话 Jiri 能否解答">
+        <div class="chart-head between"><h3>转到人工的会话，Jiri 本来能否解答</h3><span class="chart-hint" id="canAnswerTotal"></span></div>
+        <div class="tri-cols" id="canAnswerCols"></div>
+        <div class="stack" id="canAnswerBar" style="height:18px" aria-hidden="true"></div>
+      </section>
+    </div>
+    <section class="chart-card" aria-label="复问率">
+      <div class="hero-head">
+        <div class="hero-title"><h3>复问率 · 每周</h3><div class="big-kpi"><b class="mid" id="repeatBig">—</b><span id="repeatPill"></span></div><div class="hero-caption">同一用户隔 6～36 小时就同一问题再次进线的会话占比</div></div>
+        <span class="legend"><span><i class="dash"></i>警戒线 7%</span></span>
+      </div>
+      <div class="repeat-bars" id="repeatBars"></div>
+      <div class="dc-x per" id="repeatAxis"></div>
+    </section>
+    <section class="chart-card" aria-label="人工有效、秒转与 Jiri 可解答">
+      <div class="chart-head between"><h3>人工有效 · 秒转 · Jiri 可解答</h3><span class="chart-hint">三个指标量纲不同，分开画，不共用一根轴</span></div>
+      <div class="trio-grid" id="trioCards"></div>
+    </section>
+    <section class="chart-card" aria-label="复问明细">
+      <div class="chart-head between"><h3 id="repeatsHead">复问明细</h3><button type="button" class="more-link" id="repeatsMore" hidden>查看全部 →</button></div>
+      <div class="table-wrapper flat"><div class="rt" id="tblRepeats"></div></div>
+    </section>
+  </section>
+
+  <!-- ============ 分析 · 人工服务 ============ -->
+  <section class="panel" id="panel-service">
+    <section class="cards" id="serviceCards"></section>
+    <div class="group-head"><span>01</span><h2>工作量与忙闲</h2><small>人工花了多少时间、什么时候最忙</small></div>
+    <section class="chart-card" aria-label="每日人工接待时长与转人工次数">
+      <div class="chart-head between top">
+        <div class="hero-title"><h3 id="dailyServiceTitle">每日人工接待时长与转人工次数</h3><span class="chart-sub">连续无人工接待的日期合并成一格</span></div>
+        <div class="legend"><span><i style="background:#AAA9AB"></i>人工时长（小时）</span><span><i class="ln" style="background:#0B0B0C"></i>转人工次数（右轴）</span></div>
+      </div>
+      <div id="dailyService"></div>
+    </section>
+    <div class="grid two">
+      <section class="chart-card" aria-label="24 小时服务节奏">
+        <div class="chart-head between top"><div class="hero-title"><h3>服务节奏 · 人工会话数</h3><span class="chart-sub">09:30～18:30，每格 15 分钟</span></div><span class="heat-legend"><span>少</span><i style="background:#E4E3E7"></i><i style="background:#BDBCC2"></i><i style="background:#8D8C93"></i><i style="background:#4A4A50"></i><i style="background:#0B0B0C"></i><span>多 · 空白 = 0</span></span></div>
+        <div class="heat-scroll"><div class="heat-grid" id="hourlyGrid" role="img" aria-label="周一到周日 × 24 小时的人工会话数热力图"></div></div>
+      </section>
+      <section class="chart-card service-busy-card" aria-label="人工服务忙闲分布">
+        <div class="chart-head between top">
+          <div class="hero-title"><h3>人工服务忙闲 · 15 分钟</h3><span class="chart-sub">09:30～18:30 同时在线人工会话数（平均）</span></div>
+          <div class="seg" id="manualBusyModes" role="tablist" aria-label="日期类型">
+            <button type="button" role="tab" data-mode="weekday" aria-pressed="true">工作日</button>
+            <button type="button" role="tab" data-mode="weekend" aria-pressed="false">周末</button>
+          </div>
+        </div>
+        <div class="busy-bars" id="manualBusyBars"></div>
+        <div class="busy-axis" id="manualBusyAxis"></div>
+        <div class="legend"><span><i style="background:#DBDADD"></i>空闲</span><span><i style="background:#8E8D93"></i>正常</span><span><i style="background:#0B0B0C"></i>超出容量</span></div>
+      </section>
+    </div>
+    <section class="chart-card" aria-label="会话时长（按周）">
+      <div class="chart-head between top">
+        <div class="hero-title"><h3>会话时长 · 按周</h3><span class="chart-sub">柱：各会话性质的人工时长；线：单会话平均时长</span></div>
+        <div class="legend"><span><i style="background:#0B0B0C"></i>有效</span><span><i style="background:#8E8D93"></i>填表人</span><span><i style="background:#DBDADD"></i>其他</span><span><i class="ln thick" style="background:#75FB90"></i>平均时长（右轴）</span></div>
+      </div>
+      <div id="weekDur"></div>
+    </section>
+
+    <div class="group-head"><span>02</span><h2>为什么转人工</h2><small>转人工的方式与原因；绿色为可避免</small></div>
+    <div class="grid two">
+      <section class="chart-card" aria-label="转人工方式">
+        <div class="chart-head"><h3>转人工方式</h3></div>
+        <div class="tri-cols two" id="wayCols"></div>
+        <div class="stack" id="wayBar" style="height:18px" aria-hidden="true"></div>
+      </section>
+      <section class="chart-card" aria-label="转人工原因分布">
+        <div class="chart-head between"><h3>转人工原因分布</h3><span class="legend"><span><i style="background:#75FB90"></i><span id="reasonAvoidable">可避免</span></span></span></div>
+        <div class="reason-list" id="reasonList"></div>
+      </section>
     </div>
 
-    <div class="report-block">
-      <h3>一、目标追踪</h3>
-      <div class="table-wrapper"><table class="report-table" id="tblGoals"></table></div>
+    <div class="group-head"><span>03</span><h2>客服表现</h2><small>每位客服的接待量、速度与用户情绪</small></div>
+    <section class="chart-card" aria-label="客服接待评估 · 累计">
+      <div class="chart-head between"><h3>客服接待评估 · 累计</h3><span class="chart-hint" id="agentHintCum"></span></div>
+      <div class="table-wrapper flat"><table class="report-table even" id="tblAgentsCum"></table></div>
+    </section>
+    <section class="chart-card" aria-label="场景 × 客服 单次接待时长中位数">
+      <div class="chart-head between top">
+        <div class="hero-title"><h3>场景 × 客服 · 单次接待时长中位数</h3><span class="chart-sub">和同场景的全员中位数比：越深越慢，绿色为明显更快；— 表示样本不足 3 次</span></div>
+        <span class="heat-legend"><span>快</span><i class="w" style="background:#75FB90"></i><i class="w" style="background:#F1F0F3"></i><i class="w" style="background:#AAA9AB"></i><i class="w" style="background:#3A3A40"></i><span>慢</span></span>
+      </div>
+      <div class="heat-scroll"><div id="agentSceneHeat"></div></div>
+    </section>
+    <section class="chart-card" aria-label="用户情绪">
+      <div class="chart-head between top">
+        <div class="hero-title"><h3>用户情绪 · 按客服</h3><span class="chart-sub">负向场景取该客服负向会话最多的场景；比例为占其接待次数</span></div>
+        <div class="legend"><span><i style="background:#0B0B0C"></i>负向</span><span><i style="background:#75FB90"></i>正向</span><span><i style="background:#ECEBEF"></i>中性</span></div>
+      </div>
+      <div class="heat-scroll"><div class="em" id="emotionAgents"></div></div>
+    </section>
+    <section class="chart-card" aria-label="情绪会话明细">
+      <div class="chart-head between"><h3>情绪会话明细</h3>
+        <div class="seg" id="emoTabs" role="tablist" aria-label="情绪类型"><button type="button" role="tab" data-mode="neg" aria-pressed="true">负向会话</button><button type="button" role="tab" data-mode="pos" aria-pressed="false">正向会话</button></div>
+      </div>
+      <div class="heat-scroll"><div class="ed" id="emoDetail"></div></div>
+    </section>
+  </section>
+
+  <!-- ============ 分析 · 业务与套餐 ============ -->
+  <section class="panel" id="panel-business">
+    <div class="grid">
+      <div class="chart-card">
+        <div class="chart-head between"><h3>会话性质</h3><span class="chart-hint" id="totalNature2"></span></div>
+        <div class="rank" id="rankNature"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head between"><h3>当前套餐分布</h3><span class="chart-hint">套餐为空归入免费版</span></div>
+        <div class="rank" id="rankPlan"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head between"><h3>小金商户分类</h3><span class="chart-hint" id="totalXj"></span></div>
+        <div class="rank" id="rankXj"></div>
+      </div>
+      <div class="chart-card wide">
+        <div class="chart-head between"><h3>业务场景分布 · 有效会话</h3><span class="chart-hint">柱高 = 会话数；柱下依次为占比、Jiri 独立解决率、场景</span></div>
+        <div class="vbars" id="sceneBars"></div>
+      </div>
+      <div class="chart-card wide">
+        <div class="chart-head between"><h3>业务场景 × 套餐 · 有效会话</h3><span class="chart-hint">按行看：这个场景主要是哪类套餐的用户在问</span></div>
+        <div class="table-wrapper flat"><table class="heat-table" id="crossTable"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 报告 · 周报 ============ -->
+  <section class="panel" id="panel-weekly">
+    <nav class="toc" aria-label="周报目录">
+      <a href="#wk1"><span>01</span>目标追踪</a><a href="#wk2"><span>02</span>JIRI（AI）接待现状</a><a href="#wk3"><span>03</span>周度接待概览</a><a href="#wk4"><span>04</span>人工接待现状</a><a href="#wk5"><span>05</span>有效人工场景 × 工作量</a><a href="#wk6"><span>06</span>仅 Jiri 有效场景</a><a href="#wk7"><span>07</span>客服接待评估</a>
+    </nav>
+
+    <div class="report-block" id="wk1">
+      <h3><span>01</span>目标追踪</h3>
+      <div id="wkGoals"></div>
     </div>
 
-    <div class="report-block">
-      <h3>二、JIRI（AI）接待现状</h3>
-      <div class="table-wrapper"><table class="report-table" id="tblJiri"></table></div>
-      <div class="note" id="jiriNote"></div>
+    <div class="report-block" id="wk2">
+      <h3><span>02</span>JIRI（AI）接待现状<small>本周 vs 上周同期</small></h3>
+      <div class="table-wrapper"><table class="report-table even wrap" id="tblJiri"></table></div>
+      <div class="note kou" id="jiriNote"></div>
     </div>
 
-    <div class="report-block">
-      <h3>三、周度接待概览</h3>
-      <div class="table-wrapper"><table class="report-table" id="tblOverview"></table></div>
+    <div class="report-block" id="wk3">
+      <h3><span>03</span>周度接待概览<small>到所选周为止的最近 5 周</small></h3>
+      <div class="table-wrapper"><table class="report-table even" id="tblOverview"></table></div>
     </div>
 
-    <div class="report-block">
-      <h3>四、人工接待现状</h3>
-      <div class="table-wrapper"><table class="report-table" id="tblManual"></table></div>
-      <div class="note" id="manualNote"></div>
+    <div class="report-block" id="wk4">
+      <h3><span>04</span>人工接待现状</h3>
+      <div class="table-wrapper"><table class="report-table even" id="tblManual"></table></div>
+      <div class="report-summary" id="manualSummary"></div>
+      <div class="note kou" id="manualNote"></div>
     </div>
 
-    <div class="report-block">
-      <h3>五、有效人工场景 × 工作量（占比按时长）</h3>
-      <div class="table-wrapper"><table class="report-table" id="tblScenes"></table></div>
-      <div class="note"><span class="dim-note">全表按 <b>接待次数</b>（「转人工会话接待次数」，一场会话转了几次人工就记几次），不用场次。
+    <div class="report-block" id="wk5">
+      <h3><span>05</span>有效人工场景 × 工作量<small>占比按时长 · 全表按接待次数</small></h3>
+      <div class="table-wrapper"><table class="report-table even" id="tblScenes"></table></div>
+      <div class="note kou">全表按 <b>接待次数</b>（「转人工会话接待次数」，一场会话转了几次人工就记几次），不用场次。
       末三列「秒转·可解答 / 占比 / 占比环比」= 有效人工里「转人工方式 = 直接转」且「Jiri 是否能解答 = 能」的接待次数、占本行接待次数的比、以及与上周同期的差。
       <b>注意两种环比的单位不同</b>：时长环比 / 时长同比是分钟的<b>相对变化（%）</b>；占比环比是两个百分比之间的差，单位是<b>百分点</b>（49% 对上周 33% 记 +16.0，不是 +16%）。——
-      即用户没给 Jiri 机会、而 Jiri 本来答得了的那批。与「可避免转人工」（四类可避免原因 ÷ 全部转人工）和逐场读原文的「不愿沟通率」是三个不同的数。</span></div>
+      即用户没给 Jiri 机会、而 Jiri 本来答得了的那批。与「可避免转人工」（四类可避免原因 ÷ 全部转人工）和逐场读原文的「不愿沟通率」是三个不同的数。</div>
     </div>
 
-    <div class="report-block">
-      <h3>六、仅 Jiri 有效场景</h3>
-      <div class="table-wrapper"><table class="report-table" id="tblJiriScenes"></table></div>
+    <div class="report-block" id="wk6">
+      <h3><span>06</span>仅 Jiri 有效场景</h3>
+      <div class="table-wrapper"><table class="report-table even" id="tblJiriScenes"></table></div>
     </div>
 
-    <div class="report-block">
-      <h3>七、客服接待评估（只看仅人工）</h3>
-      <div class="report-hint" id="agentHint" style="margin-bottom:10px"></div>
-      <div class="table-wrapper"><table class="report-table" id="tblAgents"></table></div>
-      <div class="report-hint" id="agentHintCum" style="margin:18px 0 10px"></div>
-      <div class="table-wrapper"><table class="report-table" id="tblAgentsCum"></table></div>
-      <div class="note" id="agentNote"></div>
-      <div class="report-hint" id="asHintWk" style="margin:18px 0 10px"></div>
-      <div class="table-wrapper"><table class="report-table" id="tblAgentSceneWk"></table></div>
-      <div class="report-hint" id="emoHintWk" style="margin:18px 0 10px"></div>
-      <div class="table-wrapper"><table class="report-table" id="tblEmotionWk"></table></div>
-      <div class="report-hint" id="negHintWk" style="margin:18px 0 10px"></div>
-      <div class="table-wrapper"><table class="report-table" id="tblEmotionNegWk"></table></div>
-    </div>
-
-
-  </section>
-
-  <section class="panel" id="panel-service">
-    <div class="grid">
-      <div class="chart-card"><h3>人工接待会话 Jiri 能否解答</h3><canvas id="chartJiri"></canvas></div>
-      <div class="chart-card"><h3>转人工方式</h3><canvas id="chartWay"></canvas></div>
-      <div class="chart-card"><h3>最后接待对象（仅人工 / 仅 Jiri）</h3><canvas id="chartStatus"></canvas></div>
-      <div class="chart-card wide"><h3>转人工原因分布</h3><canvas id="chartReason"></canvas></div>
-    </div>
-    <div class="note" id="noteAvoidable"></div>
-
-    <div class="report-block">
-      <h3>场景 × 客服 · 单次接待时长中位数</h3>
-      <div class="report-hint" id="asHint" style="margin-bottom:10px"></div>
-      <div class="table-wrapper"><table class="report-table" id="tblAgentScene"></table></div>
-      <div class="note" id="asNote"></div>
-    </div>
-
-    <div class="report-block">
-      <h3>用户情绪</h3>
-      <div class="report-hint" id="emoHint" style="margin-bottom:10px"></div>
-      <div class="table-wrapper"><table class="report-table" id="tblEmotion"></table></div>
-      <div class="report-hint" style="margin:18px 0 10px">按业务场景汇总（只算有情绪标注的接待）</div>
-      <div class="table-wrapper"><table class="report-table" id="tblEmotionScene"></table></div>
-      <div class="report-hint" id="negHint" style="margin:18px 0 10px"></div>
-      <div class="table-wrapper"><table class="report-table" id="tblEmotionNeg"></table></div>
-    </div>
-  
-
-    <div class="grid">
-      <div class="chart-card wide">
-        <div class="chart-head">
-          <h3>会话接待分布（按周）</h3>
-          <span class="chart-total" id="totalWeekRecept"></span>
-        </div>
-        <canvas id="chartWeekRecept"></canvas>
+    <div class="report-block" id="wk7">
+      <h3><span>07</span>客服接待评估<small id="agentHint">只看仅人工</small></h3>
+      <div class="sub-block">
+        <div class="sub-head"><i>A</i><b>接待量 · 秒转 · 复问</b><p>每位客服本周接了多少、首接的会话里有多少被「直接转」（秒转）、末接后有多少用户 6～36 小时内又来问同一件事（复问）。第一行是团队合计。</p></div>
+        <div class="table-wrapper flat"><table class="report-table even" id="tblAgents"></table></div>
+        <div class="note kou" id="agentNote"></div>
       </div>
-      <div class="chart-card wide">
-        <div class="chart-head">
-          <h3>会话时长（按周 · 会话性质堆叠 + 单会话平均时长）</h3>
-          <span class="chart-total" id="totalWeekDur"></span>
-        </div>
-        <canvas id="chartWeekDur"></canvas>
+      <div class="sub-block">
+        <div class="sub-head"><i>B</i><b>接待速度 · 场景 × 客服</b><p>格内是该客服在该场景的单次接待时长中位数 / 接待次数；胶囊是与最右列「全员中位线」的差：绿＝更快，黑＝更慢；空白＝本周没接这类。</p></div>
+        <div class="table-wrapper flat"><table class="report-table even" id="tblAgentSceneWk"></table></div>
       </div>
-      <div class="chart-card wide tall">
-        <div class="chart-head">
-          <h3>每日人工接待时长与转人工次数</h3>
-          <span class="chart-total" id="totalDayCost"></span>
-          <span class="chart-hint" id="hintDayCost"></span>
-        </div>
-        <canvas id="chartDayCost"></canvas>
+      <div class="sub-block">
+        <div class="sub-head"><i>C</i><b>用户情绪 · 客服 × 场景</b><p>只列出现负向或正向情绪的组合；负向比、正向比的分母是该组合的接待次数。最后一行是全部合计。</p></div>
+        <div class="table-wrapper flat"><table class="report-table even" id="tblEmotionWk"></table></div>
       </div>
-      <div class="chart-card wide tall">
-        <div class="chart-head">
-          <h3>24 小时服务节奏</h3>
-          <span class="chart-total" id="totalHourlyService"></span>
-          <div class="hourly-day-tabs" id="hourlyDayTabs" aria-label="选择统计日期"></div>
-        </div>
-        <canvas id="chartHourlyService"></canvas>
-        <div class="note dim-note" id="hourlyServiceNote"></div>
-      </div>
-      <div class="chart-card wide service-busy-card">
-        <div class="chart-head">
-          <div>
-            <h3>人工服务忙闲分布</h3>
-            <span class="chart-total" id="manualBusyHint"></span>
-          </div>
-          <div class="manual-busy-modes" id="manualBusyModes" aria-label="选择人工服务统计方式">
-            <button type="button" data-mode="active" aria-pressed="true">同时服务人数</button>
-            <button type="button" data-mode="incoming" aria-pressed="false">新转人工人数</button>
-          </div>
-        </div>
-        <div class="manual-busy-layout">
-          <div class="manual-busy-grid" id="manualBusyGrid" aria-label="最近七天人工服务忙闲分布"></div>
-        </div>
-        <div class="manual-busy-footer">
-          <p class="manual-busy-summary" id="manualBusySummary" aria-live="polite"></p>
-          <div class="manual-busy-legend"><span>少</span><i class="busy-level-1"></i><i class="busy-level-2"></i><i class="busy-level-3"></i><i class="busy-level-4"></i><i class="busy-level-5"></i><span>多</span></div>
-        </div>
+      <div class="sub-block">
+        <div class="sub-head"><i>D</i><b>情绪会话明细</b><p id="negHintWk">C 表对应的具体会话，负向在前、按时间倒序，点开可看原文。</p></div>
+        <div class="table-wrapper flat"><table class="report-table even" id="tblEmotionNegWk"></table></div>
       </div>
     </div>
   </section>
 
+  <!-- ============ 报告 · 业务闭环 ============ -->
   <section class="panel" id="panel-loop">
     <div class="grid">
-      <div class="chart-card wide tall">
-        <div class="chart-head">
-          <h3>业务闭环 · 每周趋势</h3>
-          <span class="chart-total" id="totalLoopWeek"></span>
-          <span class="chart-hint" id="hintLoopWeek"></span>
+      <div class="chart-card wide">
+        <div class="loop-hero">
+          <div class="loop-kpi" id="loopKpi"></div>
+          <div class="loop-legend">
+            <span><i class="sw sw-yes"></i>是（已收到数据）</span>
+            <span><i class="sw sw-no"></i>否（窗口满仍未收到）</span>
+            <span><i class="sw sw-pending"></i>待定（窗口未满、尚未收到）</span>
+            <small id="hintLoopWeek"></small>
+          </div>
         </div>
-        <canvas id="chartLoopWeek"></canvas>
-        <div class="note" id="loopWeekNote"></div>
+        <div class="loop-bars" id="loopWeeks"></div>
       </div>
-      <div class="chart-card wide tall">
-        <div class="chart-head">
-          <h3>业务闭环 · 按业务分型</h3>
-          <span class="chart-total" id="totalLoopType"></span>
-          <span class="chart-hint" id="hintLoopType"></span>
-        </div>
-        <canvas id="chartLoopType"></canvas>
-        <div class="note" id="loopTypeNote"></div>
+      <div class="chart-card wide">
+        <div class="chart-head between"><h3 id="loopTypeTitle">按业务分型</h3><span class="chart-hint" id="hintLoopType"></span></div>
+        <div class="loop-types" id="loopTypes"></div>
       </div>
     </div>
   </section>
 
-  <section class="panel" id="panel-trend">
-    <div class="grid">
-      <div class="chart-card wide tall">
-        <div class="chart-head">
-          <h3>会话接待分布</h3>
-          <select id="granRecept" class="chart-grain" title="聚合粒度">
-            <option value="day">按天</option>
-            <option value="week">按周</option>
-            <option value="month">按月</option>
-            <option value="quarter">按季度</option>
-            <option value="year">按年</option>
-          </select>
-          <span class="chart-total" id="totalDayRecept"></span>
-        </div>
-        <canvas id="chartDayRecept"></canvas>
-      </div>
-      <div class="chart-card wide tall">
-        <div class="chart-head">
-          <h3>复问率</h3>
-          <select id="granRepeat" class="chart-grain" title="聚合粒度">
-            <option value="day">按天</option>
-            <option value="week">按周</option>
-            <option value="month">按月</option>
-            <option value="quarter">按季度</option>
-            <option value="year">按年</option>
-          </select>
-          <span class="chart-total" id="totalRepeat"></span>
-          <span class="chart-hint">复问 = 同一用户隔 6～36 小时再进线、且问的是同一件事；复问率 = 复问会话数 ÷ 会话数</span>
-        </div>
-        <canvas id="chartRepeat"></canvas>
-      </div>
-      <div class="chart-card wide tall">
-        <div class="chart-head">
-          <h3>人工有效·秒转·jiri 可解答</h3>
-          <select id="granSecond" class="chart-grain" title="聚合粒度">
-            <option value="day">按天</option>
-            <option value="week">按周</option>
-            <option value="month">按月</option>
-            <option value="quarter">按季度</option>
-            <option value="year">按年</option>
-          </select>
-          <span class="chart-total" id="totalSecond"></span>
-          <span class="chart-hint">用户直接要人工、而 Jiri 本来答得了的接待次数；分母 = 有效人工接待次数</span>
-        </div>
-        <canvas id="chartSecond"></canvas>
-      </div>
-      <div class="chart-card wide tall">
-        <div class="chart-head">
-          <h3>接待人数与企业数</h3>
-          <select id="granUniq" class="chart-grain" title="聚合粒度">
-            <option value="day">按天</option>
-            <option value="week">按周</option>
-            <option value="month">按月</option>
-            <option value="quarter">按季度</option>
-            <option value="year">按年</option>
-          </select>
-          <span class="chart-total" id="totalReceptUniq"></span>
-          <span class="chart-hint" id="hintReceptUniq"></span>
-        </div>
-        <canvas id="chartReceptUniq"></canvas>
-      </div>
-      <div class="chart-card wide">
-        <div class="chart-head"><h3>每周会话来源</h3><span class="chart-total" id="totalWeekChannel"></span></div>
-        <canvas id="chartWeekChannel"></canvas>
-      </div>
-      <div class="chart-card wide">
-        <div class="chart-head"><h3>会话分布（渠道 × 会话性质）</h3><span class="chart-total" id="totalChannelNature"></span></div>
-        <canvas id="chartChannelNature"></canvas>
-      </div>
-      <div class="chart-card">
-        <div class="chart-head"><h3>设备 × 会话性质</h3><span class="chart-total" id="totalDeviceNature"></span></div>
-        <canvas id="chartDeviceNature"></canvas>
-      </div>
-      <div class="chart-card"><h3>入口媒介 Top 12</h3><canvas id="chartMedium"></canvas></div>
-    </div>
-    <div class="report-block">
-      <h3>复问明细</h3>
-      <div class="table-wrapper"><table class="report-table" id="tblRepeats"></table></div>
-      <div class="note" id="repeatsNote"></div>
-    </div>
-  </section>
-
-  <section class="panel" id="panel-scene">
-    <div class="grid">
-      <div class="chart-card">
-        <div class="chart-head"><h3>会话性质</h3><span class="chart-total" id="totalNature2"></span></div>
-        <canvas id="chartNature2"></canvas>
-      </div>
-      <div class="chart-card"><h3>当前套餐分布</h3><canvas id="chartPlan"></canvas></div>
-      <div class="chart-card">
-        <div class="chart-head"><h3>小金商户分类</h3><span class="chart-total" id="totalXj"></span></div>
-        <canvas id="chartXj"></canvas>
-      </div>
-      <div class="chart-card wide"><h3>业务场景分布（有效会话）</h3><canvas id="chartScene"></canvas></div>
-      <div class="chart-card wide">
-        <h3>业务场景 × 套餐（有效会话）</h3>
-        <div class="table-wrapper compact"><table id="crossTable"></table></div>
-      </div>
-    </div>
-  </section>
-
+  <footer class="footer"><p>Powered by WDL</p></footer>
 </main>
-
-<footer class="footer"><p>Powered by WDL</p></footer>
-<script defer src="${chartUrl}"></script>
+</div>
 <script defer src="${jsUrl}"></script>
 </body>
 </html>`,

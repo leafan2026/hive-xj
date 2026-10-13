@@ -23,13 +23,15 @@ The skills live in the repository by design. Keep all future repository-specific
 | Path | Responsibility |
 |---|---|
 | `workers/hive/src/index.js` | Worker routes, authentication, 金数据 fetch, aggregation, KV cache, generated page shell |
-| `workers/hive/public/hive.js` | Dashboard state, API calls, Chart.js plugins and chart configuration |
+| `workers/hive/public/hive.js` | Dashboard state, API calls, DOM/SVG chart kit (`domChart()`, `bindDomTip()`) and page renderers |
 | `workers/hive/public/hive.css` | Dashboard layout, visual tokens, chart-card and tooltip styling |
 | `workers/hive/DESIGN.md` | Frontend style spec: design tokens, chart palettes, axis/label rules, semantic colours |
-| `workers/hive/DESIGN-portable.md` | Project-agnostic version of the style spec with inlined CSS and a tested `comboChart()` kit, for reuse in other dashboards |
-| `workers/hive/public/chart.min.js` | Pinned Chart.js asset; do not edit for dashboard styling |
+| `workers/hive/DESIGN-portable.md` | Project-agnostic version of the **v1 (pre-2026-10)** style spec with inlined CSS and a tested `comboChart()` kit, for reuse in other dashboards; not yet updated to the v2 redesign |
+| `workers/hive/public/chart.min.js` | Orphaned since the 2026-10-13 redesign (no page loads it); safe to `git rm` |
+| `workers/hive/public/urbanist-latin.woff2` | Self-hosted Urbanist (Latin subset, SIL OFL) for numbers and Latin text; injected via `env.ASSETS.url()` in `renderPage()` |
 | `workers/hive/wrangler.jsonc` | Worker name `hive`, KV `CACHE`, static assets, 30-minute cron |
 | `workers/hive/scripts/preview.mjs` | Local preview server; stubs the KV binding with synthetic data, no credentials |
+| `workers/hive/scripts/preview-data.mjs` | Deterministic synthetic rows (~12k) for the preview so weekly, loop and agent tables have content |
 | `workers/hive/README.md` | Business/data definitions and operational background |
 | `workers/hive/.key` | Local raw WDL deployment token; ignored by Git, never read or printed in conversation |
 

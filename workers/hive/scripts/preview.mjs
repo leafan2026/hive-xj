@@ -2,12 +2,14 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import worker from "../src/index.js";
+import { synthRows } from "./preview-data.mjs";
 
 const port = Number(process.env.PORT || 4173);
 const origin = `http://127.0.0.1:${port}`;
 const day = (offset) => new Date(Date.now() + offset * 86400000).toISOString().slice(0, 10);
 
 // 仅用于本地界面验收的合成数据；不包含任何生产会话或凭证。
+// 手写的几条覆盖边界情况，synthRows() 补足约 1.2 万行，让周报 / 闭环 / 客服表都有内容。
 const rows = [
   { t: `${day(0)}T09:00:00Z`, st: "仅 Jiri", jiri: "能", ch: "gd_next", dev: "pc", med: "网页", plan: "免费版", cat: "无关", nat: "有效", scene: "操作引导/功能咨询", dur: 180, turns: 2, way: "", reason: "", uid: "u1", baid: "b1" },
   { t: `${day(-1)}T10:00:00Z`, st: "仅人工", jiri: "不能", ch: "gd_app", dev: "mobile", med: "应用", plan: "企业高级版", cat: "无关", nat: "有效", scene: "故障/技术", dur: 480, turns: 3, way: "直接转", reason: "可自助", uid: "u2", baid: "b2" },
@@ -29,13 +31,10 @@ const rows = [
   { t: `${day(-2)}T15:10:00Z`, st: "仅人工", jiri: "不能", ch: "gd_app", dev: "pc", med: "网页", plan: "企业高级版", cat: "无关", nat: "无效", scene: "账务", dur: 240, turns: 1, way: "", reason: "", uid: "u14", baid: "b14", csFirst: "乙", csLast: "乙", csAll: ["乙"], emo: "正向" },
   { t: `${day(-3)}T16:10:00Z`, st: "仅人工", jiri: "能", ch: "gd_next", dev: "pc", med: "网页", plan: "免费版", cat: "无关", nat: "有效", scene: "账务", dur: 420, turns: 1, way: "直接转", reason: "可自助", uid: "u15", baid: "b15", csFirst: "甲", csLast: "甲", csAll: ["甲"], emo: "" },
 ];
-
-const fullStats = {
-  channel: { gd_next: 3, gd_app: 1 }, device: { pc: 2, mobile: 2 },
-  status: { "仅 Jiri": 3, "仅人工": 1 }, nature: { "有效": 3, "填表人": 1 },
-  scene: { "操作引导/功能咨询": 3, "故障/技术": 1 }, plan: { "免费版": 3, "企业高级版": 1 },
-  daily: Object.fromEntries(rows.map((row) => [row.t.slice(0, 10), 1])),
-};
+rows.push(...synthRows());
+// 手写行只写了关心的字段；补齐成 trim() 的完整形状，否则周报里读 csAll.length 之类会直接抛错
+const ROW_DEFAULTS = { url: "", uid: "", baid: "", ch: "未知", dev: "未知", med: "未知", st: "未标记", plan: "免费版", dur: null, turns: null, nat: "未标记", scene: "未分类", cat: "无关", jiri: "未标记", way: "", reason: "", biz: "", onTarget: "", gotData: "", jiriBuilt: "", loop: "", rep: false, repFrom: "", uturns: null, atJiri: false, csFirst: "", csLast: "", csAll: [], emo: "" };
+rows.forEach((row, i) => { rows[i] = { ...ROW_DEFAULTS, ...row }; });
 
 // 固定的数据版本：筛选结果记忆缓存的键里带 updatedAt，每次都换新值就永远命不中
 const updatedAt = new Date().toISOString();
@@ -46,10 +45,8 @@ const scratch = new Map();
 
 const cache = {
   async get(key) {
-    if (key === "hive:entries:v5") return rows;
-    if (key === "hive:stats:v9") return fullStats;
-    if (key === "hive:weekly:v6") return [];
-    if (key === "hive:loop:v1") return { weeks: [], types: [], overall: { applicable: 0, yes: 0, no: 0, pending: 0, rate: null } };
+    // 只预置明细和 meta；stats / weekly / loop 缺失时 worker 会从明细现算（与线上「派生」同一条路径）
+    if (key === "hive:entries:v6") return rows;
     if (key === "hive:meta:v1") return { status: "ok", updatedAt, total: rows.length };
     const hit = scratch.get(key);
     return hit === undefined ? null : hit;
@@ -69,7 +66,7 @@ const env = {
   ASSETS: { url: async (path) => `${origin}/assets${path}` },
 };
 
-const assetTypes = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8" };
+const assetTypes = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".woff2": "font/woff2" };
 
 function bodyOf(req) {
   return new Promise((resolve, reject) => {
@@ -85,7 +82,7 @@ createServer(async (req, res) => {
     const incoming = new URL(req.url || "/", origin);
     if (incoming.pathname.startsWith("/assets/")) {
       const name = incoming.pathname.slice("/assets/".length);
-      if (!new Set(["hive.css", "hive.js", "chart.min.js"]).has(name)) {
+      if (!new Set(["hive.css", "hive.js", "chart.min.js", "urbanist-latin.woff2"]).has(name)) {
         res.writeHead(404).end("Not Found");
         return;
       }

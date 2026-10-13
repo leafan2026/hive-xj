@@ -2,21 +2,19 @@
 // worker 挂在 /hive/ 下，所有请求必须带前缀
 const BASE = "/hive";
 
-// Figma Widget 色板：紫色作为系统主色，粉 / 琥珀 / 青绿承担数据分组。
-const PALETTE = [
-  "#806dfa", "#00c8a9", "#ffb65c", "#ff6689", "#00d9d4",
-  "#5e8ef2", "#b594ff", "#ff8dac", "#77ddd3", "#e5c77f",
-  "#9289e9", "#70bdf7", "#d3b1ef", "#ffbe9d", "#a9afc7",
-];
+// 2026-10 改版：黑白灰 + 品牌绿。绿色只给「达标 / AI 接住 / 上升 / 可避免」这类要被看见的东西，
+// 其余一律用灰阶区分层级。见 DESIGN.md「色彩」。
+const INK = "#0B0B0C";
+const GREEN = "#75FB90";
+const GRAYS = ["#0B0B0C", "#55545A", "#8D8C93", "#AAA9AB", "#C9C8CD", "#DBDADD", "#E9E8EC"];
 
-const state = { stats: null, resolvedFrom: "", resolvedTo: "", facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null, loop: null, loopLoaded: false, hourlyDay: null, manualBusyMode: "active" };
-const charts = {};
+const state = { stats: null, resolvedFrom: "", resolvedTo: "", facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null, loop: null, loopLoaded: false, hourlyDay: null, manualBusyMode: "weekday", tab: "overview" };
 
 // 筛选项 → 接口参数名；选项值来自首次全量结果，筛选后不再改动
 const DIM_SELECTS = {
-  fDevice: { dim: "device", placeholder: "全部设备" },
-  fScene: { dim: "scene", placeholder: "全部业务场景" },
-  fNature: { dim: "nature", placeholder: "全部会话性质" },
+  fDevice: { dim: "device", placeholder: "全部" },
+  fScene: { dim: "scene", placeholder: "全部" },
+  fNature: { dim: "nature", placeholder: "全部" },
 };
 
 // ============== 工具 ==============
@@ -31,7 +29,7 @@ function escHtml(value) {
 
 // 首屏先占位，避免大片空白
 function renderSkeleton() {
-  const labels = ["会话总数", "AI 独立率", "可避免转人工", "人工接待总时长", "接待轮次总计"];
+  const labels = ["会话总数", "AI 独立率", "可避免转人工", "人工接待总时长", "接待轮次"];
   $("cards").innerHTML = labels.map((l) =>
     '<div class="card skeleton"><div class="card-label">' + l + '</div>' +
     '<div class="card-value">—</div><div class="card-sub">加载中…</div></div>'
@@ -61,6 +59,10 @@ function sortedPairs(obj, limit) {
   return limit ? pairs.slice(0, limit) : pairs;
 }
 
+function pct(n, d, digits) {
+  return d ? ((n / d) * 100).toFixed(digits ?? 1) : "0";
+}
+
 // 统一走这里，401 和非 JSON 响应都给出可读的提示
 async function api(path, init) {
   const res = await fetch(BASE + path, init);
@@ -82,994 +84,263 @@ async function api(path, init) {
 
 // ============== 图表 ==============
 
-function destroyChart(key) {
-  if (charts[key]) { charts[key].destroy(); charts[key] = null; }
-}
-
-// 底色偏亮时改用深色字，浅色柱上的白字会看不清
-function readableInk(color) {
-  const m = String(color).match(/^#([0-9a-f]{6})$/i);
-  if (!m) return "#fff";
-  const n = parseInt(m[1], 16);
-  const lum = (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
-  return lum > 0.62 ? "#2a3050" : "#fff";
-}
-
 function fmtNum(v) {
   const n = Number(v);
   if (!isFinite(n)) return String(v);
-  if (Number.isInteger(n)) return n >= 10000 ? (n / 1000).toFixed(1) + "K" : String(n);
+  if (Number.isInteger(n)) return n.toLocaleString("en-US");   // 原型：千分位，不缩写成 K
   return n.toFixed(n < 10 ? 2 : 1);
 }
 
-// 分类固定配色，跨图表保持一致
+// 分类固定配色，跨图表保持一致。只用灰阶：堆叠段之间有 2px 白缝，靠明度就分得开。
 const COLOR_NATURE = {
-  "有效": "#806dfa", "填表人": "#00c8a9", "无效": "#77ddd3",
-  "转接未应答": "#ff8dac", "电话引导·发链接图片": "#5e8ef2",
-  "内部测试": "#f3d07a", "未标记": "#d3d8e6",
+  "有效": "#0B0B0C", "填表人": "#8D8C93", "无效": "#C9C8CD",
+  "转接未应答": "#AAA9AB", "电话引导·发链接图片": "#55545A",
+  "内部测试": "#DBDADD", "未标记": "#E9E8EC",
 };
-const COLOR_CHANNEL = {
-  gd_next: "#ffb65c", gd4: "#d2aa79", gd_app: "#b594ff",
-  wechat_miniapp: "#00c8a9", wechat_official: "#ff6689",
-  trade_weixin_app: "#5e8ef2", "未知": "#bcc2d1",
-};
-const COLOR_DEVICE = { pc: "#5e8ef2", mobile: "#00c8a9", "未知": "#d3d8e6" };
+const COLOR_DEVICE = { pc: "#0B0B0C", mobile: "#AAA9AB", "未知": "#DBDADD" };
 
 function colorFor(map, key, i) {
-  return map[key] || PALETTE[i % PALETTE.length];
+  return map[key] || GRAYS[(i + 2) % GRAYS.length];
 }
 
-// hover 时压暗同一支色，保留「鼠标在这根柱子上」的反馈
-function darken(hex, ratio = .82) {
-  const n = parseInt(hex.slice(1), 16);
-  return "#" + [(n >> 16) & 255, (n >> 8) & 255, n & 255]
-    .map((v) => Math.max(0, Math.round(v * ratio)).toString(16).padStart(2, "0"))
-    .join("");
-}
 
-// 仅柱线组合图使用：与普通柱图共享同一组三主题色。
-const COMBO_BAR_TONES = ["#8676FF", "#FF708B", "#383874"];
-const COMBO_COOL_LINES = ["#5554ed", "#7169f5", "#8d5be8"];
-const COMBO_WARM_LINES = ["#e05091", "#c950c8"];
+// ============== 悬停：整列浅灰底 + 深色提示卡 ==============
 
-function comboBarTone(index, total) {
-  if (total === 1) return "#8676FF";
-  return COMBO_BAR_TONES[index % COMBO_BAR_TONES.length];
-}
-
-function comboBarFill(index, total) {
-  return comboBarTone(index, total);
-}
-
-function comboLineTone(source, index) {
-  const hex = String(source || "").toLowerCase();
-  const warm = hex === "#ffb65c" || hex === "#ff6689" || hex === "#ff8dac";
-  return warm
-    ? COMBO_WARM_LINES[index % COMBO_WARM_LINES.length]
-    : COMBO_COOL_LINES[index % COMBO_COOL_LINES.length];
-}
-
-// 折线用的横向渐变（蓝 → 紫 → 粉），面积用纵向渐隐
-const LINE_GRADIENT = ["#00d9d4", "#806dfa", "#b594ff", "#ff6689"];
-
-function strokeGradient(chart, colors) {
-  const { ctx, chartArea } = chart;
-  if (!chartArea) return colors[0];
-  const g = ctx.createLinearGradient(chartArea.left, 0, chartArea.right, 0);
-  colors.forEach((c, i) => g.addColorStop(i / (colors.length - 1), c));
-  return g;
-}
-
-function areaGradient(chart, hex) {
-  const { ctx, chartArea } = chart;
-  if (!chartArea) return "rgba(0,0,0,0)";
-  const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-  g.addColorStop(0, hex + "30");
-  g.addColorStop(1, hex + "00");
-  return g;
-}
-
-// Chart.js 万一没加载成功，卡片和文字结论照常可用
-let chartsInited = false;
-function chartReady() {
-  if (typeof Chart === "undefined") return false;
-  if (!chartsInited) {
-    Chart.register(valueLabels, centerText, hoverGuide, ribbonArcs, multiRingArcs, progressRing, refLine);
-    Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
-    Chart.defaults.font.size = 11.5;
-    Chart.defaults.color = "#8f8ca9";
-    Chart.defaults.borderColor = "#eeeaf6";
-    Chart.defaults.plugins.tooltip.backgroundColor = "#393878";
-    Chart.defaults.plugins.tooltip.padding = 11;
-    Chart.defaults.plugins.tooltip.cornerRadius = 10;
-    Chart.defaults.plugins.tooltip.displayColors = false;
-    Chart.defaults.plugins.tooltip.titleFont = { size: 11.5, weight: "500" };
-    Chart.defaults.plugins.tooltip.titleColor = "#b9bdd0";
-    Chart.defaults.plugins.tooltip.bodyFont = { size: 14, weight: "700" };
-    Chart.defaults.plugins.tooltip.caretSize = 6;
-    chartsInited = true;
-  }
-  return true;
-}
-
-// 无边框、无纵轴的坐标系（参考里的柱状图都不画纵轴和竖网格）
-// 镜像轴的上下界要自己定，Chart.js 不会再帮忙取整 —— 不处理就会出现 194.4 这种刻度
-function cleanScales(opts) {
-  const o = opts || {};
-  return {
-    x: {
-      stacked: !!o.stacked,
-      // v4 起轴线归 border 管，grid.drawBorder 已被移除，别再往 grid 里塞
-      grid: { display: false },
-      border: { display: false },
-      ticks: { maxRotation: o.rotate ?? 0, autoSkip: o.autoSkip !== false, maxTicksLimit: o.maxTicks, padding: 6 },
-    },
-    y: {
-      stacked: !!o.stacked,
-      beginAtZero: true,
-      grid: { color: "#f2f4fa", drawTicks: false },
-      border: { display: false },
-      ticks: { padding: 10, maxTicksLimit: 6 },
-    },
-  };
-}
-
-// ============== 环形图（一律同心进度环） ==============
-
-function drawDoughnut(key, canvasId, pairs, opts) {
-  if (!chartReady()) return;
-  const o = opts || {};
-  destroyChart(key);
-  const ctx = $(canvasId);
-  if (!ctx) return;
-  // 占比不足 1% 的分类会被圆头压成一条线，合并成「其他」
-  const rawSum = pairs.reduce((a, p) => a + p[1], 0);
-  const tiny = pairs.filter((p) => rawSum && p[1] / rawSum < 0.01);
-  let shown = pairs;
-  if (tiny.length > 1) {
-    const rest = tiny.reduce((a, p) => a + p[1], 0);
-    shown = pairs.filter((p) => !tiny.includes(p)).concat([["其他（各 <1%）", rest]]);
-  }
-  const colors = shown.map((p, i) => (o.colorMap ? colorFor(o.colorMap, p[0], i) : PALETTE[i % PALETTE.length]));
-  const sum = shown.reduce((a, p) => a + p[1], 0);
-  const top = shown[0];
-  // 只要不止一类就走独立轨道。不按类别数切换画法 —— 同一行里一张单环一张同心环，
-  // 看着就是两套东西。类别多时靠 cutout 保证中心指标不被最里面那圈压住。
-  const isMultiRing = shown.length >= 2;
-  // 多环必须渲染在正方形画布内；否则 CSS 压缩高度后会把数学圆拉成椭圆。
-  ctx.classList.toggle("multi-ring-chart", isMultiRing);
-  const datasets = isMultiRing
-    ? shown.map((p, i) => ({
-        // 每一圈都是该类别占全部的准确比例，灰色部分是同一总量的剩余部分。
-        // 因此三类以上不再被挤在一条彩虹单环里，也不会改变各类别数值。
-        label: p[0],
-        data: [p[1], Math.max(0, sum - p[1])],
-        backgroundColor: [colors[i], "#edf0f8"],
-        borderWidth: 0,
-        borderRadius: 0,
-        spacing: 0,
-        hoverOffset: 0,
-      }))
-    : [{
-        data: shown.map((p) => p[1]),
-        backgroundColor: colors,
-        borderWidth: 0,
-        borderRadius: 0,
-        spacing: 0,
-        hoverOffset: 0,
-        hoverBorderWidth: 0,
-      }];
-
-  charts[key] = new Chart(ctx, {
-    type: "doughnut",
-    data: {
-      labels: isMultiRing ? ["类别占比", "剩余比例"] : shown.map((p) => p[0]),
-      datasets,
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: isMultiRing,
-      aspectRatio: isMultiRing ? 1 : undefined,
-      // 多环由 multiRingArcs 自绘 270° 的「轨道 + 进度弧」。
-      // Chart.js 仅保留透明命中区；不能直接设 circumference，否则每个 dataset
-      // 会把 270° 再按数据切分，变成一组短弧。
-      cutout: isMultiRing ? "42%" : "71%",
-      // 环始终占完整方形区域；左上数据块仅放在 270° 缺口内，不能挤压环本身。
-      layout: { padding: { top: 6, bottom: 6, left: 6, right: 6 } },
-      // 同心环别做旋转入场：动画中途每圈都只画出一小段，看着像一把散开的短弧，
-      // 切页签时又会重放一次，很容易被当成渲染坏了。
-      animation: isMultiRing ? { animateRotate: false } : undefined,
-      plugins: {
-        valueLabels: { enabled: false },
-        ribbonArcs: { enabled: !isMultiRing },
-        multiRingArcs: {
-          enabled: isMultiRing,
-          items: shown.map((p, i) => ({ label: p[0], value: p[1], color: colors[i] })),
-          total: sum,
-        },
-        centerText: isMultiRing ? { enabled: false } : {
-          value: top && sum ? ((top[1] / sum) * 100).toFixed(1) + "%" : "—",
-          label: top ? top[0] : "",
-        },
-        legend: {
-          display: !isMultiRing,
-          position: "bottom",
-          labels: {
-            usePointStyle: true,
-            pointStyle: "circle",
-            boxWidth: 8,
-            boxHeight: 8,
-            padding: 12,
-            font: { size: 12 },
-            generateLabels(chart) {
-              return shown.map((p, i) => ({
-                text: p[0] + "  " + fmtNum(p[1]),
-                fillStyle: colors[i],
-                strokeStyle: colors[i],
-                lineWidth: 0,
-                pointStyle: "circle",
-                hidden: isMultiRing ? !chart.isDatasetVisible(i) : !chart.getDataVisibility(i),
-                datasetIndex: isMultiRing ? i : undefined,
-                index: isMultiRing ? undefined : i,
-              }));
-            },
-          },
-          onClick(e, item, legend) {
-            const chart = legend.chart;
-            if (isMultiRing) {
-              const visible = chart.isDatasetVisible(item.datasetIndex);
-              chart.setDatasetVisibility(item.datasetIndex, !visible);
-            } else chart.toggleDataVisibility(item.index);
-            chart.update();
-          },
-        },
-        tooltip: {
-          enabled: !isMultiRing,
-          displayColors: true,
-          callbacks: {
-            title: (items) => isMultiRing ? shown[items[0].datasetIndex]?.[0] : items[0].label,
-            label(c) {
-              const value = isMultiRing ? shown[c.datasetIndex]?.[1] : c.parsed;
-              return value + "（" + (sum ? ((value / sum) * 100).toFixed(1) : 0) + "%）";
-            },
-          },
-        },
-      },
-    },
-  });
-}
-
-// 环形图的层叠效果：Chart.js 的 borderRadius 会把圆头内缩进扇区角度里，必然留缝。
-// 这里让它自带的弧透明，改用「圆头描边弧」自己画 —— 圆头溢出扇区边界压到相邻弧上，
-// 配合柔和阴影就是参考稿里一段搭一段的观感。
-const ribbonArcs = {
-  id: "ribbonArcs",
-  // 让 Chart.js 自己画的扇区隐形（几何仍在，tooltip/图例的命中判定照常）
-  beforeDatasetDraw(chart) {
-    if (!chart.options.plugins?.ribbonArcs?.enabled) return;
-    chart.ctx.save();
-    chart.ctx.globalAlpha = 0;
-  },
-  afterDatasetDraw(chart) {
-    if (!chart.options.plugins?.ribbonArcs?.enabled) return;
-    chart.ctx.restore();
-  },
-
-  afterDatasetsDraw(chart) {
-    if (!chart.options.plugins?.ribbonArcs?.enabled) return;
-    const meta = chart.getDatasetMeta(0);
-    const ds = chart.data.datasets[0];
-    const first = meta.data[0];
-    if (!first) return;
-
-    const { ctx } = chart;
-    const cx = first.x;
-    const cy = first.y;
-    const width = first.outerRadius - first.innerRadius;
-    const radius = (first.outerRadius + first.innerRadius) / 2;
-    const active = (chart.tooltip?.getActiveElements?.() || []).map((a) => a.index);
-
-    ctx.save();
-    ctx.lineCap = "round";
-    ctx.shadowColor = "rgba(57, 56, 120, .17)";
-    ctx.shadowBlur = 12;
-    ctx.shadowOffsetY = 4;
-
-    // 圆头会在两端各多探出「半个线宽」那么长的弧。所以线宽要先按本段可用跨度定下来，
-    // 端点再按这个线宽内收，整颗药丸才刚好落在自己的扇区里。
-    // （旧写法内收的是半个圆头，相邻两段必定重叠半个环厚 —— 段数一多就糊成一堆叠起来的胶囊。）
-    const gap = 0.028;                    // 段间留 1.6° 左右的缝，边界看得清
-    const minWidth = width * 0.34;        // 再小的占比也保留可见的粗度
-
-    for (let i = 0; i < meta.data.length; i++) {
-      if (!chart.getDataVisibility(i)) continue;
-      const arc = meta.data[i];
-      if (!arc) continue;
-      const span = arc.endAngle - arc.startAngle;
-      if (span <= 0) continue;
-      const hot = active.includes(i);
-      // 一颗两端圆头、长度为 0 的药丸本身就占 lw/radius 的弧，跨度不够就把它收细
-      const lw = Math.max(minWidth, Math.min(width, Math.max(0, span - gap) * radius));
-      const cap = (lw / 2) / radius;
-      const from = arc.startAngle + cap + gap / 2;
-      const to = arc.endAngle - cap - gap / 2;
-      const mid = (arc.startAngle + arc.endAngle) / 2;
-      ctx.lineWidth = lw;
-      ctx.strokeStyle = Array.isArray(ds.backgroundColor) ? ds.backgroundColor[i] : ds.backgroundColor;
-      ctx.beginPath();
-      // 跨度太小时退化成一个圆点：留 1e-3 的长度，否则 canvas 不画零长度子路径
-      ctx.arc(cx, cy, radius, Math.min(from, mid), Math.max(to, mid + 1e-3));
-      ctx.stroke();
-      // hover 只加外发光，不再加粗 —— 加粗会让药丸探出自己的扇区
-      if (hot) {
-        ctx.save();
-        ctx.shadowBlur = 18;
-        ctx.shadowOffsetY = 0;
-        ctx.shadowColor = ctx.strokeStyle;
-        ctx.stroke();
-        ctx.restore();
-      }
-    }
-    ctx.restore();
-  },
-};
-
-// 多类别环图：用同心「270° 轨道 + 进度弧」表达各类别占比。
-// 图例固定画在左上，进度环放在右下；Chart.js 保留透明的扇区命中区，
-// 因此 tooltip 仍可逐项交互。
-const multiRingArcs = {
-  id: "multiRingArcs",
-  beforeDatasetDraw(chart) {
-    if (!chart.options.plugins?.multiRingArcs?.enabled) return;
-    chart.ctx.save();
-    chart.ctx.globalAlpha = 0;
-  },
-  afterDatasetDraw(chart) {
-    if (!chart.options.plugins?.multiRingArcs?.enabled) return;
-    chart.ctx.restore();
-  },
-  afterDatasetsDraw(chart) {
-    const o = chart.options.plugins?.multiRingArcs;
-    if (!o?.enabled) return;
-    const { ctx } = chart;
-    const items = o.items || [];
-    const total = Number(o.total) || 0;
-    const start = -Math.PI / 2; // 从正上方起笔，270° 缺口正好落在左上
-    const sweep = Math.PI * 1.5;
-    // 以画布里最大的正方形为基准：整个圆环区域不被图例挤压。
-    // 圆心略向右下移动，让起点竖线正好成为左上数据块的右对齐线。
-    const side = Math.min(chart.width, chart.height);
-    const squareLeft = (chart.width - side) / 2;
-    const squareTop = (chart.height - side) / 2;
-    const cx = squareLeft + side * .52;
-    const cy = squareTop + side * .52;
-    const count = items.length;
-    // 外圈连同圆头和阴影都留在安全边距内，不能被画布底边裁断。
-    const outerRadius = side * .44;
-    // 环宽、文字高度与环距都是全站固定规格，不因卡片里的类别数而变化。
-    // 环数只会向中心延伸，不能让某张卡显得更粗、字号更大或环距更松。
-    const textHeight = 16;
-    const ringWidth = 16;
-    const ringGap = 10;
-    const ringStep = ringWidth + ringGap;
-    // 每个对象只有一个起笔锚点：文字、颜色标记和圆环都从这里读取位置。
-    // 禁止再按“第几行文字”另行计算 y，避免环数变化后出现错位。
-    const rings = items.map((item, i) => ({
-      radius: outerRadius - ringStep * i,
-      startX: cx - ringWidth / 2,
-      startY: cy - (outerRadius - ringStep * i),
-    }));
-    // 起笔是圆头：可见边界比几何起点 cx 向左多出半个线宽。
-    // 文本组与圆头之间留一个字高；每条文本的纵向位置另按其对应环的起笔高度计算。
-    const ringStartX = rings[0]?.startX || cx - ringWidth / 2;
-    const legendRight = ringStartX - textHeight;
-
-    ctx.save();
-    ctx.lineCap = "round";
-
-    // 左上：数据块的右边界（百分比）严格对齐最外环圆头的可见起点。
-    // 这里不使用 Chart.js 的底部 legend，让文本只占 270° 缺口，不缩小圆环。
-    items.forEach((item, i) => {
-      // 文字与对应进度环共用同一个 startY。
-      const y = rings[i].startY;
-      const percent = total ? (Number(item.value) / total) * 100 : 0;
-      const label = String(item.label) + "： ";
-      const value = percent.toFixed(1) + "%";
-      ctx.font = '500 ' + textHeight + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-      const labelWidth = ctx.measureText(label).width;
-      ctx.font = '700 ' + textHeight + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-      const valueWidth = ctx.measureText(value).width;
-      const textLeft = legendRight - labelWidth - valueWidth;
-      ctx.beginPath();
-      ctx.fillStyle = item.color;
-      ctx.arc(textLeft - textHeight * .82, y - 1, textHeight * .28, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.font = '500 ' + textHeight + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-      ctx.fillStyle = "#727995";
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText(label, textLeft, y);
-      ctx.font = '700 ' + textHeight + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-      ctx.fillStyle = "#2b3153";
-      ctx.fillText(value, textLeft + labelWidth, y);
-    });
-
-    chart.data.datasets.forEach((dataset, i) => {
-      if (!chart.isDatasetVisible(i)) return;
-      const radius = rings[i]?.radius;
-      if (!Number.isFinite(radius)) return;
-      const value = Number(dataset.data[0]) || 0;
-      const rest = Number(dataset.data[1]) || 0;
-      const progress = value + rest ? Math.max(0, Math.min(1, value / (value + rest))) : 0;
-      const end = start + sweep;
-      const progressEnd = start + sweep * progress;
-      ctx.shadowColor = "transparent";
-      ctx.strokeStyle = "#edf0f8";
-      ctx.lineWidth = ringWidth;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, start, end);
-      ctx.stroke();
-      if (progress > 0) {
-        const hot = (chart.tooltip?.getActiveElements?.() || []).some((active) => active.datasetIndex === i);
-        ctx.shadowColor = hot ? dataset.backgroundColor[0] : "rgba(57, 56, 120, .13)";
-        ctx.shadowBlur = hot ? 14 : 7;
-        ctx.shadowOffsetY = hot ? 0 : 3;
-        ctx.strokeStyle = dataset.backgroundColor[0];
-        ctx.beginPath();
-        ctx.arc(cx, cy, radius, start, progressEnd);
-        ctx.stroke();
-      }
-    });
-    ctx.restore();
-  },
-};
-
-// 单指标进度环：用于「某一个目标分类占比」，避免把不需比较的其他分类画成多环。
-const progressRing = {
-  id: "progressRing",
-  beforeDatasetDraw(chart) {
-    if (!chart.options.plugins?.progressRing?.enabled) return;
-    chart.ctx.save();
-    chart.ctx.globalAlpha = 0;
-  },
-  afterDatasetDraw(chart) {
-    if (!chart.options.plugins?.progressRing?.enabled) return;
-    chart.ctx.restore();
-  },
-  afterDatasetsDraw(chart) {
-    const o = chart.options.plugins?.progressRing;
-    if (!o?.enabled) return;
-    const { ctx } = chart;
-    const side = Math.min(chart.width, chart.height);
-    const cx = (chart.width - side) / 2 + side / 2;
-    const cy = (chart.height - side) / 2 + side / 2;
-    const value = Math.max(0, Number(o.value) || 0);
-    const total = Math.max(0, Number(o.total) || 0);
-    const ratio = total ? Math.min(1, value / total) : 0;
-    // 半圆仪表盘：从左向右沿上半圆推进，底部留给指标文字。
-    const start = Math.PI;
-    const sweep = Math.PI;
-    const radius = side * .39;
-    const width = Math.max(16, Math.min(28, side * .075));
-    const percent = (ratio * 100).toFixed(1) + "%";
-
-    ctx.save();
-    ctx.lineCap = "round";
-    ctx.lineWidth = width;
-    ctx.strokeStyle = "#e9edf7";
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, start, start + sweep);
-    ctx.stroke();
-    if (ratio > 0) {
-      ctx.strokeStyle = o.color || "#8676FF";
-      ctx.shadowColor = "rgba(86, 80, 237, .16)";
-      ctx.shadowBlur = 10;
-      ctx.shadowOffsetY = 3;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, start, start + sweep * ratio);
-      ctx.stroke();
-    }
-    ctx.shadowColor = "transparent";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = "#858ba7";
-    ctx.font = '600 ' + Math.max(12, Math.min(15, side * .038)) + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-    ctx.fillText(o.label || "占比", cx, cy - side * .085);
-    ctx.fillStyle = "#303660";
-    ctx.font = '750 ' + Math.max(36, Math.min(56, side * .15)) + 'px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
-    ctx.fillText(percent, cx, cy + side * .035);
-    ctx.fillStyle = "#858ba7";
-    ctx.font = '500 ' + Math.max(11, Math.min(14, side * .034)) + 'px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-    ctx.fillText(fmtNum(value) + " / " + fmtNum(total) + " 会话", cx, cy + side * .16);
-    ctx.restore();
-  },
-};
-
-function drawProgressRing(key, canvasId, opts) {
-  if (!chartReady()) return;
-  const ctx = $(canvasId);
-  if (!ctx) return;
-  destroyChart(key);
-  ctx.classList.add("progress-ring-chart");
-  const o = opts || {};
-  charts[key] = new Chart(ctx, {
-    type: "doughnut",
-    data: { labels: [o.label || "占比", "其余"], datasets: [{ data: [o.value || 0, Math.max(0, (o.total || 0) - (o.value || 0))], backgroundColor: [o.color || "#8676FF", "#e9edf7"], borderWidth: 0 }] },
-    options: {
-      responsive: true, maintainAspectRatio: true, aspectRatio: 2,
-      animation: { animateRotate: false },
-      plugins: {
-        legend: { display: false }, valueLabels: { enabled: false }, centerText: { enabled: false }, ribbonArcs: { enabled: false }, multiRingArcs: { enabled: false },
-        progressRing: { enabled: true, label: o.label, value: o.value, total: o.total, color: o.color },
-        tooltip: { callbacks: { label: () => fmtNum(o.value || 0) + " / " + fmtNum(o.total || 0) + " 会话" } },
-      },
-    },
-  });
-}
-
-// 环形图中心的大号指标
-const centerText = {
-  id: "centerText",
-  afterDatasetsDraw(chart) {
-    const o = chart.options.plugins?.centerText;
-    if (!o || !o.value) return;
-    const arc = chart.getDatasetMeta(0).data[0];
-    if (!arc) return;
-    const { ctx } = chart;
-    ctx.save();
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#393878";
-    ctx.font = '750 25px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
-    ctx.fillText(o.value, arc.x, arc.y + 2);
-    if (o.label) {
-      ctx.fillStyle = "#9995b5";
-      ctx.font = '12px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
-      ctx.fillText(o.label, arc.x, arc.y + 22);
-    }
-    ctx.restore();
-  },
-};
-
-// ============== 条形图（参考：胶囊条 + 末端数值 + 双色交替） ==============
-
-const BAR_THREE_COLORS = ["#8676FF", "#FF708B", "#383874"];
-
-function drawBar(key, canvasId, pairs, opts) {
-  if (!chartReady()) return;
-  const o = opts || {};
-  destroyChart(key);
-  const ctx = $(canvasId);
-  if (!ctx) return;
-
-  // 所有普通柱状图统一只轮换三色，不再引入第四种橙色。
-  const alt = BAR_THREE_COLORS;
-  const colors = o.color ? pairs.map(() => o.color) : pairs.map((_, i) => alt[i % alt.length]);
-
-  charts[key] = new Chart(ctx, {
-    type: "bar",
-    data: {
-      labels: pairs.map((p) => p[0]),
-      datasets: [{
-        label: o.label || "会话数",
-        data: pairs.map((p) => p[1]),
-        backgroundColor: colors,
-        hoverBackgroundColor: colors,
-        borderRadius: 20,           // 全圆角，做成胶囊
-        borderSkipped: false,
-        barPercentage: o.horizontal ? .55 : .42,
-        categoryPercentage: .8,
-      }],
-    },
-    options: {
-      indexAxis: o.horizontal ? "y" : "x",
-      responsive: true,
-      maintainAspectRatio: false,
-      layout: { padding: { right: o.horizontal ? 44 : 8, top: o.horizontal ? 0 : 22 } },
-      plugins: {
-        legend: { display: false },
-        valueLabels: { maxLabels: 40, showStackTotal: false },
-        tooltip: { callbacks: { title: (i) => i[0].label, label: (c) => fmtNum(c.parsed[o.horizontal ? "x" : "y"]) } },
-      },
-      scales: o.horizontal
-        ? {
-            x: { display: false, beginAtZero: true, grace: "8%" },
-            y: { grid: { display: false }, border: { display: false }, ticks: { padding: 8, font: { size: 12 } } },
-          }
-        : cleanScales({ rotate: o.rotate }),
-    },
-  });
-}
-
-// ============== 折线图（参考：渐变描边 + 渐变面积 + 白心圆点） ==============
-
-function drawLine(key, canvasId, pairs) {
-  if (!chartReady()) return;
-  destroyChart(key);
-  const ctx = $(canvasId);
-  if (!ctx) return;
-  charts[key] = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels: pairs.map((p) => p[0]),
-      datasets: [{
-        label: "会话数",
-        data: pairs.map((p) => p[1]),
-        borderColor: (c) => strokeGradient(c.chart, LINE_GRADIENT),
-        backgroundColor: (c) => areaGradient(c.chart, "#806dfa"),
-        borderWidth: 3,
-        fill: true,
-        tension: .42,
-        pointRadius: 3,
-        pointBackgroundColor: "#fff",
-        pointBorderColor: "#806dfa",
-        pointBorderWidth: 2,
-        pointHoverRadius: 6,
-        pointHoverBorderWidth: 3,
-      }],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: {
-        legend: { display: false },
-        valueLabels: { enabled: false },
-        hoverGuide: { enabled: true },
-      },
-      scales: cleanScales({ maxTicks: 14 }),
-    },
-  });
-}
-
-// 竖向参考线（业务闭环图里标整体水平）
-const refLine = {
-  id: "refLine",
-  afterDatasetsDraw(chart) {
-    const o = chart.options.plugins?.refLine;
-    if (!o || o.value === null || o.value === undefined) return;
-    const { ctx, chartArea, scales } = chart;
-    const x = scales.x.getPixelForValue(o.value);
-    if (!isFinite(x)) return;
-    ctx.save();
-    ctx.setLineDash([5, 4]);
-    ctx.strokeStyle = o.color || "#8b90a7";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x, chartArea.top);
-    ctx.lineTo(x, chartArea.bottom);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    if (o.label) {
-      ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
-      ctx.fillStyle = o.color || "#8b90a7";
-      ctx.textAlign = x > (chartArea.left + chartArea.right) / 2 ? "right" : "left";
-      ctx.fillText(o.label, x + (ctx.textAlign === "right" ? -6 : 6), chartArea.top + 12);
-    }
-    ctx.restore();
-  },
-};
-
-// 悬停时的竖向虚线（参考图里的定位线）
-const hoverGuide = {
-  id: "hoverGuide",
-  afterDatasetsDraw(chart) {
-    if (!chart.options.plugins?.hoverGuide?.enabled) return;
-    const active = chart.tooltip?.getActiveElements?.() || [];
-    if (!active.length) return;
-    const { ctx, chartArea } = chart;
-    const x = active[0].element.x;
-    ctx.save();
-    ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = "#b9c0f0";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x, chartArea.top);
-    ctx.lineTo(x, chartArea.bottom);
-    ctx.stroke();
-    ctx.restore();
-  },
-};
-
-// 柱线组合图的图例/悬浮指标统一语义：柱是方块，折线是圆点。
-function comboDatasetColor(dataset, index) {
-  const source = dataset.type === "line" ? dataset.borderColor : dataset.backgroundColor;
-  return Array.isArray(source) ? source[index] || source[0] : source || "#806dfa";
-}
-
-function comboLegend() {
-  return {
-    position: "top",
-    align: "start",
-    labels: {
-      usePointStyle: true,
-      boxWidth: 9,
-      boxHeight: 9,
-      padding: 14,
-      font: { size: 12 },
-      generateLabels(chart) {
-        return Chart.defaults.plugins.legend.labels.generateLabels(chart).map((item) => {
-          const dataset = chart.data.datasets[item.datasetIndex] || {};
-          const color = comboDatasetColor(dataset, item.index);
-          const isLine = dataset.type === "line";
-          return {
-            ...item,
-            fillStyle: color,
-            strokeStyle: color,
-            lineWidth: isLine ? 2 : 0,
-            pointStyle: isLine ? "circle" : "rect",
-          };
-        });
-      },
-    },
-  };
-}
-
-function glassTooltip(context) {
-  const { chart, tooltip } = context;
+// 悬停时给所在列铺一块浅灰圆角底（替代原来的竖向虚线），柱子画在它上面
+function tipEl() {
   let el = document.getElementById("hive-glass-tooltip");
   if (!el) {
     el = document.createElement("div");
     el.id = "hive-glass-tooltip";
     el.className = "chart-glass-tooltip";
+    el.setAttribute("role", "status");
     document.body.appendChild(el);
   }
-  if (!tooltip || tooltip.opacity === 0) {
-    el.classList.remove("visible");
-    return;
-  }
+  return el;
+}
 
+function deltaClass(text) {
+  return /▲|^\+/.test(text) ? "up" : /▼|^-/.test(text) ? "down" : "flat";
+}
+
+// 统一的悬停卡：标题 + 每个序列一行（柱=方块、线=短横）+ 底部合计（可带涨跌胶囊）+ 备注。
+// rows: [{ name, value, color, line }]；foot: { name, value, delta }
+function paintTip(title, rows, foot, notes) {
+  const el = tipEl();
   el.replaceChildren();
-  const title = tooltip.title?.[0];
   if (title) {
-    const titleEl = document.createElement("div");
-    titleEl.className = "chart-glass-tooltip-title";
-    titleEl.textContent = title;
-    el.appendChild(titleEl);
+    const t = document.createElement("div");
+    t.className = "chart-glass-tooltip-title";
+    t.textContent = title;
+    el.appendChild(t);
   }
-  (tooltip.dataPoints || []).forEach((point) => {
+  rows.forEach((r) => {
     const row = document.createElement("div");
     row.className = "chart-glass-tooltip-row";
     const marker = document.createElement("span");
-    marker.className = "chart-glass-tooltip-marker " + (point.dataset.type === "line" ? "is-line" : "is-bar");
-    marker.style.backgroundColor = comboDatasetColor(point.dataset, point.dataIndex);
-    const text = document.createElement("span");
-    // 折线可带单位（如占比的 %），柱子是条数不带
-    text.textContent = point.dataset.label + "：" + point.formattedValue + (point.dataset.unit || "");
-    row.append(marker, text);
+    marker.className = "chart-glass-tooltip-marker" + (r.line ? " is-line" : "");
+    if (String(r.color).startsWith("repeating")) marker.style.background = r.color;
+    else marker.style.backgroundColor = r.color;
+    const name = document.createElement("span");
+    name.textContent = r.name;
+    const val = document.createElement("b");
+    val.textContent = r.value;
+    row.append(marker, name, val);
     el.appendChild(row);
   });
-  const notes = tooltip.afterBody || [];
-  if (notes.length) {
-    const note = document.createElement("div");
-    note.className = "chart-glass-tooltip-note";
-    note.textContent = notes.join(" ");
-    el.appendChild(note);
+  if (foot) {
+    const f = document.createElement("div");
+    f.className = "chart-glass-tooltip-foot";
+    const name = document.createElement("span");
+    name.textContent = foot.name;
+    f.appendChild(name);
+    if (foot.delta) {
+      const d = document.createElement("span");
+      d.className = "dl " + deltaClass(foot.delta);
+      d.textContent = foot.delta;
+      f.appendChild(d);
+    }
+    const v = document.createElement("b");
+    v.textContent = foot.value;
+    f.appendChild(v);
+    el.appendChild(f);
   }
+  (notes || []).filter(Boolean).forEach((text) => {
+    const n = document.createElement("div");
+    n.className = "chart-glass-tooltip-note";
+    n.textContent = text;
+    el.appendChild(n);
+  });
+  return el;
+}
 
-  // 先在不可见状态下完成定位，避免首次悬停时提示框从旧位置滑入。
+// 放到锚点右侧；越过视口中线就翻到左侧，避免盖住鼠标正在看的那根柱子
+function placeTip(el, anchorX, anchorY) {
   el.classList.remove("visible");
-  const canvasBox = chart.canvas.getBoundingClientRect();
   const box = el.getBoundingClientRect();
-  const anchorX = canvasBox.left + tooltip.caretX;
-  const anchorY = canvasBox.top + tooltip.caretY;
-  let left = anchorX + 14;
-  if (left + box.width > window.innerWidth - 12) left = anchorX - box.width - 14;
+  let left = anchorX > window.innerWidth / 2 ? anchorX - box.width - 14 : anchorX + 14;
   left = Math.min(Math.max(12, left), window.innerWidth - box.width - 12);
-  let top = anchorY - box.height - 14;
-  if (top < 12) top = anchorY + 14;
+  let top = anchorY - box.height / 2;
   top = Math.min(Math.max(12, top), window.innerHeight - box.height - 12);
   el.style.left = left + "px";
   el.style.top = top + "px";
   el.classList.add("visible");
 }
 
-function comboTooltip(extraCallbacks) {
-  return {
-    enabled: false,
-    displayColors: false,
-    usePointStyle: true,
-    position: "nearest",
-    external: glassTooltip,
-    callbacks: {
-      labelColor(context) {
-        const color = comboDatasetColor(context.dataset, context.dataIndex);
-        return { backgroundColor: color, borderColor: color, borderWidth: context.dataset.type === "line" ? 2 : 0 };
-      },
-      labelPointStyle(context) {
-        return { pointStyle: context.dataset.type === "line" ? "circle" : "rect", rotation: 0 };
-      },
-      ...(extraCallbacks || {}),
-    },
-  };
+function hideTip() {
+  const el = document.getElementById("hive-glass-tooltip");
+  if (el) el.classList.remove("visible");
 }
 
-// ============== 组合图：堆叠柱 + 双轴折线 ==============
+// DOM 图形（小倍数、闭环周柱、业务场景竖柱）的悬停卡：同一个元素、同一套样式
+function bindDomTip(container, describe) {
+  container.addEventListener("mousemove", (event) => {
+    const col = event.target.closest("[data-tip]");
+    if (!col || !container.contains(col)) { hideTip(); return; }
+    const spec = describe(Number(col.dataset.tip), col);
+    if (!spec) { hideTip(); return; }
+    const el = paintTip(spec.title, spec.rows || [], spec.foot, spec.notes);
+    const box = col.getBoundingClientRect();
+    placeTip(el, box.left + box.width / 2, Math.max(box.top + 60, event.clientY));
+  });
+  container.addEventListener("mouseleave", hideTip);
+}
 
-function drawCombo(key, canvasId, labels, bars, lines, opts) {
-  if (!chartReady()) return;
-  const o = opts || {};
-  destroyChart(key);
-  const ctx = $(canvasId);
-  if (!ctx) return;
+// ============== DOM 柱线图（与 Design 原型同一套画法） ==============
+// 原型里的柱线图不是 Chart.js，而是 flex 排的胶囊柱 + 一条 SVG 平滑曲线；悬停整列铺浅灰底，提示卡走 bindDomTip。
+// 总览「会话接待分布」、接待量页的两张分布图、人工服务页的每日图 / 会话时长图全部用这一个函数。
 
-  const single = bars.length === 1;
-  const hasLines = lines.length > 0;
-  const datasets = [
-    ...bars.map((b, i) => ({
-      type: "bar",
-      label: b.label,
-      data: b.data,
-      // 普通柱图沿用业务色；只有带折线的组合图采用参考色阶。
-      backgroundColor: hasLines ? comboBarFill(i, bars.length) : b.color,
-      hoverBackgroundColor: hasLines ? comboBarTone(i, bars.length) : b.color,
-      // grouped：并列柱。用于彼此不构成整体的指标（如接待人数 vs 接待企业数），
-      // 堆叠会读成「人数 + 企业数」这种没有意义的合计。
-      stack: o.grouped ? undefined : "s",
-      yAxisID: "y",
-      // 单系列做成胶囊，堆叠时只给最上面一段留圆角，并列柱每根都留圆角
-      borderRadius: o.grouped ? (o.pillBars ? 20 : { topLeft: 5, topRight: 5 }) : (single ? 20 : (i === bars.length - 1 ? { topLeft: 5, topRight: 5 } : 2)),
-      borderSkipped: false,
-      // 段与段之间留一条白色细缝，避免颜色直接相接糊在一起（单柱和并列柱不需要）
-      borderColor: "#f7f8fc",
-      borderWidth: (single || o.grouped) ? 0 : { top: 2, right: 0, bottom: 0, left: 0 },
-      barPercentage: o.grouped ? (o.pillBars ? .54 : .8) : (single ? .42 : .62),
-      categoryPercentage: o.grouped ? .74 : .82,
-      order: 2,
-    })),
-    ...lines.map((l, i) => {
-      const lineColor = l.strokeColor || comboLineTone(l.color, i);
-      return {
-        type: "line",
-        label: l.label,
-        data: l.data,
-        unit: l.unit || "",
-        borderColor: lineColor,
-        backgroundColor: lineColor,
-        yAxisID: l.axis || "y1",
-        tension: .42,
-        borderWidth: 3.2,
-        borderDash: [7, 5],
-        pointRadius: 0,
-        pointBackgroundColor: "#fff",
-        pointBorderColor: lineColor,
-        pointBorderWidth: 2.5,
-        pointHoverRadius: 5.5,
-        fill: false,
-        order: 1,
-      };
-    }),
-  ];
+// Catmull-Rom → 三次贝塞尔的平滑折线；pts = [[x, y], ...]，坐标已映射到 viewBox
+function smoothPath(pts) {
+  if (!pts.length) return "";
+  if (pts.length === 1) return "M" + (pts[0][0] - 30).toFixed(1) + " " + pts[0][1].toFixed(1) + "L" + (pts[0][0] + 30).toFixed(1) + " " + pts[0][1].toFixed(1);
+  let d = "M" + pts[0][0].toFixed(1) + " " + pts[0][1].toFixed(1);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    d += "C" + (p1[0] + (p2[0] - p0[0]) / 6).toFixed(1) + " " + (p1[1] + (p2[1] - p0[1]) / 6).toFixed(1) + "," +
+      (p2[0] - (p3[0] - p1[0]) / 6).toFixed(1) + " " + (p2[1] - (p3[1] - p1[1]) / 6).toFixed(1) + "," +
+      p2[0].toFixed(1) + " " + p2[1].toFixed(1);
+  }
+  return d;
+}
 
-  const scales = cleanScales({ stacked: !o.grouped, rotate: o.rotate ?? 45, autoSkip: false });
-  if (o.yLabel) scales.y.title = { display: true, text: o.yLabel };
-  if (lines.length) {
-    scales.y1 = {
-      position: "right",
-      beginAtZero: true,
-      grid: { display: false },
-      border: { display: false },
-      ticks: { padding: 8, maxTicksLimit: 6 },
-      title: o.y1Label ? { display: true, text: o.y1Label } : undefined,
-    };
+// 1 / 2 / 2.5 / 5 / 10 × 10^n 的整刻度上限
+function niceMax(v) {
+  if (!(v > 0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+
+const BAR_W = { day: 4, week: 16, month: 40, quarter: 64, year: 96 };   // 单柱宽度，按粒度
+const PAIR_W = { day: 2, week: 7, month: 18, quarter: 28, year: 40 };   // 并列双柱每根宽度
+
+/**
+ * cfg:
+ *   height      绘图区高度（px）
+ *   bars        [{ segs: [{ v, color }], w, label, labelClass, bg(单段时), minH }]  每根柱；v 为同一量纲
+ *   max         柱的量纲上限（默认取 niceMax(最大合计 × 1.1)）
+ *   line        { values: [number|null], color, width, max }   右轴折线（可选）
+ *   yTicks      [{ pos(0-100), label }]  左轴刻度 + 虚线（可选）
+ *   hTicks      [{ pos, label }]           右轴刻度（可选）
+ *   xLabels     [{ left(0-100), label }] 绝对定位的横轴标签；或 xPerBar: [string] 每柱一个
+ *   tip(i)      → { title, rows, foot, notes }
+ */
+function domChart(el, cfg) {
+  if (!el) return;
+  const bars = cfg.bars || [];
+  const n = bars.length;
+  const H = cfg.height || 250;
+  const totals = bars.map((b) => (b.segs || []).reduce((a, s) => a + (Number(s.v) || 0), 0));
+  const max = cfg.max || niceMax(Math.max(...totals, 0) * 1.1);
+  const line = cfg.line;
+  const lineMax = line ? (line.max || niceMax(Math.max(...line.values.map((v) => Number(v) || 0), 0) * 1.15)) : 1;
+
+  const yTicks = cfg.yTicks || [];
+  const hTicks = cfg.hTicks || [];
+  const cols = bars.map((b, i) => {
+    const segs = (b.segs || []).filter((s) => Number(s.v) > 0);
+    const h = Math.max(b.minH || 0, (totals[i] / max) * 100);
+    const inner = segs.length > 1
+      ? segs.slice().reverse().map((s) => '<i style="flex:' + Number(s.v) + " 1 0;background:" + s.color + '"></i>').join("")
+      : "";
+    const bg = segs.length === 1 ? segs[0].color : (b.bg || "transparent");
+    return '<div class="dc-col" data-tip="' + i + '">' +
+      (b.label !== undefined && b.label !== "" ? '<span class="dc-label' + (b.labelClass ? " " + b.labelClass : "") + '">' + escHtml(b.label) + "</span>" : "") +
+      '<div class="dc-bar' + (inner ? " stacked" : "") + '" style="width:' + (b.w || 12) + "px;height:" + h.toFixed(2) + "%;" + (inner ? "" : "background:" + bg) + '">' + inner + "</div></div>";
+  }).join("");
+
+  let path = "";
+  if (line && n) {
+    const pts = [];
+    line.values.forEach((v, i) => { if (v !== null && v !== undefined && isFinite(v)) pts.push([((i + 0.5) / n) * 1000, H - (Number(v) / lineMax) * H]); });
+    path = smoothPath(pts);
   }
 
-  charts[key] = new Chart(ctx, {
-    data: { labels, datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
-      layout: { padding: { top: 22 } },
-      plugins: {
-        legend: comboLegend(),
-        hoverGuide: { enabled: true },
-        valueLabels: { maxLabels: o.maxLabels ?? 40, maxTotalLabels: o.maxTotalLabels ?? 150, showStackTotal: o.showStackTotal !== false && !o.grouped, barTop: !!o.grouped, lineLabels: false },
-        tooltip: comboTooltip(o.tooltipCallbacks),
-      },
-      scales,
-    },
-  });
+  const xAbs = cfg.xLabels ? '<div class="dc-x abs">' + cfg.xLabels.map((x) => '<span style="left:' + x.left + '%">' + escHtml(x.label) + "</span>").join("") + "</div>" : "";
+  const xPer = cfg.xPerBar ? '<div class="dc-x per">' + cfg.xPerBar.map((x) => "<span>" + escHtml(x) + "</span>").join("") + "</div>" : "";
+
+  el.innerHTML =
+    '<div class="dc">' +
+    (yTicks.length ? '<div class="dc-y" style="height:' + H + 'px">' + yTicks.map((t) => '<span style="bottom:' + t.pos + '%">' + escHtml(t.label) + "</span>").join("") + "</div>" : "") +
+    '<div class="dc-body"><div class="dc-plot" style="height:' + H + 'px">' +
+    yTicks.map((t) => '<b class="dc-grid" style="bottom:' + t.pos + '%"></b>').join("") +
+    (cfg.capLine ? '<b class="dc-cap" style="bottom:' + cfg.capLine.pos + '%"></b>' + (cfg.capLine.label ? '<span class="dc-cap-label" style="bottom:' + cfg.capLine.pos + '%">' + escHtml(cfg.capLine.label) + "</span>" : "") : "") +
+    '<div class="dc-cols">' + cols + "</div>" +
+    (path ? '<svg class="dc-line" viewBox="0 0 1000 ' + H + '" preserveAspectRatio="none"><path d="' + path + '" fill="none" stroke="' + (line.color || INK) + '" stroke-width="' + (line.width || 2) + '" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path></svg>' : "") +
+    "</div>" + xAbs + xPer + "</div>" +
+    (hTicks.length ? '<div class="dc-h" style="height:' + H + 'px">' + hTicks.map((t) => '<span style="bottom:' + t.pos + '%">' + escHtml(t.label) + "</span>").join("") + "</div>" : "") +
+    "</div>";
+
+  // 逐柱横轴标签太密（窄屏 / 柱多）时隔几根标一个，从最后一根往前数，保证最新的那根有标签
+  if (cfg.xPerBar && n) {
+    const axis = el.querySelector(".dc-x.per");
+    const width = axis ? axis.clientWidth : 0;
+    const step = width ? Math.ceil((n * 46) / width) : 1;
+    if (step > 1) axis.querySelectorAll("span").forEach((sp, i) => { if ((n - 1 - i) % step) sp.textContent = ""; });
+  }
+  if (cfg.tip) {
+    el.$tip = cfg.tip;
+    if (!el.dataset.bound) {
+      el.dataset.bound = "1";
+      bindDomTip(el, (i) => (el.$tip ? el.$tip(i) : null));
+    }
+  }
 }
 
-// ============== 数值标签 ==============
+// 粒度页签（原型：下划线式，日 / 周 / 月 / 季 / 年）
+const GRAIN_LIST = [["day", "日"], ["week", "周"], ["month", "月"], ["quarter", "季"], ["year", "年"]];
 
-// 把数值直接标在柱子和折线上，用内联插件实现，不引第三方依赖
-const valueLabels = {
-  id: "valueLabels",
-  afterDatasetsDraw(chart) {
-    const opt = chart.options.plugins?.valueLabels;
-    if (!opt || opt.enabled === false) return;
-    const count = chart.data.labels?.length || 0;
-    // 合计数和柱内分段值分开限流：分段值挤在柱子里，柱多了必须让位；
-    // 但柱顶的合计数是最该看到的，阈值放宽，画不下的交给下面的碰撞检测丢弃。
-    const showSeg = count <= (opt.maxLabels || 40);
-    const showTotal = count <= (opt.maxTotalLabels || 150);
-    if (!showSeg && !showTotal) return;
+// 横轴标签：按天只标每月 1 号（和首根），按周隔一根标 W41，月 / 季 / 年逐根标
+function xLabelsFor(buckets, grain) {
+  const n = buckets.length;
+  const out = [];
+  if (!n) return out;
+  if (grain === "day") {
+    buckets.forEach((b, i) => { if (b.first.slice(8) === "01" || i === 0) out.push({ left: (((i + 0.5) / n) * 100).toFixed(2), label: Number(b.first.slice(5, 7)) + " 月" }); });
+    return out;
+  }
+  const step = grain === "week" ? 2 : 1;
+  buckets.forEach((b, i) => {
+    if ((n - 1 - i) % step) return;
+    const k = b.key;
+    const label = grain === "week" ? "W" + Number(k.slice(5)) : grain === "month" ? Number(k.slice(5, 7)) + " 月" : grain === "quarter" ? k.slice(5) : k;
+    out.push({ left: (((i + 0.5) / n) * 100).toFixed(2), label });
+  });
+  return out;
+}
 
-    const { ctx } = chart;
-    const horizontal = chart.options.indexAxis === "y";
-    const F = (w, size) => w + " " + size + 'px -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
+const WD_CN = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+// 悬停卡标题：2026-10-05 周一 / W41 · 10-05 – 10-11（不完整）/ 2026 年 10 月 / 2026 Q4 / 2026 年
+function bucketTitle(b, grain) {
+  const md = (d) => d.slice(5);
+  if (grain === "day") return b.first + " " + WD_CN[new Date(b.first + "T00:00:00Z").getUTCDay()];
+  if (grain === "week") return "W" + Number(b.key.slice(5)) + " · " + md(b.first) + " – " + md(b.last) + (b.days < 7 ? "（不完整）" : "");
+  if (grain === "month") return b.key.slice(0, 4) + " 年 " + Number(b.key.slice(5, 7)) + " 月";
+  if (grain === "quarter") return b.key.replace("-Q", " Q");
+  return b.key + " 年";
+}
 
-    // 先收集候选标签再统一画：合计 > 折线值 > 柱内分段值，
-    // 位置冲突时丢掉优先级低的，避免数字叠在一起
-    const items = [];
-    const stackTotals = {};
-    const stackTop = {};
-
-    chart.data.datasets.forEach((ds, di) => {
-      const meta = chart.getDatasetMeta(di);
-      if (meta.hidden) return;
-      const kind = ds.type || meta.type || chart.config.type;
-      if (kind === "doughnut" || kind === "pie") return;
-
-      meta.data.forEach((el, i) => {
-        const v = ds.data[i];
-        if (v === null || v === undefined || v === 0) return;
-
-        if (kind === "line") {
-          // 柱线组合图里折线值会落进柱子内部，标出来会被误读成柱子的数值，
-          // 所以组合图关掉它，交给悬停 tooltip
-          if (opt.lineLabels === false) return;
-          items.push({ p: 1, text: fmtNum(v), x: el.x, y: el.y - 9, font: F(600, 11), fill: "#5b6180", halo: true, align: "center" });
-          return;
-        }
-        if (typeof el.base !== "number") return;
-
-        const color = Array.isArray(ds.backgroundColor) ? ds.backgroundColor[i] : ds.backgroundColor;
-        if (horizontal) {
-          const txt = (ds.customLabels && ds.customLabels[i]) || fmtNum(v);
-          items.push({ p: 1, text: txt, x: el.x + 8, y: el.y + 4, font: F(600, 12), fill: (ds.labelInk && ds.labelInk[i]) || "#454b69", align: "left" });
-          return;
-        }
-        if (opt.barTop) {
-          // 并列柱：值画在柱顶。柱子矮时画在里面会看不见。
-          if (showTotal) {
-            items.push({ p: 1, text: fmtNum(v), x: el.x, y: el.y - 6, font: F(700, 11), fill: "#454b69", halo: true, align: "center" });
-          }
-        } else if (showSeg && Math.abs(el.base - el.y) >= 16) {
-          items.push({ p: 2, text: fmtNum(v), x: el.x, y: (el.y + el.base) / 2 + 4, font: F(600, 11), fill: readableInk(color), align: "center" });
-        }
-        stackTotals[i] = (stackTotals[i] || 0) + v;
-        stackTop[i] = stackTop[i] === undefined ? el.y : Math.min(stackTop[i], el.y);
-      });
-    });
-
-    if (opt.showStackTotal !== false && showTotal) {
-      Object.keys(stackTotals).forEach((i) => {
-        const el = chart.getDatasetMeta(0).data[i];
-        if (!el) return;
-        items.push({ p: 0, text: fmtNum(stackTotals[i]), x: el.x, y: stackTop[i] - 7, font: F(700, 11.5), fill: "#1f2340", halo: true, align: "center" });
-      });
-    }
-
-    ctx.save();
-    ctx.lineJoin = "round";
-    const boxes = [];
-    const hits = (b) => boxes.some((o) => b.x1 < o.x2 && b.x2 > o.x1 && b.y1 < o.y2 && b.y2 > o.y1);
-
-    for (const it of items.sort((a, b) => a.p - b.p)) {
-      ctx.font = it.font;
-      const w = ctx.measureText(it.text).width;
-      const left = it.align === "left" ? it.x : it.x - w / 2;
-      const box = { x1: left - 2, x2: left + w + 2, y1: it.y - 11, y2: it.y + 4 };
-      if (hits(box)) continue;
-      boxes.push(box);
-      ctx.textAlign = it.align;
-      if (it.halo) {
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = "rgba(255, 255, 255, .92)";
-        ctx.strokeText(it.text, it.x, it.y);
-      }
-      ctx.fillStyle = it.fill;
-      ctx.fillText(it.text, it.x, it.y);
-    }
-    ctx.restore();
-  },
-};
-
-// ============== 看板 ==============
-
-// 「正在构建」到底是在跑还是已经死了，用户看不见就只能干等。
 // 把 meta 里的状态、已跑多久、失败原因拼成一句人话。
 function buildingText(meta) {
   const m = meta || {};
@@ -1152,6 +423,37 @@ function markActive() {
     const el = $(id);
     el.classList.toggle("active", !!el.value);
   });
+  // 手机上筛选栏默认收起，只露一行摘要：时间范围 + 还有几项维度筛选
+  const summary = $("filterSummary");
+  if (summary) {
+    const range = $("fRange");
+    const rangeText = range.value === "custom"
+      ? (($("fFrom").value || "…") + " ~ " + ($("fTo").value || "…"))
+      : (range.options[range.selectedIndex] || {}).text || "全部时间";
+    const dims = Object.keys(DIM_SELECTS).filter((id) => $(id).value).length;
+    summary.textContent = rangeText + (dims ? " · " + dims + " 项筛选" : "");
+  }
+}
+
+// 手机：侧边栏折成顶部一条（logo + 汉堡），菜单从右侧抽屉滑出；点导航、遮罩、×、Esc 都收回
+function initMenu() {
+  const btn = $("menuBtn"), close = $("menuClose"), backdrop = $("menuBackdrop");
+  if (!btn) return;
+  const set = (open) => {
+    document.body.classList.toggle("menu-open", open);
+    btn.setAttribute("aria-expanded", String(open));
+  };
+  btn.addEventListener("click", () => set(!document.body.classList.contains("menu-open")));
+  if (close) close.addEventListener("click", () => set(false));
+  if (backdrop) backdrop.addEventListener("click", () => set(false));
+  document.querySelectorAll(".nav-item").forEach((t) => t.addEventListener("click", () => set(false)));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") set(false); });
+  const ft = $("filterToggle");
+  if (ft) ft.addEventListener("click", () => {
+    const open = !$("filterbar").classList.contains("open");
+    $("filterbar").classList.toggle("open", open);
+    ft.setAttribute("aria-expanded", String(open));
+  });
 }
 
 function applyRangePreset() {
@@ -1188,6 +490,7 @@ async function loadDashboard() {
       return;
     }
     state.stats = json.stats;
+    state.previous = json.previous || null;
     state.resolvedFrom = json.resolvedFrom || "";
     state.resolvedTo = json.resolvedTo || "";
     fillFacets(json.facets);
@@ -1202,12 +505,13 @@ async function loadDashboard() {
     renderCharts(json.stats);
     markActive();
     $("matchInfo").innerHTML = json.filtered
-      ? "筛选后 <b>" + json.matched + "</b> / " + json.fullTotal + " 条会话参与统计"
-      : "全部 <b>" + (json.fullTotal || json.stats.total) + "</b> 条会话";
+      ? "筛选后 <b>" + fmtNum(json.matched) + "</b> / " + fmtNum(json.fullTotal) + " 条会话"
+      : "全部 <b>" + fmtNum(json.fullTotal || json.stats.total) + "</b> 条会话";
     if (json.meta) {
-      $("updatedAt").textContent =
-        "数据更新于 " + new Date(json.meta.updatedAt).toLocaleString("zh-CN") +
-        "（" + json.meta.total + " 条）";
+      const t = new Date(json.meta.updatedAt);
+      const pad2 = (n) => String(n).padStart(2, "0");
+      $("updatedAt").innerHTML = "<span>数据更新于 " + pad2(t.getMonth() + 1) + "-" + pad2(t.getDate()) + " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes()) +
+        "</span><span>共 " + fmtNum(json.meta.total) + " 条会话</span>";
     }
     banner(
       json.stats.total === 0 ? "当前筛选条件下没有会话，放宽条件或点「重置筛选」。" : "",
@@ -1222,141 +526,61 @@ async function loadDashboard() {
 // 没必要重新打接口（顶部筛选变化时才 reload）。
 let LAST_STATS = null;
 
+// 渲染按页签拆开：隐藏面板里的 canvas 量不出尺寸，所以只画当前页，切页时再画。
+const PANEL_RENDER = {
+  overview: (s) => renderOverview(s),
+  volume: (s) => renderVolume(s),
+  ai: (s) => renderAIPanel(s),
+  service: (s) => renderService(s),
+  business: (s) => renderBusiness(s),
+};
+
 function renderCharts(s) {
   LAST_STATS = s;
-  renderAI(s);
-  // 服务概览的两张表：跟随顶部筛选栏（区间 = 当前筛选结果）
-  const rangeHint = (state.resolvedFrom && state.resolvedTo)
-    ? "区间 " + state.resolvedFrom + " ~ " + state.resolvedTo + "（跟随顶部筛选栏）"
-    : "全部区间（跟随顶部筛选栏）";
-  renderAgentScene("tblAgentScene", "asHint", "asNote", s.agentScene, rangeHint);
-  renderEmotion("tblEmotion", "tblEmotionScene", "emoHint", "emoNote", s.emotion, rangeHint);
-  renderEmoList("tblEmotionNeg", "negHint", (s.emotion || {}).emoList);
-  renderTrend(s);
-  renderScene(s);
-  renderCost(s);
+  const fn = PANEL_RENDER[state.tab];
+  if (fn) fn(s);
 }
 
-function renderCards(s, previous) {
-  const d = s.derived;
-  // 五张卡统一口径：折线画的都是「该卡片头部那个指标」的日粒度值，
-  // 实线本期、虚线上一等长周期（previous 由 /api/dashboard 同一次响应带回）。
-  const prevDay = previous?.byDay || null;
-  const prevLabel = previous?.from ? "上一周期 " + previous.from + " ~ " + previous.to : "上一等长周期";
-  const rate = (numerator, denominator) => (denominator > 0 ? (numerator / denominator) * 100 : 0);
-  const series = (byDay, valueOf) => sortedKeys(byDay || {}).map((day) => {
-    const value = valueOf(byDay[day] || {});
-    return Number.isFinite(value) ? value : 0;
-  });
-  // 缓存刚升级、日桶里还没有 aiOnly / avoidable 时会算出 NaN，series 已经兜成 0
-  const trendOf = (valueOf) => ({ current: series(s.byDay, valueOf), previous: series(prevDay, valueOf) });
+// 涨跌文字：计数看相对变化（%），比率看差值（pp）
+function changeText(cur, prev, kind) {
+  if (prev === null || prev === undefined || !isFinite(prev) || !isFinite(cur)) return "";
+  if (kind === "pp") {
+    const d = cur - prev;
+    return Math.abs(d) < 0.05 ? "持平" : (d > 0 ? "▲ " : "▼ ") + Math.abs(d).toFixed(1) + "pp";
+  }
+  if (!prev) return "";
+  const d = ((cur - prev) / prev) * 100;
+  return Math.abs(d) < 0.05 ? "持平" : (d > 0 ? "▲ " : "▼ ") + Math.abs(d).toFixed(1) + "%";
+}
 
-  const cards = [
-    {
-      label: "会话总数", value: s.total, tone: "violet",
-      sub: "有效会话 " + d.effectiveCount + " 条 · " + d.effectiveRate + "%",
-      trend: trendOf((b) => Number(b.total) || 0),
-      hint: "每日会话数",
-    },
-    {
-      label: "AI 独立率", value: d.aiRate + "%", tone: "cyan",
-      sub: "AI 独立接待 " + d.aiOnlyCount + " 条 · 人工在线 " + d.manualCount + " 条 / " + d.manualRate + "%",
-      trend: trendOf((b) => rate(b.aiOnly, b.total)),
-      hint: "每日 AI 独立率",
-    },
-    {
-      label: "可避免转人工", value: d.avoidableRate + "%", tone: "amber",
-      sub: d.avoidableCount + " / " + s.transferred + " 次本可由 AI 承接",
-      trend: trendOf((b) => rate(b.avoidable, b.transfer)),
-      hint: "每日可避免转人工占比（当天没有转人工的记 0）",
-    },
-    {
-      label: "人工接待总时长", value: d.durSumHours + " 小时", tone: "rose",
-      sub: "均 " + fmtDuration(d.durAvg) + " · 中位 " + fmtDuration(d.durMedian),
-      trend: trendOf((b) => (Number(b.dur) || 0) / 3600),
-      hint: "每日人工接待时长（小时）",
-    },
-    {
-      label: "接待轮次总计", value: s.turnsSum, tone: "blue",
-      sub: "有时长记录会话 " + s.durCount + " 条",
-      trend: trendOf((b) => Number(b.turns) || 0),
-      hint: "每日接待轮次",
-    },
-  ];
-
-  $("cards").innerHTML = cards.map((c) =>
-    '<div class="card card--metric card--' + c.tone + '"><div class="card-summary"><div class="card-label">' + c.label + '</div>' +
-    '<div class="card-value">' + c.value + '</div></div>' +
-    '<div class="card-visual">' + miniTrend(c.trend.current, c.trend.previous, c.tone, c.hint, prevLabel) + '</div>' +
-    '<div class="card-sub">' + c.sub + '</div></div>'
-  ).join("");
+function pillHtml(text) {
+  return text ? '<span class="dl ' + deltaClass(text) + '">' + escHtml(text) + "</span>" : "";
 }
 
 const escAttr = escHtml;
 
-// 折线纯图形，看不出画的是什么：统一挂 title（悬停可读）+ aria-label（读屏可读）
-function describe(hint) {
-  const text = escAttr(hint);
-  return ' role="img" aria-label="' + text + '" title="' + text + '"';
+// 一根分段胶囊条 + 图例行。items: [{ label, value, color }]
+function stackHtml(items, opts) {
+  const o = opts || {};
+  const sum = items.reduce((a, x) => a + x.value, 0);
+  const segs = items.filter((x) => x.value > 0).map((x) =>
+    '<i style="flex:' + x.value + " 1 0;background:" + x.color + '" title="' + escAttr(x.label + "：" + x.value) + '"></i>'
+  ).join("");
+  const rows = o.noLegend ? "" : '<div class="legend-rows">' + items.map((x) =>
+    '<div class="legend-row"><span class="sw" style="background:' + x.color + '"></span><span>' + escHtml(x.label) + "</span>" +
+    "<b>" + fmtNum(x.value) + "</b><small>" + pct(x.value, sum) + "%</small></div>"
+  ).join("") + "</div>";
+  return '<div class="stack" style="height:' + (o.height || 14) + 'px">' + segs + "</div>" + rows;
 }
 
-function miniTrend(current, previous, tone, hint, prevLabel) {
-  const now = (current || []).filter((value) => Number.isFinite(value));
-  const before = (previous || []).filter((value) => Number.isFinite(value));
-  if (!now.length) return '<span class="metric-trend"' + describe(hint) + '></span>';
-  const max = Math.max(...now.concat(before), 1);
-  const width = 132, height = 58, padding = 5;
-  const points = (values) => values.map((value, index) => {
-    const x = padding + ((width - padding * 2) * (values.length === 1 ? .5 : index / (values.length - 1)));
-    const y = height - padding - ((height - padding * 2) * value / max);
-    return [x.toFixed(1), y.toFixed(1)];
-  });
-  const curve = (values) => {
-    const p = points(values);
-    if (p.length === 1) return "M" + p[0][0] + " " + p[0][1];
-    let path = "M" + p[0][0] + " " + p[0][1];
-    for (let i = 1; i < p.length; i++) {
-      const prev = p[i - 1], next = p[i];
-      const midX = ((Number(prev[0]) + Number(next[0])) / 2).toFixed(1);
-      const midY = ((Number(prev[1]) + Number(next[1])) / 2).toFixed(1);
-      path += i === p.length - 1 ? " Q" + prev[0] + " " + prev[1] + " " + next[0] + " " + next[1] : " Q" + prev[0] + " " + prev[1] + " " + midX + " " + midY;
-    }
-    return path;
-  };
-  const last = points(now).at(-1);
-  const label = hint + (before.length ? "；实线为本期，虚线为" + prevLabel : "");
-  return '<span class="metric-trend metric-trend--' + tone + '"' + describe(label) + '><svg viewBox="0 0 ' + width + " " + height + '">' +
-    '<path class="metric-trend-grid" d="M5 17.5H127 M5 40.5H127"></path>' +
-    (before.length ? '<path class="metric-trend-before" d="' + curve(before) + '"></path>' : "") +
-    '<path class="metric-trend-current" d="' + curve(now) + '"></path>' +
-    '<circle class="metric-trend-dot" cx="' + last[0] + '" cy="' + last[1] + '" r="3.2"></circle></svg></span>';
-}
-
-function renderAI(s) {
-  const jiri = s.jiri || {};
-  const way = s.way || {};
-  const status = s.status || {};
-  // 三张卡都只表达一个决策指标，分母仅包含该指标可比较的会话。
-  drawProgressRing("jiri", "chartJiri", {
-    label: "不能占比", value: jiri["不能"] || 0,
-    total: (jiri["不能"] || 0) + (jiri["能"] || 0) + (jiri["部分"] || 0), color: "#8676FF",
-  });
-  drawProgressRing("way", "chartWay", {
-    label: "沟通后转占比", value: way["沟通后转"] || 0,
-    total: (way["沟通后转"] || 0) + (way["直接转"] || 0), color: "#FF708B",
-  });
-  drawProgressRing("status", "chartStatus", {
-    label: "仅 Jiri 占比", value: status["仅 Jiri"] || 0,
-    total: (status["仅 Jiri"] || 0) + (status["仅人工"] || 0), color: "#383874",
-  });
-  drawBar("reason", "chartReason", sortedPairs(s.reason), { horizontal: true, colors: ["#ff8dac", "#806dfa", "#00c8a9", "#ffb65c"] });
-
-  const d = s.derived;
-  const top = sortedPairs(s.reason, 1)[0];
-  $("noteAvoidable").innerHTML =
-    "转人工 <b>" + s.transferred + "</b> 次，<b>" + d.avoidableCount + "</b> 次（" +
-    d.avoidableRate + "%）属于可避免类型（AI 能答没给机会 / 没等答完顺手转 / 可自助 / 答对仍要人）。" +
-    (top ? " 最主要原因是 <b>" + top[0] + "</b>（" + top[1] + " 次）。" : "");
+// 单个决策指标 + 分段条：AI 表现 / 人工服务页的三张小卡共用
+function decisionCard(id, label, value, total, items, caption) {
+  const el = $(id);
+  if (!el) return;
+  el.innerHTML =
+    '<div class="big-kpi"><b>' + pct(value, total) + "<small>%</small></b><span>" + escHtml(label) + "</span></div>" +
+    '<div style="height:16px"></div>' + stackHtml(items) +
+    (caption ? '<p class="chart-foot">' + caption + "</p>" : "");
 }
 
 // 桶里出现过的分类，按全量占比排序，保证堆叠顺序稳定
@@ -1375,66 +599,10 @@ function sortedKeys(obj, asc) {
     .sort((a, b) => (asc === false ? b.localeCompare(a) : a.localeCompare(b)));
 }
 
-// 2026-07-28 → 26/07/28
-function dayLabel(d) {
-  return d.slice(2).replace(/-/g, "/");
-}
-
-// 同月：26/07/05～06；跨月：26/07/31～08/01
-function rangeLabel(a, b) {
-  if (a === b) return dayLabel(a);
-  return dayLabel(a) + "～" + (a.slice(0, 7) === b.slice(0, 7) ? b.slice(8) : b.slice(5).replace("-", "/"));
-}
-
-// 把连续的空白日期（无人工接待）合并成一格，省掉整片空柱子
-function compressEmptyDays(days, buckets, isEmpty) {
-  const labels = [];
-  const out = [];
-  let i = 0;
-  while (i < days.length) {
-    if (!isEmpty(buckets[i])) {
-      labels.push(dayLabel(days[i]));
-      out.push(buckets[i]);
-      i++;
-      continue;
-    }
-    let j = i;
-    while (j + 1 < days.length && isEmpty(buckets[j + 1])) j++;
-    labels.push(rangeLabel(days[i], days[j]));
-    out.push(buckets.slice(i, j + 1).reduce((acc, b) => ({
-      total: acc.total + b.total,
-      dur: acc.dur + b.dur,
-      durCount: acc.durCount + b.durCount,
-      transfer: acc.transfer + b.transfer,
-      turns: acc.turns + b.turns,
-      dev: {}, ch: {}, nat: {},
-    }), { total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0 }));
-    i = j + 1;
-  }
-  return { labels, buckets: out, merged: days.length - labels.length };
-}
-
 function setTotal(id, label, value) {
   const el = $(id);
   if (el) el.innerHTML = label + "<b>" + fmtNum(value) + "</b>";
 }
-
-// ============================================================================
-// 会话接待分布 · 聚合粒度
-//
-// byDay 是服务端下发的完整日桶（含 dev/ch/nat 三个维度 map），所以年/季/月/周
-// 都能在客户端从它聚合出来，不需要动接口。
-// ============================================================================
-
-const RECEPT_GRAINS = {
-  day:     { label: "按天",   maxLabels: 40, rotate: 60 },
-  week:    { label: "按周",   maxLabels: 40, rotate: 45 },
-  month:   { label: "按月",   maxLabels: 36, rotate: 0  },
-  quarter: { label: "按季度", maxLabels: 24, rotate: 0  },
-  year:    { label: "按年",   maxLabels: 12, rotate: 0  },
-};
-
-let receptGrain = "day";
 
 // ISO 周键。必须和服务端 isoWeek()（src/index.js）算法一致，否则「按周」
 // 会和「会话接待分布（按周）」那张图对不上。
@@ -1471,151 +639,13 @@ function periodLabel(key, grain, multiYear) {
   }
 }
 
-/**
- * 把日桶按粒度合并。
- *
- * 注意：不能照抄 compressEmptyDays 里那个 reduce——它合并时直接
- * `dev: {}, ch: {}, nat: {}` 丢掉了三个维度 map（那里只合并空白天，无所谓）。
- * 这里必须逐 key 累加，否则 bucketKeys(buckets,"dev") 推不出设备维度，
- * 堆叠柱会塌成一根灰柱子。
- */
-function rollupDays(byDay, grain) {
-  const order = [];
-  const map = {};
-  const days = Object.keys(byDay || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
-
-  for (const day of days) {
-    const key = periodKeyOf(day, grain);
-    if (!key) continue;
-    if (!map[key]) {
-      map[key] = { total: 0, dur: 0, durCount: 0, transfer: 0, turns: 0, rep: 0, sj: 0, sjBase: 0, dev: {}, ch: {}, nat: {} };
-      order.push(key);
-    }
-    const t = map[key], b = byDay[day];
-    t.total += b.total;
-    t.dur += b.dur;
-    t.durCount += b.durCount;
-    t.transfer += b.transfer;
-    t.turns += b.turns;
-    // 复问数：旧缓存里没有这个键，按 0 处理
-    t.rep += b.rep || 0;
-    t.sj += b.sj || 0;
-    t.sjBase += b.sjBase || 0;
-    for (const f of ["dev", "ch", "nat"]) {
-      for (const [k, v] of Object.entries(b[f] || {})) t[f][k] = (t[f][k] || 0) + v;
-    }
-  }
-  return { keys: order, buckets: order.map((k) => map[k]) };
-}
-
-let uniqGrain = "week";
-
-/**
- * 接待人数（user_id 去重）/ 接待企业数（billing_account_id 去重）。
- *
- * 两个指标不构成整体（一个企业下可能有多个用户），所以用并列柱不堆叠。
- * 数据只能来自服务端 s.uniq[粒度]——去重计数无法在客户端从日粒度累加，
- * 同一个用户跨两天来过，按天是 2、按月只能算 1。
- */
-function drawUniqChart(s) {
-  const g = RECEPT_GRAINS[uniqGrain] || RECEPT_GRAINS.week;
-  const by = (s.uniq && s.uniq[uniqGrain]) || {};
-  const keys = Object.keys(by).sort();   // 五种粒度的键都可直接字典序排
-  const multiYear = new Set(keys.map((k) => k.slice(0, 4))).size > 1;
-
-  drawCombo(
-    "receptUniq", "chartReceptUniq", keys.map((k) => periodLabel(k, uniqGrain, multiYear)),
-    [
-      { label: "接待人数", data: keys.map((k) => by[k].users), color: "#806dfa" },
-      { label: "接待企业数", data: keys.map((k) => by[k].orgs), color: "#00c8a9" },
-    ],
-    [],
-    { grouped: true, pillBars: true, maxLabels: g.maxLabels, rotate: g.rotate }
-  );
-
-  // 总计用全区间去重数，不是各周期相加——相加会把跨周期的回访用户重复计数。
-  const all = s.uniqAll || { users: 0, orgs: 0 };
-  const el = $("totalReceptUniq");
-  if (el) {
-    el.innerHTML = "区间去重：接待人数 <b>" + fmtNum(all.users) + "</b> 人 · 企业 <b>" + fmtNum(all.orgs) + "</b> 家";
-  }
-  const hint = $("hintReceptUniq");
-  if (hint) hint.textContent = "各周期去重独立计算，不可相加";
-}
-
-// 设备堆叠柱 + 人工总时长 / 转人工次数双折线
-function drawReceptChart(s) {
-  const g = RECEPT_GRAINS[receptGrain] || RECEPT_GRAINS.day;
-  const { keys, buckets } = rollupDays(s.byDay, receptGrain);
-  const multiYear = new Set(keys.map((k) => k.slice(0, 4))).size > 1;
-  const labels = keys.map((k) => periodLabel(k, receptGrain, multiYear));
-  const devKeys = bucketKeys(buckets, "dev");
-
-  drawCombo(
-    "dayRecept", "chartDayRecept", labels,
-    devKeys.map((k, i) => ({ label: k, data: buckets.map((b) => b.dev[k] || 0), color: colorFor(COLOR_DEVICE, k, i) })),
-    [
-      { label: "人工接待总时长（小时）", data: buckets.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#ffb65c", axis: "y1" },
-      { label: "转人工会话接待次数", data: buckets.map((b) => b.transfer), color: "#a9b1c4", axis: "y1" },
-    ],
-    { maxLabels: g.maxLabels, rotate: g.rotate }
-  );
-  setTotal("totalDayRecept", "总计：", buckets.reduce((a, b) => a + b.total, 0));
-}
-
-let repeatGrain = "week";
-let secondGrain = "week";
-
-// 人工有效·秒转·jiri 可解答：场次（柱）+ 占有效人工 %（折线，右轴）
-function drawSecondChart(s) {
-  const g = RECEPT_GRAINS[secondGrain] || RECEPT_GRAINS.week;
-  const { keys, buckets } = rollupDays(s.byDay, secondGrain);
-  const multiYear = new Set(keys.map((k) => k.slice(0, 4))).size > 1;
-  const labels = keys.map((k) => periodLabel(k, secondGrain, multiYear));
-  const rate = (b) => (b.sjBase ? Number(((b.sj / b.sjBase) * 100).toFixed(1)) : null);
-
-  drawCombo(
-    "second", "chartSecond", labels,
-    [{ label: "秒转·可解答（接待次数）", data: buckets.map((b) => b.sj) }],
-    [{ label: "占有效人工", data: buckets.map(rate), color: "#FF708B", axis: "y1", unit: "%" }],
-    { maxLabels: g.maxLabels, rotate: g.rotate, yLabel: "接待次数", y1Label: "%" }
-  );
-  const hit = buckets.reduce((a, b) => a + b.sj, 0);
-  const base = buckets.reduce((a, b) => a + b.sjBase, 0);
-  const el = $("totalSecond");
-  if (el) el.innerHTML = "区间：<b>" + fmtNum(hit) + "</b> / 有效人工接待 <b>" + fmtNum(base) + "</b> 次 = <b>" +
-    (base ? ((hit / base) * 100).toFixed(1) : "0") + "%</b>";
-}
-
-
-// 复问率：复问会话数（柱）+ 复问率 %（折线，右轴）。
-// 口径来自质检表 field_33（上游 算复问.py：同一 user_id 隔 6~36 小时再进线且一句话总结相似度 ≥0.3，计后一场），
-// 分母是该周期内当前筛选下的全部会话。
-function drawRepeatChart(s) {
-  const g = RECEPT_GRAINS[repeatGrain] || RECEPT_GRAINS.week;
-  const { keys, buckets } = rollupDays(s.byDay, repeatGrain);
-  const multiYear = new Set(keys.map((k) => k.slice(0, 4))).size > 1;
-  const labels = keys.map((k) => periodLabel(k, repeatGrain, multiYear));
-  const rate = (b) => (b.total ? Number(((b.rep / b.total) * 100).toFixed(2)) : null);
-
-  drawCombo(
-    "repeat", "chartRepeat", labels,
-    [{ label: "复问会话数", data: buckets.map((b) => b.rep) }],
-    [{ label: "复问率", data: buckets.map(rate), color: "#FF708B", axis: "y1", unit: "%" }],
-    { maxLabels: g.maxLabels, rotate: g.rotate, yLabel: "复问会话数", y1Label: "%" }
-  );
-  const rep = buckets.reduce((a, b) => a + b.rep, 0);
-  const total = buckets.reduce((a, b) => a + b.total, 0);
-  const el = $("totalRepeat");
-  if (el) el.innerHTML = "区间：复问 <b>" + fmtNum(rep) + "</b> / 会话 <b>" + fmtNum(total) + "</b> = <b>" + (total ? ((rep / total) * 100).toFixed(2) : "0") + "%</b>";
-}
-
-// 差值胶囊：红=数值更大（更慢/更差），绿=更小。带单位。
+// 与全员中位线的差：慢＝黑，快＝绿。这里比的是「人和基准」不是「本期和上期」，
+// 所以文字直接写快/慢，不用 ▲▼，免得被读成环比。
 function deltaPill(v, unit) {
   if (v === null || v === undefined) return "";
   const suffix = unit ? " " + unit : "";
-  if (Math.abs(v) < 0.05) return '<span class="dl flat">±0.0' + suffix + "</span>";
-  return '<span class="dl ' + (v > 0 ? "up" : "down") + '">' + (v > 0 ? "+" : "") + v.toFixed(1) + suffix + "</span>";
+  if (Math.abs(v) < 0.05) return '<span class="dl flat">持平</span>';
+  return '<span class="dl ' + (v > 0 ? "down" : "up") + '">' + (v > 0 ? "慢 " : "快 ") + Math.abs(v).toFixed(1) + suffix + "</span>";
 }
 
 // 场景 × 客服 · 单次接待时长中位数：行=场景、列=客服（都不截断），每格两行「6.5分 / 20次」+ 与该行全员中位线差的胶囊
@@ -1648,7 +678,7 @@ function renderAgentScene(id, hintId, noteId, data, hint) {
   if (noteId && $(noteId)) $(noteId).innerHTML =
     '<span class="dim-note">只看有效人工，单次时长 = 每场「人工时长 ÷ 接待次数」，格内取中位数；' +
     "括号里是<b>接待次数</b>（人工侧口径统一用接待次数，不用场次）；胶囊 = 该格中位数 − <b>该行全员中位线</b>" +
-    "（把该场景全部会话合在一起取的中位数），红 = 比中位线慢、绿 = 快。" +
+    "（把该场景全部会话合在一起取的中位数），黑 = 比中位线慢、绿 = 快。" +
     "<b>已排除 " + data.excludedMulti + " 场多客服接力的会话</b>——一个会话只有一个总时长，没法拆给几个人；其余按首接客服归属。" +
     "行 = 范围内出现过的全部场景、列 = 全部客服，都按接待次数降序，不截断；表格可横向滚动。</span>";
 }
@@ -1669,7 +699,7 @@ function renderEmoList(id, hintId, list) {
       " 场，负向在前，各自按时间倒序）；上面几张表按接待次数、本表按场次，一场转了几次人工就记几次，所以两处数字可能对不上";
   }
   const link = (u) => (u ? '<a href="' + escHtml(u) + '" target="_blank" rel="noopener">' + escHtml(u.replace(/^https?:\/\//, "")) + "</a>" : "—");
-  const tag = (e) => '<b style="color:' + (e === "负向" ? "#d9484d" : "#199c58") + '">' + escHtml(e) + "</b>";
+  const tag = (e) => '<span class="' + (e === "负向" ? "emo-neg" : "emo-pos") + '">' + escHtml(e) + "</span>";
   tbl.innerHTML =
     "<thead><tr><th>情绪</th><th>时间</th><th>会话地址</th><th>接待客服</th></tr></thead><tbody>" +
     (rows.length
@@ -1696,10 +726,10 @@ function renderEmotion(id, sceneId, hintId, noteId, data, hint) {
     (data.pairs && data.pairs.length
       ? data.pairs.map((x) =>
         "<tr><td>" + escHtml(x.agent) + "</td><td>" + escHtml(x.scene) + '</td><td class="num">' + x.total +
-        '</td><td class="num"><b style="color:#d9484d">' + x.neg + '</b></td><td class="num">' + pct(x.negRate) +
-        '</td><td class="num"><b style="color:#199c58">' + x.pos + '</b></td><td class="num">' + pct(x.posRate) + "</td></tr>").join("")
+        '</td><td class="num strong">' + x.neg + '</td><td class="num">' + pct(x.negRate) +
+        '</td><td class="num strong pos">' + x.pos + '</td><td class="num">' + pct(x.posRate) + "</td></tr>").join("")
       : '<tr><td colspan="7">范围内没有负向或正向情绪的人工接待</td></tr>') +
-    '<tr class="sum hl"><td>合计</td><td>全部场景</td><td class="num">' + data.team.total +
+    '<tr class="sum team"><td>合计</td><td>全部场景</td><td class="num">' + data.team.total +
     '</td><td class="num">' + data.team.neg + '</td><td class="num">' + pct(data.team.negRate) +
     '</td><td class="num">' + data.team.pos + '</td><td class="num">' + pct(data.team.posRate) + "</td></tr></tbody>";
   const st = $(sceneId);
@@ -1715,328 +745,893 @@ function renderEmotion(id, sceneId, hintId, noteId, data, hint) {
   if (noteId && $(noteId)) $(noteId).innerHTML = "";
 }
 
-// 复问明细：时间// 复问明细：时间 / 本场会话地址 / 复问自（前一场会话地址）。服务端只下发 复问=是 的行，按时间倒序。
+// ============== 指标卡（总览） ==============
+
+function renderCards(s, previous) {
+  const d = s.derived;
+  // 与上一等长周期的对比：整段求和后再算比率，不拿日均值相比（previous 由 /api/dashboard 同一次响应带回）
+  const prevDay = previous?.byDay || null;
+  const prevLabel = previous?.from ? "上一周期 " + previous.from + " ~ " + previous.to : "上一等长周期";
+  const rate = (numerator, denominator) => (denominator > 0 ? (numerator / denominator) * 100 : 0);
+  const sum = (byDay, f) => Object.values(byDay || {}).reduce((a, b) => a + (Number(f(b)) || 0), 0);
+  const both = (f) => [sum(s.byDay, f), prevDay ? sum(prevDay, f) : null];
+  const ratio = (fn, fd) => {
+    const [n, p] = both(fn);
+    const [dn, dp] = both(fd);
+    return [rate(n, dn), p === null ? null : (dp ? rate(p, dp) : null)];
+  };
+
+  const [total, totalPrev] = both((b) => b.total);
+  const [avd, avdPrev] = ratio((b) => b.avoidable, (b) => b.transfer);
+  const [dur, durPrev] = both((b) => b.dur);
+  const [turns, turnsPrev] = both((b) => b.turns);
+
+  // 底部一排小柱：按周（区间不足 6 周时按天），最近一根黑色、其余浅灰 —— 原型 spark()
+  const weekKeys = sortedKeys(s.byWeek);
+  const sparkSrc = weekKeys.length >= 6 ? weekKeys.map((k) => s.byWeek[k]) : sortedKeys(s.byDay).map((k) => s.byDay[k]);
+  const spark = (valueOf) => {
+    const vals = sparkSrc.map((b) => { const v = valueOf(b || {}); return Number.isFinite(v) ? v : 0; });
+    const max = Math.max(...vals, 1);
+    return '<div class="spark" aria-hidden="true">' + vals.map((v, i) =>
+      '<i style="height:' + ((v / max) * 100).toFixed(1) + "%;background:" + (i === vals.length - 1 ? INK : "#DBDADD") + '"></i>').join("") + "</div>";
+  };
+  const AI_TARGET = 85;
+  const aiOk = Number(d.aiRate) >= AI_TARGET;
+
+  const cards = [
+    { label: "会话总数", value: fmtNum(s.total), pill: pillHtml(changeText(total, totalPrev)), sub: "有效会话 " + Math.round(Number(d.effectiveRate)) + "%", spark: spark((b) => Number(b.total) || 0), hint: "会话数走势" },
+    { label: "AI 独立率", value: d.aiRate, unit: "%", pill: '<span class="pill ' + (aiOk ? "good" : "bad") + '">' + (aiOk ? "达标" : "未达标") + "</span>", sub: "目标 ≥ " + AI_TARGET + "%", spark: spark((b) => rate(b.aiOnly, b.total)), hint: "AI 独立率走势" },
+    { label: "可避免转人工", value: d.avoidableRate, unit: "%", pill: pillHtml(changeText(avd, avdPrev, "pp")), sub: fmtNum(d.avoidableCount) + " / " + fmtNum(s.transferred) + " 次", spark: spark((b) => rate(b.avoidable, b.transfer)), hint: "可避免转人工占比走势" },
+    { label: "人工接待总时长", value: d.durSumHours, unit: "小时", pill: pillHtml(changeText(dur, durPrev)), sub: "单次中位 " + fmtDuration(d.durMedian), spark: spark((b) => (Number(b.dur) || 0) / 3600), hint: "人工接待时长走势" },
+    { label: "接待轮次", value: fmtNum(s.turnsSum), pill: pillHtml(changeText(turns, turnsPrev)), sub: "有时长记录 " + fmtNum(s.durCount) + " 次", spark: spark((b) => Number(b.turns) || 0), hint: "接待轮次走势" },
+  ];
+
+  $("cards").innerHTML = cards.map((c) =>
+    '<div class="card" title="' + escHtml(c.hint + "；对比" + prevLabel) + '"><div class="card-label">' + c.label + "</div>" +
+    '<div class="card-value">' + escHtml(c.value) + (c.unit ? "<small>" + c.unit + "</small>" : "") + "</div>" +
+    '<div class="card-meta">' + (c.pill || "") + '<span class="card-sub">' + c.sub + "</span></div>" +
+    c.spark + "</div>"
+  ).join("");
+}
+
+// ============== 日桶 → 任意粒度 ==============
+
+// 把日桶按粒度合并；每个桶带 key / first / last / days，供横轴标签和悬停卡标题用
+function rollupDays(byDay, grain) {
+  const order = [];
+  const map = {};
+  const days = Object.keys(byDay || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  const SUMS = ["total", "dur", "durCount", "transfer", "turns", "rep", "sj", "sjBase", "aiOnly", "avoidable", "manual", "effManual", "direct", "canA", "canBase"];
+  for (const day of days) {
+    const key = periodKeyOf(day, grain);
+    if (!key) continue;
+    if (!map[key]) {
+      map[key] = { key, first: day, last: day, days: 0, dev: {}, ch: {}, nat: {}, natDur: {} };
+      SUMS.forEach((k) => { map[key][k] = 0; });
+      order.push(key);
+    }
+    const t = map[key], b = byDay[day];
+    t.last = day; t.days++;
+    SUMS.forEach((k) => { t[k] += Number(b[k]) || 0; });
+    for (const f of ["dev", "ch", "nat", "natDur"]) {
+      for (const [k, v] of Object.entries(b[f] || {})) t[f][k] = (t[f][k] || 0) + v;
+    }
+  }
+  return { keys: order, buckets: order.map((k) => map[k]) };
+}
+
+let receptGrain = "day";
+let distGrain = "week";
+let uniqGrain = "week";
+
+// 粒度页签：下划线式分段按钮。纯前端换分桶，不重新请求接口。
+function initSeg(id, current, onPick) {
+  const box = $(id);
+  if (!box) return;
+  box.replaceChildren(...GRAIN_LIST.map(([g, label]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.grain = g;
+    b.textContent = label;
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-pressed", String(g === current));
+    return b;
+  }));
+  box.addEventListener("click", (event) => {
+    const b = event.target.closest("button[data-grain]");
+    if (!b) return;
+    box.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    onPick(b.dataset.grain);
+  });
+}
+
+// 设备三段的悬停行（pc / mobile / 未知）+ 人工接待时长线
+function deviceRows(b) {
+  const dev = b.dev || {};
+  return [
+    { name: "pc", value: fmtNum(dev.pc || 0), color: COLOR_DEVICE.pc },
+    { name: "mobile", value: fmtNum(dev.mobile || 0), color: COLOR_DEVICE.mobile },
+    { name: "未知", value: fmtNum(b.total - (dev.pc || 0) - (dev.mobile || 0)), color: COLOR_DEVICE["未知"] },
+    { name: "人工接待时长", value: (b.dur / 3600).toFixed(1) + " 小时", color: "#FFFFFF", line: true },
+  ];
+}
+
+// ============== 总览 ==============
+
+// 会话接待分布：单系列灰柱（当前周期深灰）+ 一条黑色人工时长线（右轴）；左轴会话量、右轴小时
+function drawReceptChart(s) {
+  const g = receptGrain;
+  const { buckets } = rollupDays(s.byDay, g);
+  const n = buckets.length;
+  const maxS = niceMax(Math.max(...buckets.map((b) => b.total), 0) * 1.08);
+  const maxH = niceMax(Math.max(...buckets.map((b) => b.dur / 3600), 0) * 1.15);
+  const isCurrent = (i) => (g === "day" ? i >= n - 7 : i === n - 1);
+  domChart($("heroRecept"), {
+    height: 270, max: maxS,
+    bars: buckets.map((b, i) => ({ segs: [{ v: b.total, color: isCurrent(i) ? "#4A4A50" : "#D3D2D6" }], w: BAR_W[g] })),
+    line: { values: buckets.map((b) => b.dur / 3600), color: INK, width: 2, max: maxH },
+    yTicks: [0, 0.5, 1].map((p) => ({ pos: p * 100, label: fmtNum(Math.round(maxS * p)) })),
+    hTicks: [0, 0.5, 1].map((p) => ({ pos: p * 100, label: (maxH * p).toFixed(maxH * p < 10 && p ? 1 : 0) + "h" })),
+    xLabels: xLabelsFor(buckets, g),
+    tip: (i) => {
+      const b = buckets[i];
+      if (!b) return null;
+      const p = buckets[i - 1];
+      return { title: bucketTitle(b, g), rows: deviceRows(b), foot: { name: "会话量", value: fmtNum(b.total), delta: p ? changeText(b.total, p.total) : "" } };
+    },
+  });
+  const total = buckets.reduce((a, b) => a + b.total, 0);
+  const el = $("heroTotal");
+  if (el) el.textContent = fmtNum(total);
+  const cap = $("heroCaption");
+  if (cap) {
+    const from = state.resolvedFrom || (buckets[0] && buckets[0].first) || "";
+    const to = state.resolvedTo || (buckets[n - 1] && buckets[n - 1].last) || "";
+    cap.textContent = "会话 · " + from.slice(5) + " 至 " + to.slice(5) + " · 按" + (GRAIN_LIST.find((x) => x[0] === g) || ["", ""])[1] + "聚合，悬停柱子看明细";
+  }
+}
+
+// 接待人数与企业数（总览）：两个大数字 + 按周并列细柱，不带粒度切换
+function drawOverviewUniq(s) {
+  const by = (s.uniq && s.uniq.week) || {};
+  const keys = Object.keys(by).sort();
+  const all = s.uniqAll || { users: 0, orgs: 0 };
+  const u = $("ovUniqUsers"), o = $("ovUniqOrgs");
+  if (u) u.textContent = fmtNum(all.users);
+  if (o) o.textContent = fmtNum(all.orgs);
+  const box = $("ovUniqBars");
+  if (!box) return;
+  const max = Math.max(...keys.map((k) => by[k].users), 1);
+  box.innerHTML = keys.map((k, i) =>
+    '<div class="pair-col" data-tip="' + i + '"><i style="height:' + ((by[k].users / max) * 100).toFixed(1) + "%;background:" + INK + '"></i><i style="height:' + ((by[k].orgs / max) * 100).toFixed(1) + '%;background:#AAA9AB"></i></div>'
+  ).join("");
+  box.$tip = (i) => {
+    const k = keys[i];
+    if (!k) return null;
+    const wb = (s.byWeek || {})[k] || { total: 0 };
+    return {
+      title: "W" + Number(k.slice(5)) + " · " + (wb.first ? "" : "") + "按周去重",
+      rows: [{ name: "接待人数", value: fmtNum(by[k].users) + " 人", color: INK }, { name: "接待企业数", value: fmtNum(by[k].orgs) + " 家", color: "#AAA9AB" }],
+      foot: { name: "人均会话", value: by[k].users ? (wb.total / by[k].users).toFixed(2) : "—" },
+    };
+  };
+  if (!box.dataset.bound) { box.dataset.bound = "1"; bindDomTip(box, (i) => box.$tip(i)); }
+}
+
+function renderOverview(s) {
+  drawReceptChart(s);
+  const dev = s.device || {};
+  const order = ["pc", "mobile", "未知"];
+  const keys = Object.keys(dev).sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+  const box = $("devStack");
+  if (box) box.innerHTML = stackHtml(keys.map((k, i) => ({ label: k, value: dev[k], color: colorFor(COLOR_DEVICE, k, i) })));
+  drawOverviewUniq(s);
+}
+
+// ============== 接待量与来源 ==============
+
+// 会话接待分布 · 按设备：pc / mobile / 未知 三段堆叠胶囊柱，≤20 根时柱顶标合计
+function drawVolumeDist(s) {
+  const g = distGrain;
+  const { buckets } = rollupDays(s.byDay, g);
+  const maxS = niceMax(Math.max(...buckets.map((b) => b.total), 0) * 1.12);
+  const showLabels = buckets.length <= 20;
+  domChart($("volDist"), {
+    height: 250, max: maxS,
+    bars: buckets.map((b) => {
+      const dev = b.dev || {};
+      const pc = dev.pc || 0, mob = dev.mobile || 0, unk = Math.max(0, b.total - pc - mob);
+      return { segs: [{ v: pc, color: COLOR_DEVICE.pc }, { v: mob, color: COLOR_DEVICE.mobile }, { v: unk, color: COLOR_DEVICE["未知"] }], w: BAR_W[g], label: showLabels ? fmtNum(b.total) : "" };
+    }),
+    yTicks: [0, 0.5, 1].map((p) => ({ pos: p * 100, label: fmtNum(Math.round(maxS * p)) })),
+    xLabels: xLabelsFor(buckets, g),
+    tip: (i) => {
+      const b = buckets[i];
+      if (!b) return null;
+      const p = buckets[i - 1];
+      return { title: bucketTitle(b, g), rows: deviceRows(b), foot: { name: "合计", value: fmtNum(b.total), delta: p ? changeText(b.total, p.total) : "" } };
+    },
+  });
+  const t = $("volDistTotal");
+  if (t) t.textContent = fmtNum(buckets.reduce((a, b) => a + b.total, 0));
+}
+
+// 接待人数与企业数（接待量页）：并列双柱 + 粒度切换；去重数只能来自服务端 s.uniq[粒度]，客户端不能从日粒度累加
+function drawVolumeUniq(s) {
+  const g = uniqGrain;
+  const by = (s.uniq && s.uniq[g]) || {};
+  const keys = Object.keys(by).sort();
+  const all = s.uniqAll || { users: 0, orgs: 0 };
+  const u = $("volUniqUsers"), o = $("volUniqOrgs");
+  if (u) u.textContent = fmtNum(all.users);
+  if (o) o.textContent = fmtNum(all.orgs);
+  const box = $("volUniq");
+  if (!box) return;
+  const { buckets } = rollupDays(s.byDay, g);
+  const byKey = {};
+  buckets.forEach((b) => { byKey[b.key] = b; });
+  const max = niceMax(Math.max(...keys.map((k) => by[k].users), 0) * 1.15);
+  const showLabels = keys.length <= 20;
+  const w = PAIR_W[g];
+  const n = keys.length;
+  box.innerHTML =
+    '<div class="dc"><div class="dc-body"><div class="dc-plot pair-plot" style="height:200px"><div class="dc-cols">' +
+    keys.map((k, i) =>
+      '<div class="dc-col pair" data-tip="' + i + '">' +
+      '<div class="pair-one" style="width:' + w + 'px">' + (showLabels ? '<span class="dc-label">' + fmtNum(by[k].users) + "</span>" : "") + '<i style="height:' + ((by[k].users / max) * 100).toFixed(1) + "%;background:" + INK + '"></i></div>' +
+      '<div class="pair-one" style="width:' + w + 'px">' + (showLabels ? '<span class="dc-label dim">' + fmtNum(by[k].orgs) + "</span>" : "") + '<i style="height:' + ((by[k].orgs / max) * 100).toFixed(1) + '%;background:#AAA9AB"></i></div></div>'
+    ).join("") +
+    '</div></div><div class="dc-x abs">' + xLabelsFor(keys.map((k) => byKey[k] || { key: k, first: k, last: k, days: 1 }), g).map((x) => '<span style="left:' + x.left + '%">' + escHtml(x.label) + "</span>").join("") + "</div></div></div>";
+  box.$tip = (i) => {
+    const k = keys[i];
+    if (!k) return null;
+    const b = byKey[k] || { key: k, first: k, last: k, days: 1, total: 0 };
+    return {
+      title: bucketTitle(b, g),
+      rows: [{ name: "接待人数", value: fmtNum(by[k].users) + " 人", color: INK }, { name: "接待企业数", value: fmtNum(by[k].orgs) + " 家", color: "#AAA9AB" }],
+      foot: { name: "会话数", value: fmtNum(b.total) },
+    };
+  };
+  if (!box.dataset.bound) { box.dataset.bound = "1"; bindDomTip(box, (i) => box.$tip(i)); }
+  if (n === 0) box.innerHTML = '<p class="chart-foot">范围内没有会话</p>';
+}
+
+// 入口媒介 Top 12：排名 + 名称 + 占最大值的条 + 会话数；前三名黑，其余中灰
+function renderMediumList(s) {
+  const box = $("mediumList");
+  if (!box) return;
+  const pairs = sortedPairs(s.medium, 12);
+  const max = Math.max(...pairs.map((p) => p[1]), 1);
+  box.innerHTML = pairs.map(([name, v], i) =>
+    '<li><span class="rk">' + (i + 1) + '</span><span class="nm" title="' + escHtml(name) + '">' + escHtml(name) + '</span><span class="tr"><i style="width:' + ((v / max) * 100).toFixed(1) + "%;background:" + (i < 3 ? INK : "#AAA9AB") + '"></i></span><b>' + fmtNum(v) + "</b></li>"
+  ).join("") || '<li class="empty">范围内没有会话</li>';
+}
+
+// 热力表的列：会话性质取前 5 + 其他（和原型一致）
+function natureCols(nature) {
+  const all = sortedPairs(nature).map((p) => p[0]);
+  return all.length > 6 ? { cols: all.slice(0, 5).concat(["其他"]), rest: all.slice(5) } : { cols: all, rest: [] };
+}
+
+function renderVolume(s) {
+  drawVolumeDist(s);
+  drawVolumeUniq(s);
+  renderChannelMultiples(s);
+
+  const { cols, rest } = natureCols(s.nature);
+  const valueOf = (map) => (row, k) => {
+    const src = map[row] || {};
+    if (k !== "其他") return src[k] || 0;
+    return rest.reduce((a, x) => a + (src[x] || 0), 0);
+  };
+  const channels = sortedPairs(s.channel).map((p) => p[0]);
+  heatTable("tblChannelNature", channels, cols, valueOf(s.natureByChannel || {}), "渠道");
+  const devices = sortedPairs(s.device).map((p) => p[0]);
+  heatTable("tblDeviceNature", devices, cols, valueOf(s.natureByDevice || {}), "设备");
+  renderMediumList(s);
+}
+
+// ============== AI 表现 ==============
+
+const AI_TARGET = 85;
+
+// 伪随机但固定的 100 根单位柱高度（原型用 62%~100% 的随机高度，纯装饰）
+function unitHeights() {
+  let a = 404;
+  return Array.from({ length: 100 }, () => {
+    a = (a * 1103515245 + 12345) & 0x7fffffff;
+    return 62 + (a % 3800) / 100;
+  });
+}
+
+function renderAIPanel(s) {
+  const status = s.status || {};
+  const jiriOnly = status["仅 Jiri"] || 0;
+  const manual = status["仅人工"] || 0;
+  const all = jiriOnly + manual;
+  const rateV = all ? (jiriOnly / all) * 100 : 0;
+  const on = Math.round(rateV);
+  const ok = rateV >= AI_TARGET;
+  const pillEl = $("aiRatePill");
+  if (pillEl) { pillEl.className = "pill " + (ok ? "good" : "bad"); pillEl.textContent = (ok ? "达标" : "未达标") + " · 目标 ≥ " + AI_TARGET + "%"; }
+  const big = $("aiRateBig");
+  if (big) big.innerHTML = pct(jiriOnly, all) + "<small>%</small>";
+  const cap = $("aiRateCaption");
+  if (cap) cap.textContent = "每 100 个会话，约 " + on + " 个由 Jiri 独立完成";
+  const units = $("aiUnits");
+  if (units) {
+    const hs = unitHeights();
+    units.innerHTML = hs.map((h, i) => '<i style="height:' + h.toFixed(1) + "%;background:" + (i < on ? GREEN : INK) + '"></i>').join("");
+  }
+  const lg = $("aiRateLegend");
+  if (lg) lg.innerHTML = '<span><i style="background:' + GREEN + '"></i>仅 Jiri <b>' + fmtNum(jiriOnly) + "</b></span><span><i style=\"background:" + INK + '"></i>人工在线 <b>' + fmtNum(manual) + "</b></span>";
+
+  // 转到人工的会话，Jiri 本来能否解答：能 / 部分 / 不能 三列 + 一根分段条
+  const jiri = s.jiri || {};
+  const can = jiri["能"] || 0, part = jiri["部分"] || 0, cannot = jiri["不能"] || 0;
+  const base = can + part + cannot;
+  const items = [["能", can, GREEN], ["部分", part, "#AAA9AB"], ["不能", cannot, INK]];
+  const cols = $("canAnswerCols");
+  if (cols) cols.innerHTML = items.map(([label, v, c]) =>
+    '<div><span class="lg"><i style="background:' + c + '"></i>' + label + '</span><b class="big">' + pct(v, base) + "<small>%</small></b><span class=\"sub\">" + fmtNum(v) + " 次</span></div>"
+  ).join("");
+  const bar = $("canAnswerBar");
+  if (bar) bar.innerHTML = items.filter((x) => x[1] > 0).map(([, v, c]) => '<i style="width:' + pct(v, base) + "%;background:" + c + '"></i>').join("");
+  const tn = $("canAnswerTotal");
+  if (tn) tn.textContent = fmtNum(s.transferred) + " 次转人工";
+
+  drawRepeatWeekly(s);
+  drawTrio(s);
+  renderRepeatsTable(s);
+}
+
+const REPEAT_LIMIT = 7;   // 复问率警戒线（%）
+
+// 复问率 · 每周：胶囊周柱 + 柱顶数值 + 7% 虚线警戒线；最近一周黑色、超线深灰、其余浅灰
+function drawRepeatWeekly(s) {
+  const { buckets } = rollupDays(s.byDay, "week");
+  const vals = buckets.map((b) => (b.total ? (b.rep / b.total) * 100 : 0));
+  const vMax = Math.max(REPEAT_LIMIT * 1.3, Math.max(...vals, 0) * 1.2);
+  const n = vals.length;
+  const box = $("repeatBars");
+  if (box) {
+    box.innerHTML =
+      '<div class="dc-cap" style="bottom:' + ((REPEAT_LIMIT / vMax) * 100).toFixed(1) + '%"></div>' +
+      vals.map((v, i) =>
+        '<div class="rb-col" data-tip="' + i + '"><span class="dc-label' + (i === n - 1 ? "" : " dim") + '">' + v.toFixed(1) + '</span><i style="height:' + Math.max(1, (v / vMax) * 100).toFixed(1) + "%;background:" + (i === n - 1 ? INK : v >= REPEAT_LIMIT ? "#55545A" : "#D3D2D6") + '"></i></div>'
+      ).join("");
+    box.$tip = (i) => {
+      const b = buckets[i];
+      if (!b) return null;
+      const p = buckets[i - 1];
+      const pv = p && p.total ? (p.rep / p.total) * 100 : null;
+      return { title: bucketTitle(b, "week"), rows: [{ name: "复问会话", value: fmtNum(b.rep) + " 场", color: i === n - 1 ? INK : "#D3D2D6" }, { name: "会话", value: fmtNum(b.total) + " 场", color: "#F1F0F3" }], foot: { name: "复问率", value: vals[i].toFixed(2) + "%", delta: pv === null ? "" : changeText(vals[i], pv, "pp") } };
+    };
+    if (!box.dataset.bound) { box.dataset.bound = "1"; bindDomTip(box, (i) => box.$tip(i)); }
+  }
+  const axis = $("repeatAxis");
+  if (axis) axis.innerHTML = buckets.map((b) => "<span>W" + Number(b.key.slice(5)) + "</span>").join("");
+  const cur = n ? vals[n - 1] : 0, prev = n > 1 ? vals[n - 2] : null;
+  const big = $("repeatBig");
+  if (big) big.innerHTML = cur.toFixed(1) + "<small>%</small>";
+  const pill = $("repeatPill");
+  if (pill) pill.innerHTML = prev === null ? "" : pillHtml(changeText(cur, prev, "pp"));
+}
+
+// 人工有效 · 秒转 · Jiri 可解答：三张迷你趋势卡（周粒度），量纲不同，分开画
+function drawTrio(s) {
+  const box = $("trioCards");
+  if (!box) return;
+  const { buckets } = rollupDays(s.byDay, "week");
+  const series = (f) => buckets.map((b) => { const v = f(b); return Number.isFinite(v) ? v : null; });
+  const r = (n, d) => (d ? (n / d) * 100 : NaN);
+  const defs = [
+    ["人工有效率", series((b) => r(b.effManual, b.manual)), "人工接待中被判定为有效会话的占比"],
+    ["秒转率", series((b) => r(b.direct, b.effManual)), "有效人工里用户一进来就要人工（直接转）的占比"],
+    ["Jiri 可解答率", series((b) => r(b.canA, b.canBase)), "转人工会话中 Jiri 本可解答的占比"],
+  ];
+  box.innerHTML = defs.map(([name, vals, note], k) => {
+    const pts = vals.map((v, i) => [v, i]).filter((x) => x[0] !== null);
+    const nums = pts.map((x) => x[0]);
+    const mn = Math.min(...nums), mx = Math.max(...nums);
+    const n = vals.length;
+    const path = pts.length ? smoothPath(pts.map(([v, i]) => [(n > 1 ? i / (n - 1) : 0.5) * 300, 62 - ((v - mn) / (mx - mn || 1)) * 54])) : "";
+    const last = nums.length ? nums[nums.length - 1] : null;
+    const prev = nums.length > 1 ? nums[nums.length - 2] : null;
+    const delta = last !== null && prev !== null ? changeText(last, prev, "pp") : "";
+    return '<div class="trio" data-k="' + k + '"><span class="nm">' + name + '</span><div class="val"><b>' + (last === null ? "—" : last.toFixed(1) + "%") + "</b>" + pillHtml(delta) + "</div>" +
+      '<svg viewBox="0 0 300 70" preserveAspectRatio="none" role="img" aria-label="' + name + " 近 " + n + ' 周走势">' + (path ? '<path d="' + path + 'L300 70L0 70Z" fill="#DBDADD" opacity=".55"></path><path d="' + path + '" fill="none" stroke="' + INK + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>' : "") + "</svg>" +
+      '<span class="tn">' + note + "</span></div>";
+  }).join("");
+}
+
+// 复问明细：一行一条复问链（首问 → 复问几次 → 最后谁接）；默认最近 8 条，可展开全部
 function renderRepeatsTable(s) {
   const tbl = $("tblRepeats");
   if (!tbl) return;
-  const rows = Array.isArray(s.repeats) ? s.repeats : [];
-  const link = (u) => (u ? '<a href="' + escHtml(u) + '" target="_blank" rel="noopener">' + escHtml(u.replace(/^https?:\/\//, "")) + "</a>" : "—");
+  const all = Array.isArray(s.repeats) ? s.repeats : [];
+  if (all.length && all[0].n === undefined) {
+    tbl.innerHTML = '<div class="rt-row"><span>数据缓存是旧版本，点左下角「重新拉取数据」后本表才会出数</span></div>';
+    return;
+  }
+  const expanded = !!state.repeatsAll;
+  const rows = expanded ? all : all.slice(0, 8);
+  const link = (u, text) => (u ? '<a href="' + escHtml(u) + '" target="_blank" rel="noopener">' + escHtml(text) + "</a>" : escHtml(text));
+  const who = (st) => (st === "仅 Jiri" ? '<span class="pill good">仅 Jiri</span>' : '<span class="pill">人工</span>');
   tbl.innerHTML =
-    "<thead><tr><th>时间</th><th>会话地址</th><th>复问地址</th></tr></thead><tbody>" +
+    '<div class="rt-head"><span>时间</span><span>业务场景</span><span>首次提问摘要</span><span class="num">复问</span><span class="num">最后接待</span></div>' +
     (rows.length
-      ? rows.map((r) => "<tr><td>" + escHtml(String(r.t || "").slice(0, 16).replace("T", " ")) + "</td><td>" + link(r.url) + "</td><td>" + link(r.from) + "</td></tr>").join("")
-      : '<tr><td colspan="3">当前筛选范围内没有复问会话</td></tr>') +
-    "</tbody>";
-  const note = $("repeatsNote");
-  if (note) note.textContent = "共 " + rows.length + " 场复问，跟随顶部筛选；「复问地址」是同一用户 6～36 小时前问同一件事的那场会话。";
+      ? rows.map((r) => '<div class="rt-row"><span class="dim">' + link(r.url, String(r.t || "").slice(5, 16).replace("T", " ")) + "</span><span>" + escHtml(r.scene || "—") +
+        '</span><span class="ellipsis">' + link(r.from, r.q || "（无一句话总结）") + '</span><span class="num strong">' + r.n + ' 次</span><span class="num">' + who(r.who) + "</span></div>").join("")
+      : '<div class="rt-row"><span>当前筛选范围内没有复问会话</span></div>');
+  const head = $("repeatsHead");
+  if (head) head.textContent = "复问明细 · " + (all.length > 8 && !expanded ? "最近 8 条" : all.length + " 条");
+  const more = $("repeatsMore");
+  if (more) {
+    more.hidden = all.length <= 8;
+    more.textContent = expanded ? "只看最近 8 条" : "查看全部 →";
+  }
 }
 
-function renderTrend(s) {
+// ============== 分析页：人工服务 ==============
+
+// 可避免的转人工原因（与服务端 AVOIDABLE_REASONS 一致，只用于着色）
+const AVOIDABLE = new Set(["AI能答没给机会", "没等答完/顺手转", "可自助", "答对仍要人"]);
+
+function mmss(sec) {
+  const s = Math.round(Number(sec) || 0);
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+// 顶部五张指标卡：总时长（比上期）、单次中位、转人工次数、高峰时段、负向情绪
+function renderServiceCards(s, previous) {
+  const box = $("serviceCards");
+  if (!box) return;
+  const d = s.derived || {};
+  const sum = (byDay, f) => Object.values(byDay || {}).reduce((a, b) => a + (Number(f(b)) || 0), 0);
+  const prevDur = previous && previous.byDay ? sum(previous.byDay, (b) => b.dur) : null;
+  const durPill = prevDur === null ? "" : pillHtml(changeText(sum(s.byDay, (b) => b.dur), prevDur));
+
+  // 高峰时段：7 天 × 24 小时合计后找最忙的连续两小时；最忙的两个星期几
+  let peak = "—", peakSub = "";
+  const hw = s.hourlyWeek;
+  if (hw && hw.manual) {
+    const byHour = Array.from({ length: 24 }, (_, h) => hw.manual.reduce((a, row) => a + (row[h] || 0), 0));
+    let best = 0, bi = 0;
+    for (let h = 0; h < 23; h++) { const v = byHour[h] + byHour[h + 1]; if (v > best) { best = v; bi = h; } }
+    if (best > 0) peak = bi + "–" + (bi + 2);
+    const byDow = hw.manual.map((row, i) => [i, row.reduce((a, v) => a + v, 0)]).sort((a, b) => b[1] - a[1]).filter((x) => x[1] > 0).slice(0, 2);
+    if (byDow.length) peakSub = byDow.map((x) => DOW_LABEL[x[0]]).join("、") + "最忙";
+  }
+  const emo = (s.emotion || {}).team || {};
+  const cards = [
+    { label: "人工接待总时长", value: d.durSumHours, unit: "小时", pill: durPill, sub: prevDur === null ? "" : "比上期" },
+    { label: "单次接待时长", value: mmss(d.durMedian), unit: "中位", sub: "平均 " + fmtDuration(d.durAvg) },
+    { label: "转人工次数", value: fmtNum(s.transferred), unit: "次", sub: "其中可避免 " + fmtNum(d.avoidableCount) + " 次" },
+    { label: "高峰时段", value: peak, unit: "点", sub: peakSub },
+    { label: "用户负向情绪", value: emo.negRate === null || emo.negRate === undefined ? "—" : emo.negRate, unit: "%", sub: "人工接待中负向占比" },
+  ];
+  box.innerHTML = cards.map((c) =>
+    '<div class="card"><div class="card-label">' + c.label + '</div><div class="card-value">' + escHtml(c.value) + (c.unit ? "<small>" + c.unit + "</small>" : "") + "</div>" +
+    '<div class="card-meta">' + (c.pill || "") + '<span class="card-sub">' + escHtml(c.sub) + "</span></div></div>"
+  ).join("");
+}
+
+// 每日人工接待时长与转人工次数：灰色胶囊柱（小时，柱顶标数）+ 黑线转人工次数（右轴）；连续无人工接待的日期合并成一格「周末」
+function drawDailyService(s) {
+  const days = sortedKeys(s.byDay).slice(-30);
+  const merged = [];
+  for (const day of days) {
+    const b = s.byDay[day];
+    const empty = !b || (!(b.dur > 0) && !(b.transfer > 0));
+    const last = merged[merged.length - 1];
+    if (empty && last && last.empty) { last.to = day; last.n++; continue; }
+    merged.push({ from: day, to: day, n: 1, empty, dur: b ? b.dur : 0, transfer: b ? b.transfer : 0 });
+  }
+  const dow = (d) => (new Date(d + "T00:00:00Z").getUTCDay() + 6) % 7;
+  const isWeekend = (m) => { for (let t = new Date(m.from + "T00:00:00Z"); t <= new Date(m.to + "T00:00:00Z"); t.setUTCDate(t.getUTCDate() + 1)) { if (dow(t.toISOString().slice(0, 10)) < 5) return false; } return true; };
+  const hMax = niceMax(Math.max(...merged.map((m) => m.dur / 3600), 0) * 1.1);
+  const tMax = niceMax(Math.max(...merged.map((m) => m.transfer), 0) * 1.1);
+  domChart($("dailyService"), {
+    height: 220, max: hMax,
+    bars: merged.map((m) => (m.empty
+      ? { segs: [{ v: hMax * 0.02, color: "#ECEBEF" }], w: 30, label: "" }
+      : { segs: [{ v: m.dur / 3600, color: "#AAA9AB" }], w: 12, label: (m.dur / 3600).toFixed(1), labelClass: "dim" })),
+    line: { values: merged.map((m) => m.transfer), color: INK, width: 2, max: tMax },
+    xPerBar: merged.map((m) => (m.empty && m.n > 1 ? (isWeekend(m) ? "周末" : m.from.slice(5) + "–" + m.to.slice(5)) : m.from.slice(5))),
+    tip: (i) => {
+      const m = merged[i];
+      if (!m) return null;
+      if (m.empty) return { title: m.from + (m.n > 1 ? " – " + m.to.slice(5) : "") + (isWeekend(m) ? " · 周末" : "") + " · 无人工接待", rows: [{ name: "转人工", value: "0 次", color: INK, line: true }], foot: { name: "人工接待时长", value: "0 小时" } };
+      const p = merged.slice(0, i).reverse().find((x) => !x.empty);
+      return { title: m.from + (p ? " · 对比 " + p.from.slice(5) : ""), rows: [{ name: "转人工", value: fmtNum(m.transfer) + " 次", color: INK, line: true }], foot: { name: "人工接待时长", value: (m.dur / 3600).toFixed(1) + " 小时", delta: p ? changeText(m.dur, p.dur) : "" } };
+    },
+  });
+  const h = $("dailyServiceTitle");
+  if (h) h.textContent = "每日人工接待时长与转人工次数 · 近 " + days.length + " 天";
+}
+
+// 会话时长 · 按周：有效 / 填表人 / 其他 三段堆叠（小时，柱顶标合计）+ 绿色单会话平均时长线（分钟，右轴）
+function drawWeekDur(s) {
   const weeks = sortedKeys(s.byWeek);
-  const weekB = weeks.map((w) => s.byWeek[w]);
-
-  // 会话接待分布：粒度可切（天/周/月/季/年），见 drawReceptChart
-  drawReceptChart(s);
-  drawRepeatChart(s);
-  drawSecondChart(s);
-  drawUniqChart(s);
-  renderRepeatsTable(s);
-
-  // 每周会话来源：渠道堆叠
-  const chKeys = bucketKeys(weekB, "ch");
-  drawCombo(
-    "weekChannel", "chartWeekChannel", weeks,
-    chKeys.map((k, i) => ({ label: k, data: weekB.map((b) => b.ch[k] || 0), color: colorFor(COLOR_CHANNEL, k, i) })),
-    [], { rotate: 0 }
-  );
-  setTotal("totalWeekChannel", "总计：", weekB.reduce((a, b) => a + b.total, 0));
-
-  // 渠道 × 会话性质
-  const channels = sortedPairs(s.channel).map((p) => p[0]);
-  const natKeys = sortedPairs(s.nature).map((p) => p[0]);
-  drawCombo(
-    "channelNature", "chartChannelNature", channels,
-    natKeys.map((k, i) => ({
-      label: k,
-      data: channels.map((c) => (s.natureByChannel[c] || {})[k] || 0),
-      color: colorFor(COLOR_NATURE, k, i),
-    })),
-    [], { rotate: 20 }
-  );
-  setTotal("totalChannelNature", "记录数量：", s.total);
-
-  // 设备 × 会话性质
-  const devices = sortedPairs(s.device).map((p) => p[0]);
-  drawCombo(
-    "deviceNature", "chartDeviceNature", devices,
-    natKeys.map((k, i) => ({
-      label: k,
-      data: devices.map((d) => (s.natureByDevice[d] || {})[k] || 0),
-      color: colorFor(COLOR_NATURE, k, i),
-    })),
-    [], { rotate: 0 }
-  );
-  setTotal("totalDeviceNature", "总计：", s.total);
-
-  drawBar("medium", "chartMedium", sortedPairs(s.medium, 12), { horizontal: true, colors: ["#806dfa", "#00d9d4", "#ff8dac", "#ffb65c"] });
+  const wb = weeks.map((w) => s.byWeek[w]);
+  const hrs = (b, k) => (((b.natDur || {})[k] || 0) / 3600);
+  const other = (b) => Math.max(0, (b.dur - ((b.natDur || {})["有效"] || 0) - ((b.natDur || {})["填表人"] || 0)) / 3600);
+  const avg = (b) => (b.durCount ? b.dur / b.durCount / 60 : null);
+  const tMax = Math.max(...wb.map((b) => b.dur / 3600), 0) * 1.18 || 1;
+  domChart($("weekDur"), {
+    height: 210, max: tMax,
+    bars: wb.map((b) => ({ segs: [{ v: hrs(b, "有效"), color: INK }, { v: hrs(b, "填表人"), color: "#8E8D93" }, { v: other(b), color: "#DBDADD" }], w: 22, label: (b.dur / 3600).toFixed(1) })),
+    line: { values: wb.map(avg), color: GREEN, width: 3, max: Math.max(...wb.map((b) => avg(b) || 0), 1) * 1.3 },
+    xPerBar: weeks.map((w) => "W" + Number(w.slice(5))),
+    tip: (i) => {
+      const b = wb[i];
+      if (!b) return null;
+      const p = wb[i - 1];
+      return {
+        title: "W" + Number(weeks[i].slice(5)) + " · 人工时长",
+        rows: [
+          { name: "有效", value: hrs(b, "有效").toFixed(1) + " 小时", color: INK },
+          { name: "填表人", value: hrs(b, "填表人").toFixed(1) + " 小时", color: "#8E8D93" },
+          { name: "其他", value: other(b).toFixed(1) + " 小时", color: "#DBDADD" },
+          { name: "单会话平均", value: avg(b) === null ? "—" : avg(b).toFixed(1) + " 分钟", color: GREEN, line: true },
+        ],
+        foot: { name: "合计", value: (b.dur / 3600).toFixed(1) + " 小时", delta: p ? changeText(b.dur, p.dur) : "" },
+      };
+    },
+  });
 }
 
-function renderScene(s) {
-  drawDoughnut("nature2", "chartNature2", sortedPairs(s.nature), { colorMap: COLOR_NATURE });
-  setTotal("totalNature2", "记录数量：", s.total);
+// 02 为什么转人工：方式两列大数字 + 分段条；原因横条（可避免为绿）
+function renderWhyTransfer(s) {
+  const way = s.way || {};
+  const talk = way["沟通后转"] || 0, direct = way["直接转"] || 0;
+  const all = talk + direct;
+  const cols = $("wayCols");
+  if (cols) cols.innerHTML =
+    '<div><span class="lg"><i style="background:' + INK + '"></i>沟通后转</span><b class="big">' + pct(talk, all) + "<small>%</small></b><span class=\"sub\">" + fmtNum(talk) + " 次 · 先和 Jiri 聊过</span></div>" +
+    '<div><span class="lg"><i style="background:#DBDADD;box-shadow:inset 0 0 0 1px rgba(0,0,0,.06)"></i>直接转</span><b class="big">' + pct(direct, all) + "<small>%</small></b><span class=\"sub\">" + fmtNum(direct) + " 次 · 一进来就要人工</span></div>";
+  const bar = $("wayBar");
+  if (bar) bar.innerHTML = (talk ? '<i style="width:' + pct(talk, all) + "%;background:" + INK + '"></i>' : "") + (direct ? '<i style="width:' + pct(direct, all) + '%;background:#DBDADD"></i>' : "");
 
-  drawBar("scene", "chartScene", sortedPairs(s.effectiveScene), { horizontal: true, colors: ["#806dfa", "#ff8dac", "#00c8a9", "#ffb65c"] });
-  drawDoughnut("plan", "chartPlan", sortedPairs(s.plan));
+  const reasons = sortedPairs(s.reason);
+  const max = Math.max(...reasons.map((p) => p[1]), 1);
+  const list = $("reasonList");
+  if (list) list.innerHTML = reasons.map(([name, n]) =>
+    '<div class="reason"><span title="' + escHtml(name) + '">' + escHtml(name) + '</span><span class="tr"><i style="width:' + ((n / max) * 100).toFixed(1) + "%;background:" + (AVOIDABLE.has(name) ? GREEN : "#D3D2D6") + '"></i></span><b>' + fmtNum(n) + "</b></div>"
+  ).join("") || '<p class="chart-foot">范围内没有转人工</p>';
+  const d = s.derived || {};
+  const av = $("reasonAvoidable");
+  if (av) av.textContent = "可避免，合计 " + d.avoidableRate + "%";
+}
+
+// 场景 × 客服 · 单次接待时长中位数（热力格）：和同场景全员中位比，≤0.8 绿、≤1.1 浅灰、≤1.35 中灰、更慢深灰；样本 < 3 次写 —
+function cellTone(ratio) {
+  if (ratio <= 0.8) return { bg: GREEN, fg: INK };
+  if (ratio <= 1.1) return { bg: "#F1F0F3", fg: INK };
+  if (ratio <= 1.35) return { bg: "#AAA9AB", fg: INK };
+  return { bg: "#3A3A40", fg: "#FFFFFF" };
+}
+
+function renderAgentSceneHeat(data) {
+  const box = $("agentSceneHeat");
+  if (!box) return;
+  if (!data || !data.rows || !data.rows.length) {
+    box.innerHTML = '<p class="chart-foot">' + (data && !data.rows ? "数据缓存是旧版本，点左下角「重新拉取数据」后本表才会出数" : "范围内没有可算单次时长的有效人工接待") + "</p>";
+    return;
+  }
+  const agents = data.agents;
+  const tpl = "170px repeat(" + agents.length + ", minmax(0, 1fr)) 96px";
+  const secOf = (c) => (c.sec !== undefined ? c.sec : c.v * 60);
+  box.innerHTML =
+    '<div class="hm" style="min-width:' + Math.max(600, 270 + agents.length * 96) + 'px">' +
+    '<div class="hm-row head" style="grid-template-columns:' + tpl + '"><span>场景</span>' + agents.map((a) => "<span>" + escHtml(a) + "</span>").join("") + '<span class="med">全员中位</span></div>' +
+    data.rows.map((r) => {
+      const base = r.base ? secOf(r.base) : 0;
+      return '<div class="hm-row" style="grid-template-columns:' + tpl + '"><span class="nm" title="' + escHtml(r.scene) + '">' + escHtml(r.scene) + "</span>" +
+        r.cells.map((c, k) => {
+          if (!c || c.n < 3) return '<span class="cell none" title="' + escHtml(agents[k] + "：样本不足") + '">—</span>';
+          const sec = secOf(c);
+          const t = cellTone(base ? sec / base : 1);
+          return '<span class="cell" style="background:' + t.bg + ";color:" + t.fg + '" title="' + escHtml(agents[k] + " · " + r.scene + "：中位 " + mmss(sec) + "（全员 " + mmss(base) + "）· " + c.n + " 次") + '">' + mmss(sec) + "</span>";
+        }).join("") +
+        '<span class="cell med">' + (r.base ? mmss(base) : "—") + "</span></div>";
+    }).join("") + "</div>";
+}
+
+// 用户情绪 · 按客服：每人一行（主要负向场景 / 接待次数 / 黑-灰-绿情绪构成条 / 负向 / 正向），按负向占比降序
+function renderEmotionAgents(data) {
+  const box = $("emotionAgents");
+  if (!box) return;
+  if (!data || !data.agents) {
+    box.innerHTML = '<p class="chart-foot">数据缓存是旧版本，点左下角「重新拉取数据」后本表才会出数</p>';
+    return;
+  }
+  const topScene = {};
+  (data.pairs || []).forEach((p) => { if (p.neg > 0 && (!topScene[p.agent] || p.neg > topScene[p.agent].neg)) topScene[p.agent] = p; });
+  const rows = data.agents.slice().sort((a, b) => (b.neg / (b.total || 1)) - (a.neg / (a.total || 1)));
+  const pctOf = (n, t) => (t ? ((n / t) * 100).toFixed(1) : "0.0");
+  box.innerHTML =
+    '<div class="em-row head"><span>姓名</span><span>主要负向场景</span><span class="num">接待次数</span><span>情绪构成</span><span class="num">负向</span><span class="num">正向</span></div>' +
+    (rows.length ? rows.map((a) =>
+      '<div class="em-row"><span class="nm">' + escHtml(a.name) + '</span><span class="dim">' + escHtml(topScene[a.name] ? topScene[a.name].scene : "—") + '</span><span class="num strong">' + fmtNum(a.total) + "</span>" +
+      '<span class="bar"><i style="width:' + pctOf(a.neg, a.total) + "%;background:" + INK + '"></i><i class="mid"></i><i style="width:' + pctOf(a.pos, a.total) + "%;background:" + GREEN + '"></i></span>' +
+      '<span class="num"><b>' + a.neg + "</b> <small>(" + pctOf(a.neg, a.total) + "%)</small></span><span class=\"num\"><b>" + a.pos + "</b> <small>(" + pctOf(a.pos, a.total) + "%)</small></span></div>"
+    ).join("") : '<div class="em-row"><span>范围内没有带客服标注的人工接待</span></div>');
+}
+
+// 情绪会话明细：负向 / 正向两个页签；一行 = 情绪胶囊 / 时间 / 一句话总结（链接到原文）/ 接待客服
+function renderEmoDetail(list) {
+  const box = $("emoDetail");
+  if (!box) return;
+  const rows = Array.isArray(list) ? list : null;
+  if (!rows) { box.innerHTML = '<p class="chart-foot">数据缓存是旧版本，点左下角「重新拉取数据」后本表才会出数</p>'; return; }
+  const mode = state.emoTab === "pos" ? "正向" : "负向";
+  document.querySelectorAll("#emoTabs button[data-mode]").forEach((b) => b.setAttribute("aria-pressed", String((b.dataset.mode === "pos" ? "正向" : "负向") === mode)));
+  const sel = rows.filter((r) => r.emo === mode);
+  const link = (r) => {
+    const text = r.q || (r.url ? r.url.replace(/^https?:\/\//, "") : "（无一句话总结）");
+    return r.url ? '<a href="' + escHtml(r.url) + '" target="_blank" rel="noopener">' + escHtml(text) + " ↗</a>" : escHtml(text);
+  };
+  box.innerHTML =
+    '<div class="ed-row head"><span>情绪</span><span>时间</span><span>会话</span><span class="num">接待客服</span></div>' +
+    (sel.length ? sel.map((r) =>
+      '<div class="ed-row"><span><span class="' + (mode === "负向" ? "emo-neg" : "emo-pos") + '">' + mode + '</span></span><span class="dim">' + escHtml(String(r.t || "").slice(5, 16).replace("T", " ")) + '</span><span class="ellipsis">' + link(r) + '</span><span class="num">' + escHtml(r.agent || "—") + "</span></div>"
+    ).join("") : '<div class="ed-row"><span>范围内没有' + mode + '情绪的人工会话</span></div>');
+}
+
+function renderService(s) {
+  renderServiceCards(s, state.previous);
+  drawDailyService(s);
+  drawHourlyWeek(s);
+  drawManualBusy(s);
+  drawWeekDur(s);
+  renderWhyTransfer(s);
+  renderAgentSceneHeat(s.agentScene);
+  renderEmotionAgents(s.emotion);
+  renderEmoDetail((s.emotion || {}).emoList);
+  renderAgentsCum();
+}
+
+// 累计评估表来自 /api/weekly 的最新一周（第 27 周起累计），不随顶部筛选变化
+async function renderAgentsCum() {
+  if (!state.weeklyLoaded) await loadWeekly();
+  const w = state.weeks.at(-1);
+  if (!w) return;
+  agentTable("tblAgentsCum", w.agentsCum);
+  const hint = $("agentHintCum");
+  if (hint) hint.textContent = "只看仅人工 · 第 " + Number(String(w.cumFromWeek || "").slice(5)) + " 周 ～ 第 " + Number(w.week.slice(5)) + " 周累计 · 复问样本小，看趋势用这张";
+}
+
+// 24 小时服务节奏：周一～周日 × 24 小时的人工会话数热力格。0 留空白，其余按最大值分 5 档，最深一档是主色。
+const HEAT5 = ["transparent", "#E4E3E7", "#BDBCC2", "#8D8C93", "#4A4A50", "#0B0B0C"];
+const DOW_LABEL = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+function drawHourlyWeek(s) {
+  const grid = $("hourlyGrid");
+  if (!grid) return;
+  const hw = s.hourlyWeek;
+  if (!hw || !hw.manual) {
+    grid.innerHTML = '<p class="chart-foot">数据缓存是旧版本，点左下角「重新拉取数据」后本图才会出数</p>';
+    return;
+  }
+  // 只画 09:30～18:30（窗口随数据下发）；旧缓存还是 24 小时格时按 60 分钟一格退化处理
+  const step = Number(hw.slotMinutes) || 60;
+  const win = hw.window || { start: 0, end: 24 * 60 };
+  const from = Math.floor(win.start / step), to = Math.ceil(win.end / step);
+  const cols = to - from;
+  const rows = hw.manual.map((row) => row.slice(from, to));
+  const max = Math.max(...rows.flat(), 0);
+  grid.style.setProperty("--heat-cols", cols);
+  grid.innerHTML = rows.map((row, d) =>
+    '<div class="heat-row"><span>' + DOW_LABEL[d] + "</span>" +
+    row.map((n, k) => {
+      const lv = n ? Math.min(5, Math.max(1, Math.ceil((n / max) * 5))) : 0;
+      const m = (from + k) * step;
+      return '<i style="background:' + HEAT5[lv] + '" title="' + DOW_LABEL[d] + " " + minuteLabel(m) + "–" + minuteLabel(m + step) + " · 人工会话 " + n + ' 场"></i>';
+    }).join("") + "</div>"
+  ).join("") +
+    // 横轴：整点处标小时数
+    '<div class="heat-row heat-axis"><span></span>' + Array.from({ length: cols }, (_, k) => { const m = (from + k) * step; return "<b>" + (m % 60 === 0 ? m / 60 : "") + "</b>"; }).join("") + "</div>";
+}
+
+// 人工服务忙闲：全天 96 个 15 分钟格，格高 = 同时在线人工会话数（工作日 / 周末各自的日均），虚线是在岗容量
+function minuteLabel(minute) {
+  return String(Math.floor(minute / 60)).padStart(2, "0") + ":" + String(minute % 60).padStart(2, "0");
+}
+
+function drawManualBusy(s) {
+  const busy = s.manualBusy || {};
+  const box = $("manualBusyBars");
+  if (!box) return;
+  if (!Array.isArray(busy.weekday)) {
+    box.innerHTML = '<p class="chart-foot">数据缓存是旧版本，点左下角「重新拉取数据」后本图才会出数</p>';
+    return;
+  }
+  const mode = state.manualBusyMode === "weekend" ? "weekend" : "weekday";
+  document.querySelectorAll("#manualBusyModes button[data-mode]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+  const cap = Number(busy.capacity) || 6;
+  const step = Number(busy.slotMinutes) || 15;
+  // 只画 09:30～18:30（窗口随数据下发）
+  const win = busy.window || { start: 0, end: 24 * 60 };
+  const from = Math.floor(win.start / step), to = Math.ceil(win.end / step);
+  const vals = (busy[mode] || []).slice(from, to);
+  const top = Math.max(cap * 1.5, Math.max(...vals, 0) * 1.1);
+  const tone = (v) => (v === 0 ? "#ECEBEF" : v > cap ? INK : v > cap / 2 ? "#8E8D93" : "#DBDADD");
+  box.innerHTML =
+    '<div class="busy-cap" style="bottom:' + ((cap / top) * 100).toFixed(1) + '%"><span>在岗容量 ' + cap + "</span></div>" +
+    vals.map((v, i) => '<i data-tip="' + i + '" style="height:' + Math.max(3, (v / top) * 100).toFixed(1) + "%;background:" + tone(v) + '"></i>').join("");
+  // 横轴：窗口首尾 + 每 90 分钟一个刻度
+  const axis = $("manualBusyAxis");
+  if (axis) {
+    const span = win.end - win.start;
+    const ticks = [];
+    for (let m = win.start; m <= win.end; m += 90) ticks.push(m);
+    if (ticks[ticks.length - 1] !== win.end) ticks.push(win.end);
+    axis.innerHTML = ticks.map((m) => '<span style="left:' + (((m - win.start) / span) * 100).toFixed(2) + '%">' + minuteLabel(m) + "</span>").join("");
+  }
+  if (!box.dataset.bound) {
+    box.dataset.bound = "1";
+    bindDomTip(box, (i) => {
+      const b = (LAST_STATS || s).manualBusy || {};
+      const m = state.manualBusyMode === "weekend" ? "weekend" : "weekday";
+      const w = b.window || { start: 0, end: 24 * 60 };
+      const off = Math.floor(w.start / step);
+      const cur = (b[m] || [])[off + i];
+      if (cur === undefined) return null;
+      const c = Number(b.capacity) || 6;
+      const days = m === "weekend" ? b.weekendDays : b.weekdayDays;
+      return {
+        title: minuteLabel((off + i) * step) + " – " + minuteLabel((off + i + 1) * step) + "（" + (m === "weekend" ? "周末" : "工作日") + " " + (days || 0) + " 天平均）",
+        rows: [{ name: "同时在线人工会话", value: Number(cur).toFixed(1), color: tone(cur) }],
+        foot: { name: "在岗容量", value: String(c) },
+        notes: [cur > c ? "超出容量" : "", b.noDuration ? "另有 " + b.noDuration + " 场无时长记录未计入" : ""],
+      };
+    });
+  }
+}
+
+// ============== 分析页：接待量与来源 ==============
+
+// 浅 → 深的单色阶，用于热力格；过半后改白字
+function heatCell(v, max) {
+  if (!v) return '<td style="background:#FAFAFB;color:#AAA9AB">—</td>';
+  const t = Math.pow(v / max, .8);
+  const a = [244, 243, 246], z = [11, 11, 12];
+  const c = a.map((x, i) => Math.round(x + (z[i] - x) * t));
+  return '<td style="background:rgb(' + c.join(",") + ");color:" + (t > .5 ? "#fff" : INK) + '">' + fmtNum(v) + "</td>";
+}
+
+function heatTable(id, rowKeys, colKeys, valueOf, firstHead) {
+  const tbl = $(id);
+  if (!tbl) return;
+  let max = 0;
+  rowKeys.forEach((r) => colKeys.forEach((c) => { max = Math.max(max, valueOf(r, c) || 0); }));
+  tbl.innerHTML = "<thead><tr><th>" + firstHead + "</th>" + colKeys.map((c) => "<th>" + escHtml(c) + "</th>").join("") +
+    '<th style="text-align:right">合计</th></tr></thead><tbody>' +
+    rowKeys.map((r) => {
+      const vals = colKeys.map((c) => valueOf(r, c) || 0);
+      return "<tr><td>" + escHtml(r) + "</td>" + vals.map((v) => heatCell(v, max)).join("") +
+        '<td class="total">' + fmtNum(vals.reduce((a, v) => a + v, 0)) + "</td></tr>";
+    }).join("") + "</tbody>";
+}
+
+// 每个渠道一张小图（小倍数）：比 6 色堆叠在一根柱上好读；柱上标数、柱下标周
+function renderChannelMultiples(s) {
+  const grid = $("chanGrid");
+  if (!grid) return;
+  const allWeeks = sortedKeys(s.byWeek);
+  // 区间首尾常是半周：只画完整周（原型口径），避免最后一周只有 1 天把柱子压扁；范围内没有完整周时退回全部周
+  const dayCount = {};
+  sortedKeys(s.byDay).forEach((d) => { const w = isoWeekOf(d); dayCount[w] = (dayCount[w] || 0) + 1; });
+  const full = (w) => (dayCount[w] || 0) >= 7;
+  const fullWeeks = allWeeks.filter(full);
+  const weeks = fullWeeks.length ? fullWeeks : allWeeks;
+  const lastFull = fullWeeks.at(-1), prevFull = fullWeeks.at(-2);
+  const channels = sortedPairs(s.channel);
+  const total = channels.reduce((a, p) => a + p[1], 0);
+  const label = (w) => "W" + Number(w.slice(5));
+  const step = weeks.length > 12 ? 2 : 1;
+
+  grid.innerHTML = channels.map(([name, count], ci) => {
+    const vals = weeks.map((w) => (s.byWeek[w].ch || {})[name] || 0);
+    const max = Math.max(...vals, 1);
+    const last = lastFull ? (s.byWeek[lastFull].ch || {})[name] || 0 : 0;
+    const prev = prevFull ? (s.byWeek[prevFull].ch || {})[name] || 0 : 0;
+    const change = lastFull && prevFull ? changeText(last, prev) : "";
+    return '<div class="mult" data-ch="' + ci + '">' +
+      '<div class="mult-head"><div class="mult-name"><b>' + escHtml(name) + "</b><small>累计 " + fmtNum(count) + " · 占全部 " + pct(count, total) + "%</small></div>" +
+      (lastFull ? '<div class="mult-last"><small>' + label(lastFull) + "</small><b>" + fmtNum(last) + "</b>" + pillHtml(change) + "</div>" : "") + "</div>" +
+      '<div class="cols" style="height:132px">' + vals.map((v, i) => {
+        const now = weeks[i] === lastFull;
+        return '<div class="col" data-tip="' + i + '"><span class="v' + (now ? " strong" : "") + '">' + fmtNum(v) + "</span>" +
+          '<span class="bar' + (now ? " now" : "") + '" style="height:' + ((v / max) * 78).toFixed(1) + "%;" + (full(weeks[i]) ? "" : "opacity:.45") + '"></span></div>';
+      }).join("") + "</div>" +
+      '<div class="axis">' + weeks.map((w, i) => "<span>" + ((weeks.length - 1 - i) % step === 0 ? label(w) : "") + "</span>").join("") + "</div></div>";
+  }).join("");
+  grid.querySelectorAll(".mult").forEach((card) => {
+    const name = channels[Number(card.dataset.ch)][0];
+    bindDomTip(card, (i) => {
+      const w = weeks[i];
+      const v = (s.byWeek[w].ch || {})[name] || 0;
+      const p = i > 0 ? (s.byWeek[weeks[i - 1]].ch || {})[name] || 0 : null;
+      return {
+        title: name + " · " + label(w) + (full(w) ? "" : "（不完整）"),
+        rows: [{ name: "占该周全部会话", value: pct(v, s.byWeek[w].total) + "%", color: weeks[i] === lastFull ? INK : "#C9C8CD" }],
+        foot: { name: "会话", value: fmtNum(v), delta: p !== null ? changeText(v, p) : "" },
+        notes: [p !== null ? "涨跌对比上一周" : ""],
+      };
+    });
+  });
+  const hint = $("hintWeekChannel");
+  if (hint) hint.textContent = (weeks.length ? label(weeks[0]) + " – " + label(weeks.at(-1)) : "") + (fullWeeks.length ? " · 只算完整周 · 黑色为最近一周" : " · 范围内没有完整周，浅色为不完整周");
+}
+
+// ============== 分析页：业务与套餐 ==============
+
+// 排名条：第一名深色，其余中灰；「未知 / 未标记」一律浅灰，不抢注意力
+function rankHtml(pairs, total, muted) {
+  const max = Math.max(...pairs.map((p) => p[1]), 1);
+  return pairs.map(([name, v], i) => {
+    const color = (muted || []).includes(name) ? "#DBDADD" : i === 0 ? INK : "#8D8C93";
+    return '<div><div class="rank-row-head"><span>' + escHtml(name) + "</span><span><b>" + fmtNum(v) + "</b><small>" + pct(v, total) + "%</small></span></div>" +
+      '<div class="track"><i style="width:' + ((v / max) * 100).toFixed(1) + "%;background:" + color + '"></i></div></div>';
+  }).join("");
+}
+
+function renderBusiness(s) {
+  const nature = sortedPairs(s.nature);
+  $("rankNature").innerHTML = rankHtml(nature, s.total, ["未标记"]);
+  const tn = $("totalNature2");
+  if (tn) tn.textContent = "全部 " + fmtNum(s.total);
+  const plan = sortedPairs(s.plan);
+  $("rankPlan").innerHTML = rankHtml(plan, plan.reduce((a, p) => a + p[1], 0));
   // 「无关」占九成以上，会把其他分类压成一条线，剔除后只看真正相关的会话
   const xj = sortedPairs(s.xjCategory).filter((p) => p[0] !== "无关");
-  drawDoughnut("xj", "chartXj", xj);
-  setTotal("totalXj", "相关会话：", xj.reduce((a, p) => a + p[1], 0));
+  const xjTotal = xj.reduce((a, p) => a + p[1], 0);
+  $("rankXj").innerHTML = xj.length ? rankHtml(xj, xjTotal) : '<p class="chart-foot">范围内没有小金商户相关会话</p>';
+  const tx = $("totalXj");
+  if (tx) tx.textContent = "无关 " + fmtNum((s.xjCategory || {})["无关"] || 0) + " 已排除";
 
-  // 行列都按有效会话口径，避免出现全零的行/列
+  // 业务场景分布：竖向胶囊柱，柱下依次是占比、场景名（两行对齐在柱底）
+  const scenes = sortedPairs(s.effectiveScene);
+  const sceneTotal = scenes.reduce((a, p) => a + p[1], 0);
+  const max = Math.max(...scenes.map((p) => p[1]), 1);
+  const color = (name, i) => (name === "其他" || name === "未分类" ? "#DBDADD" : i < 3 ? INK : "#AAA9AB");
+  // 柱下第二行：Jiri 独立解决率 = 该场景有效会话里仅 Jiri 接待的占比，≥ 90% 用绿
+  const aiOf = (name) => { const a = (s.effectiveSceneAI || {})[name] || 0, t = (s.effectiveScene || {})[name] || 0; return t ? Math.round((a / t) * 100) : null; };
+  const aiPill = (name) => { const r = aiOf(name); return r === null ? "" : '<span class="pill' + (r >= 90 ? " good" : "") + '">AI ' + r + "%</span>"; };
+  const box = $("sceneBars");
+  if (box) {
+    box.innerHTML = '<div class="cols">' + scenes.map(([name, v], i) =>
+      '<div class="col" data-tip="' + i + '"><span class="v strong">' + fmtNum(v) + '</span><span class="bar" style="height:' + ((v / max) * 86).toFixed(1) + "%;background:" + color(name, i) + '"></span></div>'
+    ).join("") + "</div>" +
+      '<div class="axis">' + scenes.map(([name, v]) => "<div><b>" + pct(v, sceneTotal) + "%</b>" + aiPill(name) + "<small>" + escHtml(name) + "</small></div>").join("") + "</div>";
+    if (!box.dataset.bound) {
+      box.dataset.bound = "1";
+      bindDomTip(box, (i) => {
+        const cur = sortedPairs((LAST_STATS || s).effectiveScene);
+        const curTotal = cur.reduce((a, p) => a + p[1], 0);
+        const x = cur[i];
+        if (!x) return null;
+        const ai = aiOf(x[0]);
+        return { title: x[0], rows: [{ name: "有效会话", value: fmtNum(x[1]), color: color(x[0], i) }, { name: "Jiri 独立解决", value: ai === null ? "—" : ai + "%", color: ai !== null && ai >= 90 ? GREEN : "#D3D2D6" }], foot: { name: "占有效会话", value: pct(x[1], curTotal) + "%" } };
+      });
+    }
+  }
+
+  // 行列都按有效会话口径，避免出现全零的行/列；套餐按档位从低到高固定排序，不按数量排
   const planTotals = {};
   for (const row of Object.values(s.sceneByPlan || {})) {
     for (const [k, v] of Object.entries(row)) planTotals[k] = (planTotals[k] || 0) + v;
   }
-  // 套餐按档位从低到高固定排序，不按数量排
   const PLAN_ORDER = ["免费版", "专业版", "专业增强版", "企业基础版", "企业协作版", "企业高级版", "商业合作版"];
   const plans = Object.keys(planTotals).sort((a, b) => {
     const ia = PLAN_ORDER.indexOf(a);
     const ib = PLAN_ORDER.indexOf(b);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
   });
-  const scenes = sortedPairs(s.effectiveScene).map((p) => p[0]);
-  let html = "<thead><tr><th>业务场景</th>" +
-    plans.map((p) => "<th>" + escHtml(p) + "</th>").join("") + "<th>合计</th></tr></thead><tbody>";
-  for (const sc of scenes) {
-    const row = s.sceneByPlan[sc] || {};
-    const total = plans.reduce((sum, p) => sum + (row[p] || 0), 0);
-    html += "<tr><td>" + escHtml(sc) + "</td>" +
-      plans.map((p) => "<td>" + (row[p] || "—") + "</td>").join("") +
-      "<td><b>" + total + "</b></td></tr>";
-  }
-  $("crossTable").innerHTML = html + "</tbody>";
-}
-
-function renderCost(s) {
-  const weeks = sortedKeys(s.byWeek);
-  const weekB = weeks.map((w) => s.byWeek[w]);
-  const days = sortedKeys(s.byDay);
-  const dayB = days.map((d) => s.byDay[d]);
-
-  // 会话接待分布（按周）：会话数柱 + 人工总时长 / 转人工次数双折线
-  drawCombo(
-    "weekRecept", "chartWeekRecept", weeks,
-    [{ label: "会话数", data: weekB.map((b) => b.total), color: "#806dfa" }],
-    [
-      { label: "人工接待总时长（小时）", data: weekB.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#ffb65c", axis: "y1" },
-      { label: "转人工会话接待次数", data: weekB.map((b) => b.transfer), color: "#a9b1c4", axis: "y1" },
-    ],
-    { rotate: 0, showStackTotal: false }
-  );
-  setTotal("totalWeekRecept", "总计：", weekB.reduce((a, b) => a + b.total, 0));
-
-  // 会话时长（按周）：会话性质堆叠 + 单会话平均时长折线
-  const natKeys = bucketKeys(weekB, "nat");
-  drawCombo(
-    "weekDur", "chartWeekDur", weeks,
-    natKeys.map((k, i) => ({ label: k, data: weekB.map((b) => b.nat[k] || 0), color: colorFor(COLOR_NATURE, k, i) })),
-    [{
-      label: "单会话平均时长（分钟）",
-      data: weekB.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(2)) : 0)),
-      color: "#ffb65c",
-      axis: "y1",
-    }],
-    { rotate: 0 }
-  );
-  setTotal("totalWeekDur", "人工接待总时长：", Number((weekB.reduce((a, b) => a + b.dur, 0) / 3600).toFixed(1)));
-
-  // 每日人工成本：只看最近 30 天，无人工接待的连续日期合并成一格
-  const recentDays = days.slice(-30);
-  const recentB = recentDays.map((d) => s.byDay[d]);
-  const noManual = (b) => !b || (b.dur === 0 && b.transfer === 0);
-  const cz = compressEmptyDays(recentDays, recentB, noManual);
-
-  drawCombo(
-    "dayCost", "chartDayCost", cz.labels,
-    [{ label: "转人工会话数", data: cz.buckets.map((b) => b.transfer), color: "#b9b3f5" }],
-    [
-      { label: "人工接待总时长（小时）", data: cz.buckets.map((b) => Number((b.dur / 3600).toFixed(2))), color: "#ffb65c", axis: "y1" },
-      { label: "单会话平均时长（分钟）", data: cz.buckets.map((b) => (b.durCount ? Number((b.dur / b.durCount / 60).toFixed(1)) : 0)), color: "#ff6689", axis: "y1" },
-    ],
-    { rotate: 60, maxLabels: 40, showStackTotal: false }
-  );
-  setTotal("totalDayCost", "人工接待总时长：", Number((recentB.reduce((a, b) => a + b.dur, 0) / 3600).toFixed(1)));
-  const hint = $("hintDayCost");
-  if (hint) {
-    hint.textContent = "最近 " + recentDays.length + " 天" +
-      (cz.merged > 0 ? "，其中 " + cz.merged + " 个无人工接待的日期已与相邻空档合并" : "");
-  }
-
-  drawHourlyService(s);
-  drawManualBusy(s);
-}
-
-function hourlyDayLabel(day) {
-  const date = new Date(day + "T00:00:00Z");
-  return isNaN(date) ? day : new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", weekday: "short",
-  }).format(date);
-}
-
-function drawHourlyService(s) {
-  const hourly = s.hourly || {};
-  const days = Array.isArray(hourly.days) ? hourly.days : [];
-  const tabs = $("hourlyDayTabs");
-  const note = $("hourlyServiceNote");
-  if (!days.length || !tabs) {
-    destroyChart("hourlyService");
-    if (note) note.textContent = "当前筛选条件下没有可展示的小时数据。";
-    return;
-  }
-  if (!days.includes(state.hourlyDay)) state.hourlyDay = days.at(-1);
-  tabs.replaceChildren(...days.map((day) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "hourly-day-tab" + (day === state.hourlyDay ? " active" : "");
-    button.dataset.day = day;
-    button.textContent = hourlyDayLabel(day);
-    button.setAttribute("aria-pressed", String(day === state.hourlyDay));
-    return button;
-  }));
-
-  const buckets = hourly.byDay?.[state.hourlyDay] || [];
-  const points = Array.from({ length: 24 }, (_, hour) => buckets[hour] || { jiri: 0, manual: 0, manualDur: 0 });
-  drawCombo(
-    "hourlyService", "chartHourlyService", points.map((_, hour) => String(hour).padStart(2, "0") + ":00"),
-    [],
-    [
-      { label: "Jiri 会话量", data: points.map((p) => p.jiri), color: "#8676FF", strokeColor: "#8676FF", axis: "y" },
-      { label: "人工会话量", data: points.map((p) => p.manual), color: "#FF708B", strokeColor: "#FF708B", axis: "y" },
-      { label: "人工会话时长（小时）", data: points.map((p) => Number((p.manualDur / 3600).toFixed(2))), color: "#383874", strokeColor: "#383874", axis: "y1" },
-    ],
-    { grouped: true, rotate: 0, maxLabels: 0, showStackTotal: false, yLabel: "会话数", y1Label: "小时" }
-  );
-  const total = points.reduce((sum, point) => sum + point.jiri + point.manual, 0);
-  setTotal("totalHourlyService", hourlyDayLabel(state.hourlyDay) + "：", total + " 场会话");
-  if (note) note.textContent = "每个点覆盖该小时的 00 分至 59 分；人工时长只统计处理状态为“仅人工”的会话。";
-}
-
-const BUSY_COLORS = ["busy-empty", "busy-level-1", "busy-level-2", "busy-level-3", "busy-level-4", "busy-level-5"];
-
-// 时段定义由 /api/dashboard 随 manualBusy 下发，前端不再各存一份常量。
-// 兜底值只服务于「刚部署完、KV 还是旧结构」这一小段时间。
-const BUSY_SLOT_FALLBACK = { startMinute: 9 * 60 + 30, endMinute: 19 * 60, slotMinutes: 15, slotCount: 38 };
-
-function busySlotOf(busy) {
-  const s = busy && busy.slot ? busy.slot : null;
-  return s && s.slotCount > 0 ? s : BUSY_SLOT_FALLBACK;
-}
-
-function minuteLabel(minute) {
-  return String(Math.floor(minute / 60)).padStart(2, "0") + ":" + String(minute % 60).padStart(2, "0");
-}
-
-function busySlotLabel(slot, index) {
-  const start = slot.startMinute + index * slot.slotMinutes;
-  return minuteLabel(start) + "–" + minuteLabel(start + slot.slotMinutes);
-}
-
-// 分母是**最近 N 个自然日**（含当天没有人工接待的日子），不是网格上显示的行数 ——
-// 两个数不一样，所以文案里必须把「按几天平均」写出来。
-function setBusySummary(slot, peak, second, days, mode) {
-  const summary = $("manualBusySummary");
-  if (!summary) return;
-  if (!peak || !days.length) {
-    summary.textContent = "";
-    return;
-  }
-  const label = mode === "active" ? "同时服务" : "新转人工";
-  const per = (slot2) => fmtNum(slot2.total / days.length) + " 人";
-  const lead = "最忙高峰为 " + busySlotLabel(slot, peak.index) + "（" + label + " " + per(peak) + "）";
-  summary.textContent = lead +
-    (second ? "；次高峰为 " + busySlotLabel(slot, second.index) + "（" + label + " " + per(second) + "）" : "") +
-    "。以上为按最近 " + days.length + " 个自然日平均，空闲日也计入分母。";
-}
-
-function drawManualBusy(s) {
-  const busy = s.manualBusy || {};
-  const days = Array.isArray(busy.days) ? busy.days : [];
-  const slot = busySlotOf(busy);
-  const grid = $("manualBusyGrid");
-  const hint = $("manualBusyHint");
-  if (!grid) return;
-
-  // 列数跟着下发的 slotCount 走，CSS 只留一个兜底值
-  grid.style.setProperty("--busy-slots", String(slot.slotCount));
-
-  const mode = state.manualBusyMode === "incoming" ? "incoming" : "active";
-  document.querySelectorAll("#manualBusyModes button[data-mode]").forEach((button) => {
-    button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
-  });
-  const clear = () => {
-    grid.replaceChildren();
-    setBusySummary(slot, null, null, [], mode);
-    if (hint) hint.textContent = "当前筛选条件下没有可展示的人工服务数据。";
-  };
-  if (!days.length) return clear();
-
-  const visibleRows = days.map((day) => ({
-    day,
-    values: Array.from({ length: slot.slotCount }, (_, index) => {
-      return Number(busy.byDay?.[day]?.[index]?.[mode]) || 0;
-    }),
-  })).filter(({ values }) => values.some((value) => value > 0));
-
-  if (!visibleRows.length) return clear();
-
-  if (hint) {
-    // active 靠时长铺开，没有时长记录的会话进不了这张图；把差额说清楚，
-    // 否则两个模式的总量对不上会被当成 bug。
-    const noDuration = Number(busy.noDuration) || 0;
-    hint.textContent = "最近 " + days.length + " 天 · 显示 " + visibleRows.length + " 个有人工接待的日期 · " +
-      minuteLabel(slot.startMinute) + "–" + minuteLabel(slot.endMinute) + " · 每格 " + slot.slotMinutes + " 分钟" +
-      (mode === "active" && noDuration
-        ? " · 另有 " + noDuration + " 场无时长记录，只计入「新转人工人数」"
-        : "");
-  }
-
-  const rows = visibleRows.map(({ values }) => values);
-  const max = Math.max(...rows.flat());
-  const slotTotals = Array.from({ length: slot.slotCount }, (_, index) => ({
-    index,
-    total: rows.reduce((sum, row) => sum + row[index], 0),
-  })).filter((x) => x.total > 0)
-    .sort((a, b) => b.total - a.total || a.index - b.index);
-
-  const cells = [];
-  const corner = document.createElement("span");
-  corner.className = "manual-busy-time manual-busy-corner";
-  cells.push(corner);
-  for (let index = 0; index < slot.slotCount; index++) {
-    const time = document.createElement("span");
-    time.className = "manual-busy-time";
-    time.textContent = index % 4 === 0 ? minuteLabel(slot.startMinute + index * slot.slotMinutes) : "";
-    cells.push(time);
-  }
-  visibleRows.forEach(({ day: visibleDay, values: row }) => {
-    const day = document.createElement("span");
-    day.className = "manual-busy-day";
-    day.textContent = hourlyDayLabel(visibleDay);
-    cells.push(day);
-    row.forEach((value, index) => {
-      const level = value ? Math.min(5, Math.max(1, Math.ceil(value / max * 5))) : 0;
-      const cell = document.createElement("span");
-      cell.className = "manual-busy-cell " + BUSY_COLORS[level];
-      const metric = mode === "active" ? "同时服务" : "新转人工";
-      const tooltip = hourlyDayLabel(visibleDay) + " " + busySlotLabel(slot, index) + " · " + metric + " " + value + " 人";
-      if (value) cell.dataset.tooltip = tooltip;
-      cell.setAttribute("role", "img");
-      cell.setAttribute("aria-label", tooltip);
-      cells.push(cell);
-    });
-  });
-  grid.replaceChildren(...cells);
-  setBusySummary(slot, slotTotals[0], slotTotals[1], days, mode);
+  heatTable("crossTable", scenes.map((p) => p[0]), plans, (sc, p) => (s.sceneByPlan[sc] || {})[p], "场景");
 }
 
 // ============== 业务闭环 ==============
@@ -2058,124 +1653,86 @@ async function loadLoop() {
   }
 }
 
+const HATCH = "repeating-linear-gradient(135deg, #AAA9AB 0 2px, #F1F0F3 2px 5px)";
+
 function renderLoop(loop) {
   const ws = loop.weeks || [];
   const o = loop.overall || {};
+  const wkNo = (x) => Number(x.week.slice(5));
+  const rateText = (r) => (r === null || r === undefined ? "—" : Number(r).toFixed(1));
 
-  // 图一：每周趋势 —— 是/否/待定 堆叠柱（合计即适用会话数）+ 闭环率折线
-  const labels = ws.map((x) => "第 " + Number(x.week.slice(5)) + " 周");
-  const unsettled = ws.map((x) => x.unsettled);
-  const rates = ws.map((x) => x.rate);
-
-  destroyChart("loopWeek");
-  if (chartReady()) {
-    const cv = $("chartLoopWeek");
-    charts.loopWeek = new Chart(cv, {
-      data: {
-        labels,
-        datasets: [
-          { type: "bar", label: "闭环 是", data: ws.map((x) => x.yes), backgroundColor: comboBarFill(0, 3), stack: "s", borderColor: "#f7f8fc", borderWidth: { top: 2 }, borderRadius: 2, borderSkipped: false, barPercentage: .6, order: 3 },
-          { type: "bar", label: "未闭环 否", data: ws.map((x) => x.no), backgroundColor: comboBarFill(1, 3), stack: "s", borderColor: "#f7f8fc", borderWidth: { top: 2 }, borderRadius: 2, borderSkipped: false, barPercentage: .6, order: 3 },
-          { type: "bar", label: "待定（结果未定）", data: ws.map((x) => x.pending), backgroundColor: comboBarFill(2, 3), stack: "s", borderColor: "#f7f8fc", borderWidth: { top: 2 }, borderRadius: { topLeft: 5, topRight: 5 }, borderSkipped: false, barPercentage: .6, order: 3 },
-          {
-            type: "line", label: "闭环率", data: rates, yAxisID: "y1",
-            borderColor: comboLineTone("#806dfa", 0), borderWidth: 3.2, borderDash: [7, 5], tension: .35, spanGaps: false,
-            pointBackgroundColor: ws.map((x) => (x.unsettled ? "#eef1fe" : "#fff")),
-            pointBorderColor: ws.map((x) => (x.unsettled ? "#c9c2ff" : comboLineTone("#806dfa", 0))),
-            pointBorderWidth: 2.5, pointRadius: 0, pointHoverRadius: 6, order: 1,
-            // 待定占比 >30% 的周还会往上走，那一段画成虚线 + 浅色
-            segment: {
-              borderDash: () => [7, 5],
-              borderColor: (c) => (unsettled[c.p0DataIndex] || unsettled[c.p1DataIndex] ? "#c9c2ff" : comboLineTone("#806dfa", 0)),
-            },
-          },
-        ],
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-        layout: { padding: { top: 22 } },
-        plugins: {
-          legend: comboLegend(),
-          valueLabels: { maxLabels: 40, showStackTotal: true, lineLabels: false },
-          hoverGuide: { enabled: true },
-          tooltip: comboTooltip({
-              afterBody(items) {
-                const x = ws[items[0].dataIndex];
-                return ["适用会话 " + x.applicable + " · 待定占比 " + x.pendingRate + "%" +
-                  (x.rate === null ? " · 闭环率不可用（无适用会话）" : x.unsettled ? " · 下限值，还会往上走" : "")];
-              },
-            }),
-        },
-        scales: {
-          x: { stacked: true, grid: { display: false }, border: { display: false }, ticks: { padding: 6 } },
-          y: { stacked: true, beginAtZero: true, grid: { color: "#f2f4fa", drawTicks: false }, border: { display: false }, ticks: { padding: 10, maxTicksLimit: 6 } },
-          y1: { position: "right", min: 0, max: 100, grid: { display: false }, border: { display: false }, ticks: { padding: 8, maxTicksLimit: 6, callback: (v) => v + "%" } },
-        },
-      },
-    });
+  // 头部大数字：最近一个「待定不超过 30%」的周；全都未定时退回最后一周
+  const settled = ws.filter((x) => !x.unsettled && x.rate !== null);
+  const hero = settled.at(-1) || ws.at(-1);
+  const kpi = $("loopKpi");
+  if (kpi) {
+    kpi.innerHTML = hero
+      ? "<h3>闭环率 · 第 " + wkNo(hero) + " 周</h3>" +
+        '<div class="rate"><b>' + rateText(hero.rate) + "<small>%</small></b>" +
+        (hero.pending ? '<span class="dl flat">下限 · 只会上升</span>' : "") + "</div>" +
+        "<span>是 " + hero.yes + " · 否 " + hero.no + " · 待定 " + hero.pending + "，适用 " + hero.applicable + " 场 · 全部周整体 " + rateText(o.rate) + "%</span>"
+      : "<h3>闭环率</h3><span>暂无适用会话</span>";
   }
-  setTotal("totalLoopWeek", "整体闭环率：", o.rate === null ? "—" : o.rate + "%");
-  const un = ws.filter((x) => x.unsettled).map((x) => "第 " + Number(x.week.slice(5)) + " 周");
-  $("hintLoopWeek").textContent = un.length ? un.join("、") + " 待定占比超 30%，闭环率是下限、还会往上走" : "各周结果均已定";
-  $("loopWeekNote").innerHTML =
-    "口径：闭环 = 咨询后 7 天内该账户名下收到过填写数据；判的是<b>账户</b>不是某一张表，大账户会偏高。<br>" +
-    "适用会话 = 业务闭环标了是 / 否 / 待定（「不适用」和空已排除）；闭环率 = 是 ÷ 全部适用行（是 + 否 + 待定），<b>下限口径</b>。" +
-    '<span class="dim-note"><br>收到过数据的会话立刻判是，不等 7 天满；待定 = 窗口还没满、也还没收到数据，只会往是或否落地。' +
-    "所以当周读数只会低估不会高估，待定清零后就等于最终闭环率。待定占比超 30% 的周，折线画成浅色虚线。</span>";
 
-  // 图二：按业务分型（全部适用行，含待定），横向条形图 + 整体参考线
+  // 每周趋势：是 / 否 / 待定 三段胶囊（段间 2px），柱顶为闭环率；待定超 30% 的周加虚线框、读数变浅
+  const box = $("loopWeeks");
+  if (box) {
+    const max = Math.max(...ws.map((x) => x.applicable), 1) * 1.08;
+    box.innerHTML = '<div class="cols">' + ws.map((x, i) =>
+      '<div class="col" data-tip="' + i + '">' +
+      '<span class="rate' + (x.unsettled ? " low" : "") + '">' + rateText(x.rate) + (x.rate === null ? "" : "%") + "</span>" +
+      '<span class="seg-stack' + (x.unsettled ? " unsettled" : "") + '" style="height:' + ((x.applicable / max) * 100).toFixed(1) + '%">' +
+      (x.pending ? '<i style="flex:' + x.pending + " 1 0;background:" + HATCH + '"></i>' : "") +
+      (x.no ? '<i style="flex:' + x.no + ' 1 0;background:#0B0B0C"></i>' : "") +
+      (x.yes ? '<i style="flex:' + x.yes + " 1 0;background:" + GREEN + '"></i>' : "") +
+      "</span></div>"
+    ).join("") + "</div>" +
+      '<div class="axis">' + ws.map((x) => "<span>W" + wkNo(x) + "</span>").join("") + "</div>";
+    if (!box.dataset.bound) {
+      box.dataset.bound = "1";
+      bindDomTip(box, (i) => {
+        const x = (state.loop?.weeks || [])[i];
+        if (!x) return null;
+        const prev = (state.loop?.weeks || [])[i - 1];
+        const delta = prev && x.rate !== null && prev.rate !== null ? changeText(x.rate, prev.rate, "pp") : "";
+        return {
+          title: "第 " + wkNo(x) + " 周 · 适用 " + x.applicable + " 场",
+          rows: [
+            { name: "是", value: x.yes + " 场", color: GREEN },
+            { name: "否", value: x.no + " 场", color: INK },
+            { name: "待定", value: x.pending + " 场", color: HATCH },
+          ],
+          foot: { name: x.pending ? "闭环率（下限）" : "闭环率", value: rateText(x.rate) + "%", delta },
+          notes: [x.unsettled ? "待定占比 " + x.pendingRate + "%，读数还会往上走" : ""],
+        };
+      });
+    }
+  }
+  const un = ws.filter((x) => x.unsettled).map((x) => "W" + wkNo(x));
+  $("hintLoopWeek").textContent = "柱顶为闭环率；" + (un.length ? "虚线框的周待定超过 30%，读数还会往上走" : "各周结果均已定");
+
+  // 按业务分型：每行一根 是 / 否 / 待定 胶囊（按本分型的适用场次归一）+ 闭环率 + 场次
   const types = loop.types || [];
-  destroyChart("loopType");
-  if (chartReady() && types.length) {
-    const cv = $("chartLoopType");
-    charts.loopType = new Chart(cv, {
-      type: "bar",
-      data: {
-        labels: types.map((x) => x.type + (x.small ? "（样本少）" : "")),
-        datasets: [{
-          label: "闭环率",
-          data: types.map((x) => x.rate),
-          backgroundColor: types.map((x, i) => (x.small ? "#d3d8e6" : PALETTE[i % PALETTE.length])),
-          hoverBackgroundColor: types.map((x, i) => (x.small ? "#c6ccdd" : darken(PALETTE[i % PALETTE.length]))),
-          borderRadius: 20, borderSkipped: false, barPercentage: .58, categoryPercentage: .82,
-          customLabels: types.map((x) => "场次 " + x.sessions + " ｜ 闭环率 " + (x.rate === null ? "—" : x.rate.toFixed(1) + "%")),
-          labelInk: types.map((x) => (x.small ? "#9aa0b4" : "#454b69")),
-        }],
-      },
-      options: {
-        indexAxis: "y",
-        responsive: true, maintainAspectRatio: false,
-        layout: { padding: { right: 190 } },
-        plugins: {
-          legend: { display: false },
-          valueLabels: { maxLabels: 40, showStackTotal: false },
-          refLine: { value: o.rate, label: "整体 " + (o.rate === null ? "—" : o.rate + "%"), color: "#8b90a7" },
-          tooltip: {
-            callbacks: {
-              title: (i) => types[i[0].dataIndex].type,
-              label: (c) => {
-                const x = types[c.dataIndex];
-                return "闭环 " + x.yes + " / 未闭环 " + x.no + " / 待定 " + x.pending + " · 闭环率 " + x.rate + "%";
-              },
-            },
-          },
-        },
-        scales: {
-          x: { min: 0, max: 100, grid: { color: "#f2f4fa", drawTicks: false }, border: { display: false }, ticks: { callback: (v) => v + "%", maxTicksLimit: 6 } },
-          y: { grid: { display: false }, border: { display: false }, ticks: { padding: 8, font: { size: 12 } } },
-        },
-      },
-    });
+  const tbox = $("loopTypes");
+  if (tbox) {
+    tbox.innerHTML = types.length ? types.map((x) => {
+      const n = x.yes + x.no + x.pending;
+      return '<div class="loop-type' + (x.small ? " small" : "") + '"><span>' + escHtml(x.type) + (x.small ? "（样本少）" : "") + "</span>" +
+        '<span class="stack">' +
+        (x.yes ? '<i style="flex:' + x.yes + " 1 0;background:" + (x.small ? "#C9C8CD" : GREEN) + '"></i>' : "") +
+        (x.no ? '<i style="flex:' + x.no + " 1 0;background:" + (x.small ? "#8D8C93" : INK) + '"></i>' : "") +
+        (x.pending ? '<i style="flex:' + x.pending + " 1 0;background:" + HATCH + '"></i>' : "") +
+        (n ? "" : '<i style="flex:1 1 0;background:#F1F0F3"></i>') +
+        "</span><b>" + rateText(x.rate) + (x.rate === null ? "" : "%") + "</b><span>" + fmtNum(x.sessions) + "</span></div>";
+    }).join("") : '<p class="chart-foot">暂无带业务分型的适用会话</p>';
   }
   const small = types.filter((x) => x.small);
-  setTotal("totalLoopType", "适用会话：", o.applicable + " 场");
-  $("hintLoopType").textContent = small.length ? "灰色为场次不足 10 的分型，样本太小" : "";
-  $("loopTypeNote").innerHTML =
-    "口径：闭环 = 咨询后 7 天内该账户名下收到过填写数据；判的是<b>账户</b>不是某一张表，大账户会偏高。<br>" +
-    "与上图同口径：闭环率 = 是 ÷ 全部适用行（含待定），待定多的分型会被拉低；虚线为整体闭环率 <b>" +
-    (o.rate === null ? "—" : o.rate + "%") + "</b>（是 " + o.yes + " / 否 " + o.no + " / 待定 " + o.pending + "）。" +
-    (small.length ? '<span class="dim-note"><br>' + small.map((x) => escHtml(x.type) + "（" + x.sessions + " 场）").join("、") + " 场次少于 10，仅作参考。</span>" : "");
+  const rangeText = ws.length ? "第 " + wkNo(ws[0]) + " – " + wkNo(ws.at(-1)) + " 周" : "";
+  const th = $("loopTypeTitle");
+  if (th) th.textContent = "按业务分型" + (rangeText ? " · " + rangeText + "累计" : "");
+  $("hintLoopType").textContent = (small.length ? "灰色为场次不足 10 的分型，仅作参考 · " : "") + "待定多的分型，闭环率是偏低的下限";
+  const desc = $("pageDesc");
+  if (desc && state.tab === "loop") desc.textContent = "咨询后 7 天内，用户的对口表单有没有真正收到数据" + (rangeText ? " · " + rangeText : "");
 }
 
 // ============== 周报 ==============
@@ -2202,16 +1759,31 @@ function weekLabel(w) {
 
 // 颜色只看方向：涨＝红（up），跌＝绿（down）。不按「指标变好变坏」上色 ——
 // 有些指标越小越好（时长、人工占比），但配色跟着语义翻转会让人读不准涨跌。
+// 2026-10 改版：涨＝绿、跌＝黑、持平＝浅灰，只看方向不看好坏；箭头比正负号更容易一眼读出方向
 function delta(cur, prev, unit) {
   if (prev === null || prev === undefined || prev === 0) return "";
-  const d = cur - prev;
-  if (Math.abs(d) < 0.05) return '<span class="dl flat">持平</span>';
-  const sign = d > 0 ? "+" : "";
-  return '<span class="dl ' + (d > 0 ? "up" : "down") + '">' + sign + Number(d.toFixed(1)) + (unit || "") + "</span>";
+  return ppPill(cur - prev, unit);
 }
 
-async function loadWeekly() {
-  if (state.weeklyLoaded) return;
+// 在胶囊文字前加前缀（原型：「环比 ▲ 2.7pp」整个在胶囊里）
+function labelPill(html, prefix) {
+  return html ? html.replace('">', '">' + prefix + " ") : "";
+}
+
+function ppPill(d, unit) {
+  if (d === null || d === undefined || !isFinite(d)) return "";
+  if (Math.abs(d) < 0.05) return '<span class="dl flat">持平</span>';
+  return '<span class="dl ' + (d > 0 ? "up" : "down") + '">' + (d > 0 ? "▲ " : "▼ ") + Math.abs(Number(d.toFixed(1))) + (unit || "") + "</span>";
+}
+
+// 人工服务页的累计表也要用周报数据：并发调用共用同一个请求
+let weeklyPromise = null;
+function loadWeekly() {
+  if (!weeklyPromise) weeklyPromise = fetchWeekly().finally(() => { if (!state.weeklyLoaded) weeklyPromise = null; });
+  return weeklyPromise;
+}
+
+async function fetchWeekly() {
   try {
     const json = await api("/api/weekly");
     if (!json.success) throw new Error(json.error || "未知错误");
@@ -2249,55 +1821,60 @@ function renderWeekly(week) {
   const w = state.weeks[i];
   const p = i > 0 ? state.weeks[i - 1] : null;
 
-  $("wkHint").textContent = w.firstDay + " ~ " + w.lastDay + "（" + w.dayCount + " 天）" +
+  const hintText = w.firstDay + " ~ " + w.lastDay + "（" + w.dayCount + " 天）" +
     (w.dayCount < 7 ? " · 本周数据尚不完整" : "") +
     (p ? " · 对比第 " + Number(p.week.slice(5)) + " 周" : "");
+  $("wkHint").textContent = "";
+  if (state.tab === "weekly") {
+    $("pageTitle").textContent = "周报 · 第 " + Number(w.week.slice(5)) + " 周";
+    $("pageDesc").textContent = hintText;
+    document.title = "周报 · 第 " + Number(w.week.slice(5)) + " 周 · hive 服务看板";
+  }
 
-  // 一、目标追踪
+  // 一、目标追踪：主目标（操作引导类人工时长占比）+ 按 Jiri 能否解答拆分 + 五个必须真人场景的单次中位数
   const g = w.goals;
   const pg = p ? p.goals : null;
-  const rows = [
-    {
-      name: "操作引导类人工时长占比",
-      target: "≤ " + g.guideTarget + "%",
-      value: g.guideShare + "%",
-      ok: g.guideShare <= g.guideTarget,
-      delta: pg ? delta(g.guideShare, pg.guideShare, "pp") : "",
-      note: "目标把操作引导类问题交给 Jiri，人工时长占比压到 10% 以内",
-    },
-    // 按这些会话的「Jiri 是否能解答」拆成四段，整数 pp 之和 = 上一行的占比；说明里给精确到一位小数的值
-    ...(g.guideSplit || []).filter((x) => x.sessions > 0 || x.pp > 0).map((x) => {
-      const prev = pg && pg.guideSplit ? pg.guideSplit.find((y) => y.label === x.label) : null;
-      return {
-        sub: true,
-        name: "　其中 · Jiri " + (x.label === "未标记" ? "未质检" : x.label + "解答"),
-        target: "",
-        value: x.pp + "%",
-        delta: prev ? delta(x.exact, prev.exact, "pp") : "",
-        note: "精确 " + x.exact + "% · " + x.sessions + " 场 · " + x.durMin + " 分钟",
-      };
-    }),
-    ...g.mustHuman.map((m, k) => {
-      const prev = pg ? pg.mustHuman[k] : null;
-      return {
-        name: "单次接待时长中位数 · " + m.label + "（" + m.scene + "）",
-        target: "≤ " + m.target + " 分",
-        value: m.raw === null ? "—" : Number(m.raw).toFixed(1) + " 分",
-        ok: m.value !== null && m.value <= m.target,
-        delta: prev && prev.raw !== null && m.raw !== null ? delta(m.raw, prev.raw, " 分") : "",
-        note: m.receptions ? m.receptions + " 次接待" : "本周无接待",
-      };
-    }),
-  ];
-  $("tblGoals").innerHTML =
-    '<thead><tr><th>目标</th><th class="num">目标值</th><th class="num">本周</th><th class="num">达成</th><th class="num">环比</th><th>说明</th></tr></thead><tbody>' +
-    rows.map((r) =>
-      '<tr class="' + (r.sub ? "sub" : "") + '"><td>' + r.name + '</td><td class="num">' + (r.target || "—") + "</td>" +
-      '<td class="num ' + (r.sub ? "" : "strong") + '">' + r.value + "</td>" +
-      '<td class="num">' + (r.sub ? "—" : '<span class="pill ' + (r.ok ? "good" : "bad") + '">' + (r.ok ? "达成" : "未达成") + "</span>") + "</td>" +
-      '<td class="num">' + (r.delta || "—") + "</td>" +
-      '<td class="dim">' + r.note + "</td></tr>"
-    ).join("") + "</tbody>";
+  const okPill = (ok) => '<span class="pill ' + (ok ? "good" : "bad") + '">' + (ok ? "达成" : "未达成") + "</span>";
+  const SPLIT_COLOR = { "能": GREEN, "部分": "#8D8C93", "不能": INK, "未标记": HATCH };
+  // 排序固定：能 → 部分 → 不能 → 未质检，「不能」和「未质检」在最右
+  const SPLIT_ORDER = ["能", "部分", "不能", "未标记"];
+  const split = (g.guideSplit || []).filter((x) => x.sessions > 0 || x.pp > 0)
+    .sort((x, y) => SPLIT_ORDER.indexOf(x.label) - SPLIT_ORDER.indexOf(y.label));
+  // 刻度 0 ~ 2 倍目标：目标线正好落在中点
+  const scaleMax = g.guideTarget * 2;
+  const fillPct = Math.min(100, (g.guideShare / scaleMax) * 100);
+  const splitCols = split.map((x) => {
+    const prev = pg && pg.guideSplit ? pg.guideSplit.find((y) => y.label === x.label) : null;
+    return '<div><span class="lbl"><i style="background:' + SPLIT_COLOR[x.label] + '"></i>' + (x.label === "未标记" ? "未质检" : x.label + "解答") + "</span>" +
+      "<b>" + x.exact + "%</b><span>" + (prev ? labelPill(delta(x.exact, prev.exact, "pp"), "环比") : "") + "</span>" +
+      "<small>" + x.sessions + " 场 · " + x.durMin + " 分钟</small></div>";
+  }).join("");
+  const must = g.mustHuman.map((m, k) => {
+    const prev = pg ? pg.mustHuman[k] : null;
+    const ok = m.value !== null && m.value <= m.target;
+    const ratio = m.raw === null ? 0 : Math.min(100, (m.raw / (m.target * 2)) * 100);
+    return '<div class="must-card"><div class="must-card-head"><b>' + escHtml(m.label) + "</b>" + (m.raw === null ? '<span class="pill">无接待</span>' : okPill(ok)) + "</div>" +
+      '<span class="scene">' + escHtml(m.scene) + "</span>" +
+      '<div class="val"><b>' + (m.raw === null ? "—" : Number(m.raw).toFixed(1)) + "</b><span>分 · 目标 ≤ " + m.target + "</span></div>" +
+      '<div class="meter"><i style="width:' + ratio.toFixed(1) + "%;background:" + (ok ? GREEN : INK) + '"></i><s></s></div>' +
+      '<div class="foot"><span>' + (m.receptions ? m.receptions + " 次接待" : "本周无接待") + "</span>" +
+      (prev && prev.raw !== null && m.raw !== null ? delta(m.raw, prev.raw, " 分") : "") + "</div></div>";
+  }).join("");
+  $("wkGoals").innerHTML =
+    '<div class="goal-hero"><div class="goal-main"><span>操作引导类人工时长占比</span>' +
+    "<b>" + g.guideShare + "<small>%</small></b>" +
+    '<div class="goal-meta"><span>目标 ≤ ' + g.guideTarget + "%</span>" + okPill(g.guideShare <= g.guideTarget) +
+    (pg ? labelPill(delta(g.guideShare, pg.guideShare, "pp"), "环比") : "") + "</div></div>" +
+    '<div class="goal-divider" aria-hidden="true"></div>' +
+    '<div class="goal-split"><span>按 Jiri 能否解答拆分</span>' +
+    '<div class="goal-track"><span class="target-label" style="left:50%">目标 ' + g.guideTarget + "%</span>" +
+    '<div class="rail"><div class="fill" style="width:' + fillPct.toFixed(1) + '%">' +
+    split.map((x) => '<i style="flex:' + Math.max(0.0001, Number(x.exact)) + " 1 0;background:" + SPLIT_COLOR[x.label] + '"></i>').join("") +
+    '</div><span class="tick" style="left:50%"></span></div>' +
+    '<div class="scale"><span>0%</span><span>' + scaleMax + "%</span></div></div>" +
+    '<div class="goal-cols">' + splitCols + "</div></div></div>" +
+    '<div class="goal-sub-title">必须真人场景 · 单次接待时长中位数</div>' +
+    '<div class="must-cards">' + must + "</div>";
 
   // 二、JIRI（AI）接待现状：本周 / 上周同期（相同星期对齐）
   const j = w.jiri;
@@ -2339,7 +1916,7 @@ function renderWeekly(week) {
     if (prev === null || prev === undefined || prev === 0) return '<span class="dl flat">—</span>';
     const d = ((cur - prev) / prev) * 100;
     if (Math.abs(d) < 0.05) return '<span class="dl flat">持平</span>';
-    return '<span class="dl ' + (d > 0 ? "up" : "down") + '">' + (d > 0 ? "+" : "") + d.toFixed(1) + "%</span>";
+    return '<span class="dl ' + (d > 0 ? "up" : "down") + '">' + (d > 0 ? "▲ " : "▼ ") + Math.abs(d).toFixed(1) + "%</span>";
   };
   const ratio = (cur, prev) => num(pct1(cur, prev));
   // 环比与同比合并成一格，省掉两行同期原始值
@@ -2387,7 +1964,20 @@ function renderWeekly(week) {
     num(g.receptions) + num(d1(g.durHours) + " h") + num(d1(g.medianMin) + " 分") +
     num(d1(g.avgMin) + " 分") + num(g.sessions) + num(g.users);
 
+  // 2026-10-13 用户定：04 表不单起「环比 / 同比」行，胶囊直接放在数值右侧（环上同下）
+  const KEYS = ["receptions", "durHours", "medianMin", "avgMin", "sessions", "users"];
+  const FMT = { receptions: (v) => v, durHours: (v) => d1(v) + " h", medianMin: (v) => d1(v) + " 分", avgMin: (v) => d1(v) + " 分", sessions: (v) => v, users: (v) => v };
   const groupRows = (label, key) => {
+    const a = w[key];
+    const b = cmp ? cmp.prev[key] : null;
+    const c = cmp && cmp.yoy ? cmp.yoy[key] : null;
+    // 数值单独一列（和表头右对齐），胶囊另起一列挂在右边（环上同下）
+    return "<tr><td><b>" + label + "</b></td>" + KEYS.map((k) =>
+      '<td class="num">' + FMT[k](a[k]) + "</td>" +
+      '<td class="cmpcol">' + (b ? '<span class="cmp"><span class="dl-row"><i>环</i>' + pct1(a[k], b[k]) + "</span>" +
+        (c ? '<span class="dl-row"><i>同</i>' + pct1(a[k], c[k]) + "</span>" : "") + "</span>" : "") + "</td>").join("") + "</tr>";
+  };
+  const groupRowsWithCompare = (label, key) => {
     let out = "<tr><td><b>" + label + "</b></td>" + statCells(w[key]) + "</tr>";
     if (!cmp) return out;
     const a = w[key];
@@ -2406,14 +1996,16 @@ function renderWeekly(week) {
     return out;
   };
 
+  const cmpTh = '<th class="cmpcol"></th>';
   $("tblManual").innerHTML =
-    '<thead><tr><th>口径</th><th class="num">接待次数</th><th class="num">总工时</th>' +
-    '<th class="num">单次中位</th><th class="num">单次平均</th><th class="num">会话数</th>' +
-    '<th class="num">去重用户</th></tr></thead><tbody>' +
+    '<colgroup><col style="width:17%">' + KEYS.map(() => "<col><col style=\"width:92px\">").join("") + "</colgroup>" +
+    '<thead><tr><th>口径</th><th class="num">接待次数</th>' + cmpTh + '<th class="num">总工时</th>' + cmpTh +
+    '<th class="num">单次中位</th>' + cmpTh + '<th class="num">单次平均</th>' + cmpTh + '<th class="num">会话数</th>' + cmpTh +
+    '<th class="num">去重用户</th>' + cmpTh + "</tr></thead><tbody>" +
     groupRows("有效人工", "eff") + groupRows("全部仅人工", "allManual") + "</tbody>";
 
   const prevEff = cmp ? cmp.prev.eff : null;
-  $("manualNote").innerHTML =
+  $("manualSummary").innerHTML =
     "有效人工 <b>" + w.eff.sessions + "</b> 场会话（去重用户 " + w.eff.users + " 人）/ <b>" +
     w.eff.receptions + "</b> 次接待，总工时 <b>" + w.eff.durHours + " h</b>" +
     (prevEff ? "（上周同期 " + prevEff.durHours + " h，" +
@@ -2421,7 +2013,8 @@ function renderWeekly(week) {
       Number((w.eff.durHours - prevEff.durHours).toFixed(1)) + " h）" : "") + "。<br>" +
     "不愿和 Jiri 沟通率 <b>" + w.directTransfer + " / " + w.eff.sessions + " = " + w.directRate + "%</b>" +
     (cmp ? "（上周同期 " + cmp.prev.directTransfer + " / " + cmp.prev.eff.sessions + "）" : "") +
-    " —— 有效人工里「直接转」的场次占比。<br>" +
+    " —— 有效人工里「直接转」的场次占比。";
+  $("manualNote").innerHTML =
     '<span class="dim-note">口径：有效人工 = 处理状态「仅人工」且会话性质「有效」；接待次数取「转人工会话接待次数」' +
     '（表单里「人工接待次数」两个字段全为空）；单次中位 = 每场「时长 ÷ 接待次数」的中位数。' +
     '环比对比上周同期，同比对比 4 周前同期，都按相同星期对齐。</span>';
@@ -2439,20 +2032,22 @@ function renderWeekly(week) {
     const prev = stOf(pst, scene);
     if (!cur) return num("—") + num("—") + num("—");
     return '<td class="num strong">' + cur.hit + "</td>" + num(cur.rate + "%") +
-      '<td class="num">' + (prev ? deltaPill(Number((cur.rate - prev.rate).toFixed(1)), "") : '<span class="dl flat">新</span>') + "</td>";
+      '<td class="num">' + (prev ? ppPill(cur.rate - prev.rate, "") : '<span class="dl flat">新</span>') + "</td>";
   };
+  const shareMax = Math.max(...w.scenes.map((x) => Number(x.share) || 0), 1);
   const stRate = st.base ? Number(((st.total / st.base) * 100).toFixed(1)) : 0;
   const pstRate = pst && pst.base ? Number(((pst.total / pst.base) * 100).toFixed(1)) : null;
   $("tblScenes").innerHTML =
+    '<colgroup><col style="width:15%"><col><col><col style="width:15%"><col><col><col><col><col><col><col></colgroup>' +
     '<thead><tr><th>场景</th><th class="num">接待次数</th><th class="num">总时长（分）</th>' +
     '<th class="num">占总时长</th><th class="num">单次中位</th><th class="num">单次平均</th>' +
     '<th class="num">时长环比（%）</th><th class="num">时长同比（%）</th>' +
     '<th class="num">秒转·可解答</th><th class="num">占比</th><th class="num">占比环比（百分点）</th></tr></thead><tbody>' +
     w.scenes.map((x) => {
       const isGuide = x.scene === "操作引导/功能咨询";
-      return "<tr" + (isGuide ? ' class="warn-row"' : "") + "><td>" + escHtml(x.scene) + "</td>" +
+      return "<tr" + (isGuide ? ' class="warn-row"' : "") + "><td>" + escHtml(x.scene) + (isGuide ? '<span class="cell-sub">目标：占总时长 ≤ 10%</span>' : "") + "</td>" +
         num(x.receptions) + num(x.durMin) +
-        '<td class="num strong">' + x.share + "%" + (isGuide ? "（目标 ≤ 10%）" : "") + "</td>" +
+        '<td class="num strong"><span class="cbar"><i><b style="width:' + ((Number(x.share) / shareMax) * 100).toFixed(1) + "%;background:" + (isGuide ? INK : "#8D8C93") + '"></b></i><span>' + x.share + "%</span></span></td>" +
         num(Number(x.medianMin).toFixed(1)) + num(Number(x.avgMin).toFixed(1)) +
         (cmp ? ratio(x.durMin, sceneVal(cmp.prev, x.scene, "durMin")) : num("—")) +
         (cmp && cmp.yoy ? ratio(x.durMin, sceneVal(cmp.yoy, x.scene, "durMin")) : num("—")) +
@@ -2463,15 +2058,16 @@ function renderWeekly(week) {
     (cmp ? ratio(w.eff.durMin, cmp.prev.eff.durMin) : num("—")) +
     (cmp && cmp.yoy ? ratio(w.eff.durMin, cmp.yoy.eff.durMin) : num("—")) +
     '<td class="num strong">' + st.total + "</td>" + num(stRate + "%") +
-    '<td class="num">' + (pstRate === null ? "—" : deltaPill(Number((stRate - pstRate).toFixed(1)), "")) + "</td></tr></tbody>";
+    '<td class="num">' + (pstRate === null ? "—" : ppPill(stRate - pstRate, "")) + "</td></tr></tbody>";
 
   // 六、仅 Jiri 有效场景
+  const jsMax = Math.max(...w.jiriScenes.map((x) => x[1]), 1);
   $("tblJiriScenes").innerHTML =
     '<thead><tr><th>场景</th><th class="num">场次</th><th class="num">占比</th>' +
     '<th class="num">环比</th><th class="num">同比</th></tr></thead><tbody>' +
     w.jiriScenes.map((x) =>
-      "<tr><td>" + escHtml(x[0]) + "</td>" + num(x[1]) +
-      num((w.jiriSceneTotal ? ((x[1] / w.jiriSceneTotal) * 100).toFixed(1) : 0) + "%") +
+      "<tr><td>" + escHtml(x[0]) + '</td><td class="num strong">' + x[1] + "</td>" +
+      '<td class="num"><span class="cbar wide"><i><b style="width:' + ((x[1] / jsMax) * 100).toFixed(1) + "%;background:" + GREEN + '"></b></i><span>' + (w.jiriSceneTotal ? ((x[1] / w.jiriSceneTotal) * 100).toFixed(1) : 0) + "%</span></span></td>" +
       (cmp ? ratio(x[1], (cmp.prev.jiriScenes || {})[x[0]] || 0) : num("—")) +
       (cmp && cmp.yoy ? ratio(x[1], (cmp.yoy.jiriScenes || {})[x[0]] || 0) : num("—")) + "</tr>"
     ).join("") +
@@ -2482,45 +2078,41 @@ function renderWeekly(week) {
   // 七、客服接待评估：跟随上方「统计周」
   renderAgents(w);
   const wkLabel = "第 " + Number(w.week.slice(5)) + " 周（" + w.firstDay + " ~ " + w.lastDay + "）";
-  renderAgentScene("tblAgentSceneWk", "asHintWk", null, w.agentScene, "场景 × 客服 · 单次接待时长中位数 · " + wkLabel);
-  renderEmotion("tblEmotionWk", null, "emoHintWk", "emoNoteWk", w.emotion, "用户情绪 · " + wkLabel);
-  renderEmoList("tblEmotionNegWk", "negHintWk", (w.emotion || {}).emoList);
+  $("agentHint").textContent = "只看仅人工 · " + wkLabel + (w.dayCount < 7 ? " · 本周尚不完整" : "");
+  renderAgentScene("tblAgentSceneWk", null, null, w.agentScene, "");
+  renderEmotion("tblEmotionWk", null, null, null, w.emotion, "");
+  renderEmoList("tblEmotionNegWk", null, (w.emotion || {}).emoList);
 }
 
-// 七、客服接待评估：跟随上方「统计周」，两张表——本周、累计到本周（第 27 周起）；口径见 README「客服接待评估」
-function renderAgents(w) {
+// 客服接待评估表：周报 07-A 用本周数据，人工服务页用累计数据（第 27 周起）。口径见 README「客服接待评估」
+function agentTable(id, data) {
+  const tbl = $(id);
+  if (!tbl) return;
   const num = (v) => '<td class="num">' + (v === null || v === undefined ? "—" : v) + "</td>";
   const pctv = (v) => (v === null || v === undefined ? "—" : v + "%");
   const row = (x, cls) =>
     '<tr class="' + (cls || "") + '"><td>' + escHtml(x.name) + "</td>" +
     num(x.visits) + num(x.first) + num(x.direct + " / " + x.firstEff) + num(pctv(x.directRate)) +
     num(x.last) + num(x.repeated) + num(pctv(x.repeatRate)) + "</tr>";
-  const table = (id, data) => {
-    const tbl = $(id);
-    if (!tbl) return;
-    if (!data || !data.agents.length) {
-      tbl.innerHTML = '<tbody><tr><td>没有带客服标注的人工会话</td></tr></tbody>';
-      return;
-    }
-    tbl.innerHTML =
-      "<thead><tr><th>客服</th><th class=\"num\">接待人次</th><th class=\"num\">首接场次</th><th class=\"num\">秒转 / 首接有效</th><th class=\"num\">秒转率</th>" +
-      "<th class=\"num\">末接场次</th><th class=\"num\">复问</th><th class=\"num\">复问率</th></tr></thead><tbody>" +
-      row(data.team, "sum hl") + data.agents.map((x) => row(x)).join("") + "</tbody>";
-  };
-  const wk = Number(w.week.slice(5));
-  const hint = $("agentHint");
-  if (hint) hint.textContent = "本周：第 " + wk + " 周（" + w.firstDay + " ~ " + w.lastDay + "，" + w.dayCount + " 天" + (w.dayCount < 7 ? "，尚不完整" : "") + "）";
-  table("tblAgents", w.agents);
-  const hintCum = $("agentHintCum");
-  if (hintCum) hintCum.textContent = "累计：第 " + Number(String(w.cumFromWeek || "").slice(5)) + " 周 ～ 第 " + wk + " 周（复问样本小，看趋势用这张）";
-  table("tblAgentsCum", w.agentsCum);
+  if (!data || !data.agents.length) {
+    tbl.innerHTML = '<tbody><tr><td>没有带客服标注的人工会话</td></tr></tbody>';
+    return;
+  }
+  tbl.innerHTML =
+    "<thead><tr><th>客服</th><th class=\"num\">接待人次</th><th class=\"num\">首接场次</th><th class=\"num\">秒转 / 首接有效</th><th class=\"num\">秒转率</th>" +
+    "<th class=\"num\">末接场次</th><th class=\"num\">复问</th><th class=\"num\">复问率</th></tr></thead><tbody>" +
+    row(data.team, "hl team") + data.agents.map((x) => row(x)).join("") + "</tbody>";
+}
+
+function renderAgents(w) {
+  agentTable("tblAgents", w.agents);
   const note = $("agentNote");
   if (note) note.innerHTML =
-    '<span class="dim-note">口径：只看处理状态「仅人工」。接待人次 = 一场里出现的每位客服各记 1；' +
+    "口径：只看处理状态「仅人工」。接待人次 = 一场里出现的每位客服各记 1；" +
     "秒转率 = 首接客服的有效人工场次里「直接转」的占比（秒转发生在任何客服接手之前，归首接）；" +
     "复问记到原来接待的人身上：用户在 A 场问了 x、隔 6～36 小时又在 B 场问 x，这 1 场复问算 A 的（末接）客服，不算 B 的；复问率 = 复问 ÷ 末接场次（人工侧相似度阈值 0.15）。" +
     "三人各接一段的会话中间那位只记人次。" +
-    "复问记在被复问的那一场所在的周，本周的数会随下周的复问补进来而变。</span>";
+    "复问记在被复问的那一场所在的周，本周的数会随下周的复问补进来而变。";
 }
 
 // ============== 交互 ==============
@@ -2565,19 +2157,45 @@ async function waitForRefresh() {
   banner("拉取仍未完成，请稍后刷新页面查看。", "info");
 }
 
+// 侧边栏导航：两组（分析 / 报告）。分析页显示筛选栏，报告页隐藏（报告是固定口径，筛选对它不生效）。
+// 当前页写进 URL hash，刷新和分享链接都能直接落到同一页。
+const TAB_NAMES = ["overview", "volume", "ai", "service", "business", "weekly", "loop"];
+
+function showTab(name) {
+  const tab = TAB_NAMES.includes(name) ? name : "overview";
+  state.tab = tab;
+  const btn = document.querySelector('.nav-item[data-tab="' + tab + '"]');
+  document.querySelectorAll(".nav-item").forEach((t) => {
+    t.classList.toggle("active", t === btn);
+    if (t === btn) t.setAttribute("aria-current", "page"); else t.removeAttribute("aria-current");
+  });
+  document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + tab));
+  const report = btn && btn.dataset.kind === "report";
+  document.body.classList.toggle("is-report", !!report);
+  document.body.classList.toggle("is-analysis", !report);
+  document.body.classList.toggle("is-weekly", tab === "weekly");
+  const label = btn ? btn.querySelector("span").textContent : "";
+  $("pageCrumb").textContent = (report ? "报告" : "分析") + " / " + label;
+  $("pageTitle").textContent = label;
+  $("pageDesc").textContent = btn ? btn.dataset.desc || "" : "";
+  document.title = label + " · hive 服务看板";
+  hideTip();
+  if (tab === "weekly") loadWeekly().then(() => { if (state.weeklyLoaded && $("wkSelect").value) renderWeekly($("wkSelect").value); });
+  else if (tab === "loop") loadLoop();
+  // 隐藏面板里的 canvas 量不出尺寸：切到哪页就在下一帧画哪页
+  else if (state.stats) requestAnimationFrame(() => renderCharts(state.stats));
+}
+
 function initTabs() {
-  document.querySelectorAll(".tab").forEach((tab) => {
+  document.querySelectorAll(".nav-item").forEach((tab) => {
     tab.addEventListener("click", () => {
-      document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-      document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
-      tab.classList.add("active");
-      $("panel-" + tab.dataset.tab).classList.add("active");
-      if (tab.dataset.tab === "weekly") loadWeekly();
-      else if (tab.dataset.tab === "loop") loadLoop();
-      // 切回图表页签时重绘，避免 canvas 在隐藏状态下算错尺寸
-      else if (state.stats) requestAnimationFrame(() => renderCharts(state.stats));
+      if (location.hash !== "#" + tab.dataset.tab) history.replaceState(null, "", "#" + tab.dataset.tab);
+      showTab(tab.dataset.tab);
+      window.scrollTo({ top: 0 });
     });
   });
+  window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+  showTab(location.hash.slice(1));
 }
 
 // 筛选栏 + 页签吸顶状态：哨兵元素一滚出视口顶端，就给吸顶块加 .stuck（更重的投影）
@@ -2606,56 +2224,45 @@ function initActions() {
     $(id).addEventListener("change", reload);
   });
 
-  // 会话接待分布的聚合粒度：纯前端换分桶，不重新请求接口
-  const gran = $("granRecept");
-  if (gran) {
-    gran.value = receptGrain;
-    gran.addEventListener("change", () => {
-      receptGrain = RECEPT_GRAINS[gran.value] ? gran.value : "day";
-      if (LAST_STATS) drawReceptChart(LAST_STATS);
-    });
-  }
+  // 聚合粒度：纯前端换分桶，不重新请求接口
+  initSeg("granRecept", receptGrain, (g) => { receptGrain = g; if (LAST_STATS) drawReceptChart(LAST_STATS); });
+  initSeg("granDist", distGrain, (g) => { distGrain = g; if (LAST_STATS) drawVolumeDist(LAST_STATS); });
+  initSeg("granUniq", uniqGrain, (g) => { uniqGrain = g; if (LAST_STATS) drawVolumeUniq(LAST_STATS); });
 
-  const granR = $("granRepeat");
-  if (granR) {
-    granR.value = repeatGrain;
-    granR.addEventListener("change", () => {
-      repeatGrain = RECEPT_GRAINS[granR.value] ? granR.value : "week";
-      if (LAST_STATS) drawRepeatChart(LAST_STATS);
-    });
-  }
-
-  const granS = $("granSecond");
-  if (granS) {
-    granS.value = secondGrain;
-    granS.addEventListener("change", () => {
-      secondGrain = RECEPT_GRAINS[granS.value] ? granS.value : "week";
-      if (LAST_STATS) drawSecondChart(LAST_STATS);
-    });
-  }
-
-  const granU = $("granUniq");
-  if (granU) {
-    granU.value = uniqGrain;
-    granU.addEventListener("change", () => {
-      uniqGrain = RECEPT_GRAINS[granU.value] ? granU.value : "week";
-      if (LAST_STATS) drawUniqChart(LAST_STATS);
-    });
-  }
-
-  const hourlyTabs = $("hourlyDayTabs");
-  if (hourlyTabs) hourlyTabs.addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-day]");
+  // 情绪会话明细：负向 / 正向页签
+  const emoTabs = $("emoTabs");
+  if (emoTabs) emoTabs.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-mode]");
     if (!button || !LAST_STATS) return;
-    state.hourlyDay = button.dataset.day;
-    drawHourlyService(LAST_STATS);
+    state.emoTab = button.dataset.mode === "pos" ? "pos" : "neg";
+    renderEmoDetail((LAST_STATS.emotion || {}).emoList);
+  });
+
+  // 总览「来源详情 →」直接切到接待量页
+  const devLink = $("devLink");
+  if (devLink) devLink.addEventListener("click", (event) => { event.preventDefault(); location.hash = "#volume"; });
+
+  // 周报「导出」：走浏览器打印（可存成 PDF），打印样式只留当前页
+  const exportBtn = $("exportBtn");
+  if (exportBtn) exportBtn.addEventListener("click", () => window.print());
+
+  const more = $("repeatsMore");
+  if (more) more.addEventListener("click", () => { state.repeatsAll = !state.repeatsAll; if (LAST_STATS) renderRepeatsTable(LAST_STATS); });
+
+  // 周报口径说明默认收起：表格本身信息已全，说明只在需要时展开
+  const notes = $("notesToggle");
+  if (notes) notes.addEventListener("click", () => {
+    const on = !document.body.classList.contains("show-kou");
+    document.body.classList.toggle("show-kou", on);
+    notes.setAttribute("aria-pressed", String(on));
+    notes.textContent = on ? "隐藏口径说明" : "显示口径说明";
   });
 
   const manualBusyModes = $("manualBusyModes");
   if (manualBusyModes) manualBusyModes.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-mode]");
     if (!button || !LAST_STATS) return;
-    state.manualBusyMode = button.dataset.mode === "incoming" ? "incoming" : "active";
+    state.manualBusyMode = button.dataset.mode === "weekend" ? "weekend" : "weekday";
     drawManualBusy(LAST_STATS);
   });
 
@@ -2674,11 +2281,11 @@ function initActions() {
 
 const T0 = performance.now();
 
-initTabs();
-initActions();
-initStickyFilter();
 renderSkeleton();
-loadWeekly();
+initActions();
+initMenu();
+initStickyFilter();
+initTabs();
 
 loadDashboard().then(() => {
   try {
@@ -2686,8 +2293,6 @@ loadDashboard().then(() => {
     const parts = ["数据 " + Math.round(performance.now() - T0) + " ms"];
     const nav = performance.getEntriesByType("navigation")[0];
     if (nav) parts.push("页面 " + Math.round(nav.responseEnd - nav.startTime) + " ms");
-    const chart = performance.getEntriesByType("resource").find((r) => r.name.includes("chart.min.js"));
-    if (chart) parts.push("Chart.js " + Math.round(chart.duration) + " ms");
     const f = document.querySelector(".footer p");
     if (f) f.textContent = "Powered by WDL · " + parts.join(" · ");
   } catch (e) { /* 统计失败不影响看板 */ }

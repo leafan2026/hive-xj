@@ -1,371 +1,164 @@
-# hive 服务看板 · 前端样式规范
+# hive 服务看板 · 前端样式规范（v2，2026-10 改版）
 
 本文是 `public/hive.css` 和 `public/hive.js` 里已有实现的提炼，**描述现状而非愿望**。
 改样式前读这里；改完若与本文冲突，要么改回来，要么连本文一起改。
 
-> **在别的项目里复用这套风格？** 直接用同目录的 [`DESIGN-portable.md`](./DESIGN-portable.md)：
-> 它是去掉 hive 业务细节的通用版，CSS 和图表代码完整内联、可直接照抄，并经过实测。
-> 下面这份是 hive 仓库内部的规范。若坚持只用本文：你没有 `drawCombo()` / `cleanScales()` 可调，
-> **必须照抄「Chart.js 实现基线」一节的代码**。只读文字描述去重写配置，会回落到
-> Chart.js 默认样式（深色大字、满格网格、直角柱、方块图例、内置标题），
-> 和仓库明显不一致。写完对照末尾「走样自查」逐项检查。
+> **`DESIGN-portable.md` 仍是改版前（v1 紫色轻卡片）的通用版**，给别的仪表盘复用，未随本次改版更新。
+> 新做的 hive 页面以本文为准；要让别的项目也换成 v2，需要另外更新那份文件。
+
+## 信息架构
+
+左侧固定侧边栏，导航分两组，**分组依据是「受不受顶部筛选影响」**：
+
+| 组 | 页面 | 数据来源 | 筛选栏 |
+| --- | --- | --- | --- |
+| 分析 · 随筛选变化 | 总览、接待量与来源、AI 表现、人工服务、业务与套餐 | `/api/dashboard` | 显示 |
+| 报告 · 固定口径 | 周报、业务闭环 | `/api/weekly`、`/api/loop` | **隐藏**（`body.is-report`） |
+
+- 页面按「回答什么问题」分，而不是按图表来源分。总览是落地页；当前页写在 URL hash（`#weekly`），可直接分享。
+- **每一页都以 Claude Design 画布上的原型为准**（`Main / Volume / AI / Cost / Business / Weekly / Loop.dc.html`），
+  卡片顺序、标题文案、图例、悬停卡内容都照原型做；改页面先改原型，再改代码。
+- 人工服务页：顶部 5 张指标卡，再分三组小标题：01 工作量与忙闲、02 为什么转人工、03 客服表现。
+- 人工服务页的「客服接待评估 · 累计」来自周报接口（第 27 周起累计），**不随筛选**，表头右侧写明了这一点。
+- 周报 03 表的「环比 / 同比」行：两行小胶囊（10.5px）各占一行、行距 5px；04 表不单起环比行，每个指标拆成「数值列 + 胶囊列」（`td.cmpcol`，环上同下），数值和表头右对齐（2026-10-13 用户定）。
+- 窄屏：均分列的表（`.report-table.even`、热力表）都有最小宽度，在 `.table-wrapper` 里横向滚动，不把列压扁；逐柱横轴标签太密时隔几根标一个（`domChart` 自己量宽度）。
+- 周报页：标题写「周报 · 第 N 周」，副标题是日期范围 + 对比周；统计周下拉 / 显示口径说明 / 导出 三个控件在标题行右侧
+  （`body.is-weekly` 才显示 `.report-bar`）；「导出」走浏览器打印（打印样式只留当前页，可存 PDF）。
+- `renderCharts()` 只画当前页，切页时再画（`PANEL_RENDER`）；图表全是 DOM，不再有 canvas 量不出尺寸的问题，但仍按页画省事。
 
 ## 基调
 
-浅紫灰底 + 纯白卡片的「轻卡片」风格。靠极淡阴影和 1px 近乎透明的描边分层，
-**不用重边框**；圆角偏大（16–20px）。整体偏柔和现代，不是传统 BI 的密集网格风。
+浅灰底（`#ECEBEF`）+ 纯白大圆角卡片（22px），**无阴影、无描边**，靠底色差分层。
+黑白灰为主，**品牌绿 `#75FB90` 只给需要被看见的东西**：达标、AI 接住的份额、上升、可避免转人工、闭环「是」。
+不引入红、紫、橙等其他彩色；「坏 / 下降 / 慢」一律用黑。
 
-字体栈 `-apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", "Microsoft YaHei"`，
-正文 14px，开 `-webkit-font-smoothing: antialiased`。
+字体：`"Urbanist", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif`。
+Urbanist 只自托管拉丁子集（`public/urbanist-latin.woff2`，约 28KB，SIL OFL），
+由 `renderPage()` 用 `env.ASSETS.url()` 取地址、内联 `@font-face`。**不走 Google Fonts**（国内不稳定）。
+中文落到系统字体。数字统一开 `font-variant-numeric: tabular-nums`。
 
-## 颜色 token
-
-全部在 `:root`，换主题只动这里，**不要在组件里写死色值**。
+## 颜色 token（`:root`）
 
 | 用途 | 变量 | 值 |
 | --- | --- | --- |
-| 页面底色 | `--bg` | `#f5f6fb` |
-| 卡片 | `--card` | `#ffffff` |
-| 主文字 | `--ink` | `#20264a` |
-| 次文字 | `--ink-soft` | `#555d80` |
-| 弱化文字 | `--muted` | `#9198b2` |
-| 分隔线 | `--line` | `#e9ebf4` |
-| 主色 | `--primary` | `#635bea` |
-| 主色浅底 | `--primary-soft` | `#efefff` |
+| 页面底色 | `--bg` | `#ECEBEF` |
+| 卡片 | `--card` | `#FFFFFF` |
+| 主文字 / 主色 | `--ink` | `#0B0B0C` |
+| 次文字 | `--ink-2` | `#55545A` |
+| 弱化文字 | `--muted` | `#76757B` |
+| 中灰 | `--gray` | `#AAA9AB` |
+| 浅灰 | `--light` | `#DBDADD` |
+| 浅底 | `--soft` / `--soft-2` | `#F1F0F3` / `#F7F6F9` |
+| 品牌绿 | `--green` | `#75FB90`（绿底上的字一律用黑） |
 
-辅助色：`--blue #6e99ee`、`--violet #806dfa`、`--amber #f8b84e`、
-`--green #58c59a`、`--rose #ee8d87`、`--cyan #63cfc9`。
+## 图表配色（`hive.js` 顶部）
 
-阴影两档：`--shadow: 0 6px 18px rgba(47,54,102,.055)`、
-`--shadow-hover: 0 10px 26px rgba(47,54,102,.10)`。圆角基准 `--radius: 16px`。
+- 语义固定色：设备 `COLOR_DEVICE` pc `#0B0B0C` / mobile `#AAA9AB` / 未知 `#DBDADD`；
+  会话性质 `COLOR_NATURE` 有效 `#0B0B0C`、填表人 `#8D8C93`、无效 `#C9C8CD` … 未标记 `#E9E8EC`。
+  同一个值在任何图里永远同一个颜色。
+- 兜底灰阶 `GRAYS`（深 → 浅）。堆叠段之间有 2px 白缝，靠明度就能分开。
+- 柱线图的线：总览 / 每日图一条黑线 2px（右轴），会话时长图一条品牌绿 3px；不画虚线、不画多条线。
+- 单系列柱：`#D3D2D6`（总览）/ `#C9C8CD`（小倍数）/ `#AAA9AB`（每日人工时长）；需要突出「当前周期」时用 `#4A4A50`，「最近一周」用黑。
+- 排名条：第一名黑、其余 `#8D8C93`、「未知 / 未标记 / 其他」`#DBDADD`。
+- 可避免转人工的原因用绿，其余 `#C9C8CD`。
 
-## 字号层级
+## 柱子：一律胶囊
 
-指标卡是全站视觉重心：
+- 所有柱 `border-radius: 999px`，**每一段**都是全圆角，没有直角柱。
+- 堆叠柱段与段之间留 **2px** 白缝：`display: flex; gap: 2px`，每段各自 `border-radius: 999px`。
+- 「待定 / 未质检」这类还没落地的部分用斜纹：`repeating-linear-gradient(135deg, #AAA9AB 0 2px, #F1F0F3 2px 5px)`（`HATCH`）。
+- 热力格（渠道 × 会话性质、设备 × 会话性质、场景 × 套餐）：0 留白、浅 → 深单色阶，过半改白字；服务节奏（09:30～18:30 × 15 分钟格）分 5 档 `#E4E3E7 → #0B0B0C`。
+- 场景 × 客服中位数热力格：和该行全员中位比，≤0.8 绿 `#75FB90`、≤1.1 `#F1F0F3`、≤1.35 `#AAA9AB`、更慢 `#3A3A40` 白字；样本 < 3 写「—」。
 
-- `.card-label` 12px / 500 / `--muted`
-- `.card-value` **23px / 字重 720 / 字距 -0.65px**，并开 `font-variant-numeric: tabular-nums`
-  （等宽数字，数值刷新时不会左右抖动，这是刻意的，别去掉）
-- `.card-sub` 10.5px / `--muted`
+## 涨跌与状态
 
-`.chart-card h3` 15px / 700 / 字距 -0.12px，左侧有 4px 宽圆角竖条做锚点。
-竖条颜色**按栅格位置轮换**：默认 `--primary`，`:nth-child(3n+2)` 用 `--cyan`，
-`:nth-child(3n)` 用 `--rose`。纯装饰节奏，不承载语义，不要拿它编码数据含义。
+**涨＝绿、跌＝黑、持平＝浅灰，只看方向不看好坏。**（v1 的「红涨绿跌」已废弃；不引入红色。）
 
-表格 13px；`th` 12.5px / 600 / `--muted`、底色 `#f9f8ff`、sticky 吸顶。
-
-## 栅格与卡片
-
-`.main` 内容区 `max-width: 1400px` 居中，padding `20px 28px 10px`。
-
-`.grid` 是 flex wrap、`gap: 18px`；`.chart-card` 为 `flex: 1 1 340px`，
-窄屏自动掉成单列。三个尺寸修饰符：
-
-| 类 | min-height | canvas 上限 |
+| 类 | 含义 | 底 / 字 |
 | --- | --- | --- |
-| （默认） | 320px | 300px |
-| `.wide` | 320px（占满整行） | 300px |
-| `.tall` | 460px | 400px |
+| `.dl.up` | 上升 | `#75FB90` / `#0B0B0C` |
+| `.dl.down` | 下降 | `#0B0B0C` / `#FFFFFF` |
+| `.dl.flat` | 持平 | `#F1F0F3` / `#0B0B0C` |
 
-卡片 hover 统一 `translateY(-2px)` + `--shadow-hover`，过渡 `.15s ease`。
+文字用 `▲ 4.2%`、`▼ 1.5pp`；计数看相对变化（%），比率看差值（pp）——见 `changeText()`、`delta()`。
+**例外**：场景 × 客服表比的是「人 vs 全员中位线」不是环比，胶囊直接写「快 1.4 分」（绿）/「慢 0.8 分」（黑），不用箭头（`deltaPill()`）。
 
-**环图是例外**：`.multi-ring-chart` 锁 1:1、`.progress-ring-chart` 锁 2:1
-（`#panel-service` 内压到 3.6:1），且必须绕开 canvas 的 300px 高度上限
-（`max-height: none`），否则同心环几何会被压扁。
+状态 `.pill.good`（达成）绿底黑字、`.pill.bad`（未达成）黑底白字。情绪标签 `.emo-neg` 黑、`.emo-pos` 绿。
 
-## 图表配色
+## 悬停提示
 
-分两层，定义在 `public/hive.js` 顶部。
+- 悬停整列铺一块 `#F3F2F5` 圆角底（`.dc-col / .col / .rb-col / .pair-col:hover::before`），**不再画竖虚线**。
+- 提示卡统一是深色卡片 `.chart-glass-tooltip`：`rgba(11,11,12,.94)`、圆角 14、宽 220。
+  - 标题（周期 / 日期，`#C9C8CD`）
+  - 每个序列一行：标记 + 名称 + 右对齐数值。**柱是 10×10 圆角方块，线是 14×3 短横**
+  - 底部一行（分隔线上方）：合计 + 涨跌胶囊（深色卡上「下降」改用 `#3A3A40` 底，否则黑底看不见）
+  - 可选灰色备注（如「读数还会往上走」）
+- 位置：锚在所在列旁边，**越过视口中线就翻到左侧**。
+- 所有图走 `bindDomTip(container, describe)`：容器里带 `data-tip="i"` 的元素悬停时调 `describe(i)` 拿
+  `{ title, rows:[{name,value,color,line}], foot:{name,value,delta}, notes }`。数据变了只换 `el.$tip`，不重复绑事件。
 
-**第一层：语义固定色。** 同一个值在任何图里永远同一个颜色，这是硬规则。
+## 柱线图：DOM + SVG（`domChart()`，与原型同一套画法；仓库里**没有 Chart.js**）
 
-- 设备 `COLOR_DEVICE`：pc `#5e8ef2`、mobile `#00c8a9`、未知 `#d3d8e6`
-- 渠道 `COLOR_CHANNEL`：gd_next `#ffb65c`、gd4 `#d2aa79`、gd_app `#b594ff`、
-  wechat_miniapp `#00c8a9`、wechat_official `#ff6689`、trade_weixin_app `#5e8ef2`、未知 `#bcc2d1`
-- 会话性质 `COLOR_NATURE`：有效 `#806dfa`、填表人 `#00c8a9`、无效 `#77ddd3`、
-  转接未应答 `#ff8dac`、电话引导·发链接图片 `#5e8ef2`、内部测试 `#f3d07a`、未标记 `#d3d8e6`
+2026-10-13 起 Chart.js 整个拿掉了（原型是 flex 胶囊柱 + SVG 平滑曲线，照抄更省心也更像）。`domChart(el, cfg)` 画出：
 
-「未知 / 未标记」一律用灰（`#d3d8e6`、`#bcc2d1`），**不占用彩色**——
-缺数据不该在图里抢注意力。
+- 左轴刻度 `.dc-y`（40px）+ 虚线网格 `.dc-grid`，右轴刻度 `.dc-h`（36px，写 `5.0h`），都可省略。
+- 柱 `.dc-col > .dc-bar`：宽度按粒度 `BAR_W = { day 4, week 16, month 40, quarter 64, year 96 }`，并列双柱 `PAIR_W`；
+  堆叠段 `.dc-bar.stacked > i`（底下是主段，往上依次浅），段间 2px；柱顶数值 `.dc-label`（≤20 根时才标）。
+- 线 `.dc-line`：`viewBox="0 0 1000 H"` + `preserveAspectRatio="none"` + `vector-effect: non-scaling-stroke`，
+  点在每根柱的中心（`(i+0.5)/n`），`smoothPath()` 做 Catmull-Rom 平滑。颜色：总览 / 每日图黑 2px，会话时长图绿 3px。
+- 横轴：`xLabels`（绝对定位：按天只标每月 1 号，按周隔一根标 `W41`，月 / 季 / 年逐根）或 `xPerBar`（每柱一个）。
+- 悬停卡标题用 `bucketTitle()`：`2026-10-05 周一` / `W41 · 10-05 – 10-11（不完整）` / `2026 年 10 月`。
+- 当前周期：总览图按天高亮最近 7 根、其他粒度最后一根（`#4A4A50`），其余 `#D3D2D6`。
+- 其他 DOM 图：复问率周柱 `.rb-col`（最近一周黑、≥7% 深灰、其余浅灰，7% 虚线警戒线）、三张迷你趋势卡 `.trio`
+  （SVG 面积 + 线，量纲不同不共轴）、100 根单位柱 `.units`（高度 62～100% 的固定伪随机，纯装饰）、
+  入口媒介 / 转人工原因的横向排名条、情绪构成条（黑 / 灰 / 绿）。
 
-**第二层：兜底色序。** 没进映射表的维度走 15 色 `PALETTE`，按索引取模
-（`colorFor(map, key, i)`）。新增维度优先进映射表，不要依赖取模顺序，
-否则数据一变颜色就跟着漂。
+## 布局
 
-```js
-const PALETTE = [
-  "#806dfa", "#00c8a9", "#ffb65c", "#ff6689", "#00d9d4",
-  "#5e8ef2", "#b594ff", "#ff8dac", "#77ddd3", "#e5c77f",
-  "#9289e9", "#70bdf7", "#d3b1ef", "#ffbe9d", "#a9afc7",
-];
-```
+- 分析页大图一张一张竖排（`.panel > .chart-card`），小卡用 `.grid`（三列）/ `.grid.two`（两列）/ `.flex-row`（原型的 flex-wrap）。
+  ≤1100px 侧边栏收窄到 200px 但**保留**，`.grid` 两列；≤1000px `.grid.two` 一列。
+- **手机（≤640px）**：侧边栏折成顶部一条（logo 在左、汉堡 `.menu-btn` 在右，sticky），导航和「数据更新于 / 重新拉取数据 / 退出」
+  整块（`.side-body`）变成右侧抽屉（`body.menu-open` 滑入，遮罩 `.menu-backdrop`，点导航 / 遮罩 / × / Esc 收回）。
+  筛选栏默认收起成一行摘要（`.filter-toggle`：时间范围 + 几项维度筛选），展开后两列排布、每个控件独占一格。
+  指标卡两列、数值 30px；大数字缩到 44px；周报目录改成横向滚动一行；表格按最小宽度横向滚动。
+- 指标卡 `.cards`：`repeat(auto-fit, minmax(190px, 1fr))`，和原型一样靠宽度自己折行。
+- 筛选栏：每个控件前有「时间 / 从 / 至 / 设备 / 业务场景 / 会话性质」小标签（`.f-label`），下拉占位写「全部」；
+  筛选命中数放在页头右侧 `.match-info`，和「随筛选变化」胶囊一行。
+- 卡片标题 `.chart-card h3` 13px / 500 / `--ink-2`，副标题 `.chart-sub` 12px `--muted`；页面标题 34px / 600；分组标题 20px / 600。
+- 指标卡：标签 12px、数值 38px、胶囊 + 说明同一行、底部一排按周小柱（最近一根黑）。
+- 大数字：总览 hero 64px、接待量页 52px、AI 独立率 64px、复问率 52px、三列对比 36～40px、接待人数 34～44px。
+- 表格 `.report-table.even`：`table-layout: fixed`、首列 20%、表头可折行——各列均分，和原型的 grid 模板一致；
+  需要某列更宽时加 `<colgroup>`（周报 05 的占总时长列）。热力表 / 明细表用 `role=table` 的 div grid（`.hm / .em / .ed / .rt`），模板列宽照原型。
 
-**同一张图的多个系列，按 PALETTE 顺序依次取**（紫 → 青 → 橙 → 粉 …），
-相邻两色色相跨度很大，保证可区分。**不要从 `:root` 辅助色里挑同色系**——
-`--primary #635bea` 和 `--violet #806dfa` 放进同一张图几乎分不清。
-`:root` 的辅助色是给界面装饰用的（标题竖条、标签底色），不是给数据系列用的。
+## 周报
 
-**已知坑：系列超过 4 个会撞色。** `PALETTE[1] #00c8a9` 和 `PALETTE[4] #00d9d4`
-都是青绿，同一张图里第 2 条和第 5 条几乎分不清。超过 4 个系列时**跳过 `[4]`**
-（第 5 个取 `[5] #5e8ef2`），或者干脆拆成两张图——5 条以上的线本来就很难读。
+- 顶部：统计周下拉 + 范围说明 + 「显示口径说明」开关（默认收起，`body.show-kou` 展开 `.note.kou`），下方 01–07 目录。
+- 01 目标追踪：主目标卡（数字 + 目标 + 达成 + 环比）| 竖线 | 0 ~ 2×目标 的轨道，堆叠条从左往右长，
+  分段顺序固定「能 → 部分 → 不能 → 未质检」，目标线在中点；下面 4 列各自写占比、环比、场数 · 分钟数。
+  再下面是 5 张「必须真人场景」小卡（中位数、目标、达成、环比、接待次数、带目标线的小进度条）。
+- 02–06 保持原表格和信息密度；数据性的结论句（如「不愿和 Jiri 沟通率」）始终显示，只有口径说明收起。
+- 07 客服接待评估拆成 A–D 四个带边框的小块，每块有编号、标题和一句「这张表怎么读」。
 
-hover 用 `darken(hex, .82)` 压暗同一支色，**不换成另一种颜色**。
+## 图表的数据表达规则（硬约束）
 
-## Chart.js 实现基线（跨项目复用必须照抄）
-
-图表观感大半由下面这些配置决定，而不是 CSS。仓库里它们分散在 `hive.js` 的
-`Chart.defaults`、`cleanScales()`、`drawCombo()`、`comboLegend()` 里；
-别的项目没有这些函数，**照抄本节代码**，不要凭描述重写。
-
-### 1. 全局默认（创建任何图表之前设置一次）
-
-```js
-Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", sans-serif';
-Chart.defaults.font.size = 11.5;            // 坐标轴/图例比正文小，默认 12 偏大
-Chart.defaults.color = "#8f8ca9";           // 坐标轴/图例文字，Chart.js 默认 #666 偏黑
-Chart.defaults.borderColor = "#eeeaf6";
-Chart.defaults.plugins.tooltip.backgroundColor = "#393878";
-Chart.defaults.plugins.tooltip.padding = 11;
-Chart.defaults.plugins.tooltip.cornerRadius = 10;
-Chart.defaults.plugins.tooltip.displayColors = false;
-Chart.defaults.plugins.tooltip.titleFont = { size: 11.5, weight: "500" };
-Chart.defaults.plugins.tooltip.titleColor = "#b9bdd0";
-Chart.defaults.plugins.tooltip.bodyFont = { size: 14, weight: "700" };
-Chart.defaults.plugins.tooltip.caretSize = 6;
-```
-
-漏掉这一段是最常见的走样来源：坐标轴字会变大变黑，整张图立刻「不像」。
-
-### 2. 坐标轴（对应仓库 `cleanScales()`）
-
-X 轴既无网格线也无轴线；Y 轴只留 `#f2f4fa` 淡横线、无轴线。
-**量级相差一个数量级以上的系列，小的那组走右侧 `y1`**（右轴同样无网格无轴线）。
-
-```js
-scales: {
-  x: {
-    stacked,                                   // 堆叠图 true，并列柱 false
-    grid: { display: false },
-    border: { display: false },                // v4 起轴线归 border 管，grid.drawBorder 已移除
-    ticks: { maxRotation: 45, autoSkip: false, padding: 6 },
-  },
-  y: {
-    stacked,
-    beginAtZero: true,
-    grid: { color: "#f2f4fa", drawTicks: false },
-    border: { display: false },
-    ticks: { padding: 10, maxTicksLimit: 6 },
-  },
-  y1: {                                        // 只在有第二量级系列时加
-    position: "right",
-    beginAtZero: true,
-    grid: { display: false },                  // 右轴不画网格，否则两套横线交错
-    border: { display: false },
-    ticks: { padding: 8, maxTicksLimit: 6 },
-  },
-}
-```
-
-### 3. 数据集样式（对应仓库 `drawCombo()`）
-
-```js
-// 柱 · 堆叠（构成整体的分段，如设备 pc/mobile/未知）
-{
-  type: "bar", stack: "s", yAxisID: "y",
-  borderSkipped: false,
-  borderColor: "#fff", borderWidth: { top: 2, right: 0, bottom: 0, left: 0 },  // 段间白缝
-  borderRadius: isTopSegment ? { topLeft: 5, topRight: 5 } : 2,                // 只给最上面一段圆角
-  barPercentage: .62, categoryPercentage: .82,
-  order: 2,
-}
-
-// 柱 · 单系列 → 胶囊
-{ type: "bar", yAxisID: "y", borderRadius: 20, borderWidth: 0, borderSkipped: false,
-  barPercentage: .42, categoryPercentage: .82, order: 2 }
-
-// 柱 · 并列（彼此不构成整体的指标，如接待人数 vs 接待企业数）→ 不设 stack
-{ type: "bar", yAxisID: "y", borderRadius: { topLeft: 5, topRight: 5 }, borderWidth: 0,
-  borderSkipped: false, barPercentage: .8, categoryPercentage: .74, order: 2 }
-
-// 线
-{
-  type: "line", yAxisID: "y1",                 // 和柱同图时走右轴
-  tension: .42,                                // 平滑曲线，不是折线
-  borderWidth: 2.5,
-  pointRadius: 2.5,
-  pointBackgroundColor: "#fff",                // 白心点 + 彩色描边，不是实心点
-  pointBorderColor: color,
-  pointBorderWidth: 2,
-  pointHoverRadius: 5.5,
-  fill: false,
-  order: 1,                                    // order 小的画在上面：线永远压在柱上
-}
-```
-
-柱子一律有圆角，**不存在直角柱**。
-
-### 4. 图表级选项
-
-```js
-options: {
-  responsive: true,
-  maintainAspectRatio: false,                  // 必须！高度交给 CSS，见下
-  interaction: { mode: "index", intersect: false },
-  layout: { padding: { top: 22 } },            // 给柱顶合计数留位置
-  plugins: {
-    title: { display: false },                 // 卡片 h3 就是标题，不要再开 Chart.js 标题
-    legend: {
-      position: "top",
-      align: "start",                          // 左对齐，不是居中
-      labels: {
-        usePointStyle: true,
-        boxWidth: 9, boxHeight: 9, padding: 14,
-        font: { size: 12 },
-        // 柱系列用方块 "rect"，线系列用圆点 "circle"，一眼区分图形类型
-        generateLabels(chart) {
-          return Chart.defaults.plugins.legend.labels.generateLabels(chart).map((item) => {
-            const ds = chart.data.datasets[item.datasetIndex] || {};
-            const isLine = ds.type === "line";
-            // 必须显式给 fill/stroke：否则线系列会取 pointBackgroundColor "#fff"，图例变成白心空环
-            const color = isLine ? ds.borderColor : ds.backgroundColor;
-            return { ...item, fillStyle: color, strokeStyle: color,
-                     lineWidth: isLine ? 2 : 0, pointStyle: isLine ? "circle" : "rect" };
-          });
-        },
-      },
-    },
-  },
-}
-```
-
-### 5. 画布定高（防止坐标轴标签溢出卡片）
-
-`maintainAspectRatio: false` 让 Chart.js 不再按宽高比自算高度，改由 CSS 决定：
-
-```css
-.chart-card canvas { max-height: 300px; }
-.chart-card.tall canvas { max-height: 400px; }
-```
-
-两者缺一不可。用默认的 `maintainAspectRatio: true`，宽屏下画布会按 2:1 撑得很高，
-旋转的 X 轴标签就会冲出卡片底部、压到下一张卡上。
-
-### 6. 柱顶合计数与悬停竖线（自定义插件，需原样复制）
-
-这两个效果不是 Chart.js 自带的，照抄上面的配置**得不到**：
-
-- `valueLabels`：柱顶合计数 / 柱内分段值，规则见下文「柱上数字」。
-  从 `public/hive.js` 第 977 行起原样复制 `const valueLabels = { … };`
-- `hoverGuide`：悬停时一条 `#b9c0f0` 竖虚线。从第 753 行起原样复制 `const hoverGuide = { … };`
-
-复制后注册一次 `Chart.register(valueLabels, hoverGuide);`。`valueLabels` 的配置
-**必须按柱型区分**，不能一刀切开 `showStackTotal`——插件会把同一 X 位置的所有柱值相加：
-
-| 柱型 | `valueLabels` 配置 | 一刀切开合计会怎样 |
-| --- | --- | --- |
-| 堆叠柱（多段构成整体） | `{ showStackTotal: true }` | 正确：柱顶是各段之和 |
-| 单系列柱 | `{ showStackTotal: false }` | 同一个数画两遍（柱顶 + 柱内） |
-| 并列柱（指标不构成整体） | `{ showStackTotal: false, barTop: true }` | **柱顶显示两柱之和，是错数**；柱内数字还会被窄柱截断 |
-
-公共部分：
-
-```js
-plugins: {
-  valueLabels: { maxLabels: 40, maxTotalLabels: 150, lineLabels: false, /* 加上表中按柱型的两项 */ },
-  hoverGuide: { enabled: true },
-}
-```
-
-`lineLabels: false` 是固定的：柱线组合图里折线值会落进柱子内部，标出来会被误读成柱值。
-
-`valueLabels` 依赖仓库里的 `fmtNum()` 和 `readableInk()`，一起复制。行号随代码变动，
-以 `const valueLabels = {` 为准搜索。
-
-### 7. 悬停与 tooltip
-
-仓库用两个自定义插件：`hoverGuide`（悬停时一条 `#b9c0f0` 4px 间隔的竖虚线）和
-外置 HTML 玻璃态 tooltip（`glassTooltip`）。新项目不移植的话，
-第 1 节的 `Chart.defaults.plugins.tooltip.*` 深色配置就是正确的兜底。
-
-## 柱上数字（valueLabels 插件）
-
-两档限流，**不是一个阈值**：
-
-- 柱顶合计数：≤150 根柱时绘制
-- 柱内分段值：≤40 根柱时绘制（挤在柱子里，柱多了必须让位）
-
-超出部分交给碰撞检测按优先级丢弃：合计数 `p:0` > 折线值 `p:1` > 柱内分段 `p:2`。
-合计数带白色描边（halo），压在柱子上也读得清。
-
-并列柱（`grouped: true`）模式下值画在**柱顶**而非柱内——柱子矮时画在里面看不见。
-
-## 语义色
-
-**环比/同比固定红增绿减，不按指标好坏翻转。** 这条踩过坑后定死，别再改成
-「指标变好就绿」——同一个色块在不同卡片含义相反，读表的人会误判。
-
-| 类 | 含义 | 底色 / 字色 |
-| --- | --- | --- |
-| `.dl.up` | 上升 | `#fdecee` / `#d9484d` |
-| `.dl.down` | 下降 | `#e7f8ef` / `#199c58` |
-| `.dl.flat` | 持平 | `#f1f2f9` / `#6a7089` |
-
-状态标签 `.pill` 则按好坏：`.good` `#e7f8ef`/`#199c58`、
-`.warn` `#fef3e2`/`#cf8016`、`.bad` `#fdecee`/`#d9484d`。
-
-错误提示条 `.banner`：`#fdeeee` 底 / `#c8393a` 字。
-
-## 控件
-
-- `.btn` 主按钮：primary 实底、圆角 9px、13px/600，投影 `0 5px 12px rgba(99,91,234,.25)`，
-  hover 上浮 1px；`:disabled` 时 `opacity: .55` 并取消位移和投影
-- `.tab`：常态白底 + `--muted` 字 + 极淡阴影；`.active` 换 primary 实底白字
-- 筛选器 `select` / `input[type=date]`：`#fafbfe` 底、1px `--line` 描边、圆角 10px；
-  focus 时边框转主色、底色转纯白；`.active` 态用 `--primary-soft` 底 + 主色字 + 500 字重，
-  让「这个筛选器生效中」一眼可见
-- `.chart-grain`（图表卡内的粒度下拉）：同一套的小号版本，padding `4px 9px`、12.5px
-
-## 图表的数据表达规则
-
-这几条不是样式偏好，是会导致读错数的硬约束。
-
-**去重计数不能跨周期相加。** 接待人数（user_id 去重）、接待企业数
-（billing_account_id 去重）这类指标，每个粒度必须由服务端各自去重一次；
-「总计」显示全区间去重数（`uniqAll`），不是各周期求和。
-
-**不构成整体的指标不堆叠。** 人数与企业数用并列柱——一个企业下可能有多个用户，
-堆叠会读成没有意义的「人数 + 企业数」。
-
-**量级相差一个数量级以上的系列不能共用一根 Y 轴。** 比如「GMV 万元」（几百）和
-「交易笔数」（上万）同轴，GMV 会被压成一条贴底直线。小量级的那组走右侧 `y1`。
-
-**存量用线，增量用柱，二者不放进同一组并列柱。** 「累计超 3 笔商户数」是存量
-（只增不减，上千），「申请量」「新开通数」是每周增量（几十）。放进同一组并列柱，
-增量柱会被压到几乎看不见。正确做法：增量作柱走左轴 `y`，累计作线走右轴 `y1`。
-
-**环图中占比不足 1% 的分类合并为「其他」**，否则会被圆头压成一条看不见的线。
-
-**不要为了图好看改数据定义。** 改分母或过滤规则时，必须在变更说明里写清口径。
+- **去重计数不能跨周期相加**：接待人数 / 企业数每个粒度由服务端各自去重；总数用全区间去重（`uniqAll`）。
+- **不构成整体的指标不堆叠**：人数与企业数用并列柱。
+- **量级差一个数量级以上不共用 Y 轴**：小的那组走 `y1`。
+- **多分类优先拆成小倍数**（如渠道来源每个渠道一张小图，柱上标数、柱下标周），不要 6 色堆在一根柱上。
+- **区间首尾的半周**画浅色、标「不完整」，不参与「最近一周」对比。
+- **不要为了图好看改数据定义。** 改分母或过滤规则时，必须在变更说明里写清口径。
 
 ## 走样自查
 
-写完图表对照这张表。左列任何一条出现，就是漏了右列的配置。
-
 | 看到的现象 | 漏了什么 |
 | --- | --- |
-| 坐标轴文字偏大、偏黑 | 「全局默认」的 `Chart.defaults.font.size` / `color` |
-| 卡片标题下面又有一个图表标题 | `plugins.title` 没关；卡片 h3 是唯一标题 |
-| X 轴有竖网格线，或 Y 轴左侧有一根竖轴线 | `cleanScales` 那组 `grid` / `border` 配置 |
-| 某条线贴着底部几乎是直线 | 量级差太大却共用 Y 轴，该走 `y1` |
-| 两个系列颜色分不清 | 从辅助色里挑了同色系；应按 `PALETTE` 顺序取 |
-| 折线是直的、数据点是实心圆 | 线的 `tension: .42` 和白心点配置 |
-| 柱子是直角 | 柱的 `borderRadius` |
-| 图例居中、全是方块 | 图例 `align: "start"` 和按类型区分 rect / circle |
-| X 轴标签冲出卡片底部 | `maintainAspectRatio: false` + canvas `max-height` |
-| 一组柱里有几根几乎看不见 | 存量和增量混在同组并列柱；存量改线走 `y1` |
-| 图例里线系列是白心空环 | 图例 `generateLabels` 没显式给 `fillStyle` / `strokeStyle` |
-| 第 2 条和第 5 条线颜色几乎一样 | 系列超过 4 个撞上 `PALETTE[1]` / `[4]`，跳过 `[4]` 或拆图 |
-| 柱顶没有合计数、悬停没有竖虚线 | 没复制注册 `valueLabels` / `hoverGuide` 插件 |
-| 并列柱顶出现一个数，等于两根柱之和 | 并列柱没关 `showStackTotal`，改为 `false` 并开 `barTop: true` |
-| 单系列柱的数字柱顶柱内各一遍 | 单系列柱没关 `showStackTotal` |
-| 柱内数字被截成半个（如「104」显示成「04」） | 并列柱没开 `barTop`，数字挤在窄柱里 |
+| 出现紫色 / 红色 | 写死了 v1 色值；改用 token、`GRAYS`、`GREEN` |
+| 柱子有直角，或堆叠段之间没缝 | `border-radius: 999px` + `gap: 2px` |
+| 下降显示成绿色或红色 | `.dl.down` 应为黑底白字 |
+| 图例里线系列没有标记 | 图例 `lineWidth` 没给 3 |
+| 折线被柱子挡住 / 不平滑 | `.dc-line` 要在 `.dc-cols` 之后、`smoothPath()` 画 |
+| 悬停没有卡片 | 容器没 `data-tip` 或没 `bindDomTip` / `el.$tip` |
+| 周报表格首列占掉大半宽 | 表没加 `even` |
+| 报告页还露出筛选栏 | 导航按钮缺 `data-kind="report"` |
+| 切页后图表空白或尺寸错 | 新面板没进 `PANEL_RENDER`，或在隐藏时画了图 |
+| 手机上找不到刷新 / 退出 | `.side-foot` 在 ≤900px 被隐藏了 |
