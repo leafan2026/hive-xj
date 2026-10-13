@@ -1,0 +1,368 @@
+// 仪表盘图表工具包 v2（配套 dashboard-kit.css）。从 hive 服务看板提炼，无任何第三方依赖，不用 Chart.js。
+// 在页面里引入一次；所有柱线图用 domChart()，并列双柱用 pairChart()，悬停卡统一走 bindDomTip()。
+
+// ============== 颜色 ==============
+const INK = "#0B0B0C";
+const GREEN = "#75FB90";
+const GRAYS = ["#0B0B0C", "#55545A", "#8D8C93", "#AAA9AB", "#C9C8CD", "#DBDADD", "#E9E8EC"];   // 深 → 浅
+const BAR_DARK = "#4A494F";   // 双泳道图的柱色
+const HATCH = "repeating-linear-gradient(135deg, #AAA9AB 0 2px, #F1F0F3 2px 5px)";   // 待定 / 未质检
+
+// 分类 → 固定颜色；没登记的分类按顺序拿灰阶。同一个值在任何图里永远同一个颜色。
+function colorFor(map, key, i) { return map[key] || GRAYS[(i + 2) % GRAYS.length]; }
+
+// ============== 工具 ==============
+function $(id) { return document.getElementById(id); }
+function escHtml(v) { return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function fmtNum(v) {   // 千分位，不缩写成 K；小数 < 10 保留 2 位，否则 1 位
+  const n = Number(v);
+  if (!isFinite(n)) return String(v);
+  if (Number.isInteger(n)) return n.toLocaleString("en-US");
+  return n.toFixed(n < 10 ? 2 : 1);
+}
+function pct(n, d, digits) { return d ? ((n / d) * 100).toFixed(digits ?? 1) : "0"; }
+function niceMax(v) {   // 1 / 2 / 2.5 / 5 / 10 × 10^n 的整刻度上限
+  if (!(v > 0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+
+// 涨跌文字：计数看相对变化（%），比率传 kind="pp" 看差值；返回 "▲ 4.2%" / "▼ 1.5pp" / "持平" / ""
+function changeText(cur, prev, kind) {
+  if (prev === null || prev === undefined || !isFinite(prev) || !isFinite(cur)) return "";
+  if (kind === "pp") { const d = cur - prev; return Math.abs(d) < 0.05 ? "持平" : (d > 0 ? "▲ " : "▼ ") + Math.abs(d).toFixed(1) + "pp"; }
+  if (!prev) return "";
+  const d = ((cur - prev) / prev) * 100;
+  return Math.abs(d) < 0.05 ? "持平" : (d > 0 ? "▲ " : "▼ ") + Math.abs(d).toFixed(1) + "%";
+}
+function deltaClass(text) { return /▲|^\+/.test(text) ? "up" : /▼|^-/.test(text) ? "down" : "flat"; }
+function pillHtml(text) { return text ? '<span class="dl ' + deltaClass(text) + '">' + escHtml(text) + "</span>" : ""; }
+
+// ============== 悬停：整列浅灰底（CSS）+ 深色提示卡 ==============
+function tipEl() {
+  let el = document.getElementById("glass-tooltip");
+  if (!el) { el = document.createElement("div"); el.id = "glass-tooltip"; el.className = "chart-glass-tooltip"; el.setAttribute("role", "status"); document.body.appendChild(el); }
+  return el;
+}
+// rows: [{ name, value, color, line }]；foot: { name, value, delta }；notes: [string]
+function paintTip(title, rows, foot, notes) {
+  const el = tipEl();
+  el.replaceChildren();
+  if (title) { const t = document.createElement("div"); t.className = "chart-glass-tooltip-title"; t.textContent = title; el.appendChild(t); }
+  (rows || []).forEach((r) => {
+    const row = document.createElement("div"); row.className = "chart-glass-tooltip-row";
+    const m = document.createElement("span"); m.className = "chart-glass-tooltip-marker" + (r.line ? " is-line" : "");
+    if (String(r.color).startsWith("repeating")) m.style.background = r.color; else m.style.backgroundColor = r.color;
+    const name = document.createElement("span"); name.textContent = r.name;
+    const val = document.createElement("b"); val.textContent = r.value;
+    row.append(m, name, val); el.appendChild(row);
+  });
+  if (foot) {
+    const f = document.createElement("div"); f.className = "chart-glass-tooltip-foot";
+    const name = document.createElement("span"); name.textContent = foot.name; f.appendChild(name);
+    if (foot.delta) { const d = document.createElement("span"); d.className = "dl " + deltaClass(foot.delta); d.textContent = foot.delta; f.appendChild(d); }
+    const v = document.createElement("b"); v.textContent = foot.value; f.appendChild(v);
+    el.appendChild(f);
+  }
+  (notes || []).filter(Boolean).forEach((text) => { const n = document.createElement("div"); n.className = "chart-glass-tooltip-note"; n.textContent = text; el.appendChild(n); });
+  return el;
+}
+function placeTip(el, x, y) {   // 锚在列旁边；越过视口中线翻到左侧
+  el.classList.remove("visible");
+  const box = el.getBoundingClientRect();
+  let left = x > window.innerWidth / 2 ? x - box.width - 14 : x + 14;
+  left = Math.min(Math.max(12, left), window.innerWidth - box.width - 12);
+  let top = y - box.height / 2;
+  top = Math.min(Math.max(12, top), window.innerHeight - box.height - 12);
+  el.style.left = left + "px"; el.style.top = top + "px";
+  el.classList.add("visible");
+}
+function hideTip() { const el = document.getElementById("glass-tooltip"); if (el) el.classList.remove("visible"); }
+// 容器里带 data-tip="i" 的元素悬停时调 describe(i) → { title, rows, foot, notes }；返回 null 则不显示
+function bindDomTip(container, describe) {
+  container.addEventListener("mousemove", (event) => {
+    const col = event.target.closest("[data-tip]");
+    if (!col || !container.contains(col)) { hideTip(); return; }
+    const spec = describe(Number(col.dataset.tip), col);
+    if (!spec) { hideTip(); return; }
+    const el = paintTip(spec.title, spec.rows, spec.foot, spec.notes);
+    const box = col.getBoundingClientRect();
+    placeTip(el, box.left + box.width / 2, Math.max(box.top + 60, event.clientY));
+  });
+  container.addEventListener("mouseleave", hideTip);
+}
+
+// ============== 柱线图 ==============
+
+// 单调三次插值（Fritsch–Carlson）：曲线不会在两个点之间冲过头，一串 0 旁边不会凹到 0 以下
+function smoothPath(pts) {
+  const n = pts.length;
+  if (!n) return "";
+  if (n === 1) return "M" + (pts[0][0] - 30).toFixed(1) + " " + pts[0][1].toFixed(1) + "L" + (pts[0][0] + 30).toFixed(1) + " " + pts[0][1].toFixed(1);
+  const dx = [], m = [];
+  for (let i = 0; i < n - 1; i++) { dx.push(pts[i + 1][0] - pts[i][0]); m.push(dx[i] ? (pts[i + 1][1] - pts[i][1]) / dx[i] : 0); }
+  const t = [m[0]];
+  for (let i = 1; i < n - 1; i++) t.push(m[i - 1] * m[i] <= 0 ? 0 : (m[i - 1] + m[i]) / 2);
+  t.push(m[n - 2]);
+  for (let i = 0; i < n - 1; i++) {
+    if (!m[i]) { t[i] = 0; t[i + 1] = 0; continue; }
+    const a = t[i] / m[i], b = t[i + 1] / m[i], h = Math.hypot(a, b);
+    if (h > 3) { t[i] = 3 * a / h * m[i]; t[i + 1] = 3 * b / h * m[i]; }
+  }
+  let d = "M" + pts[0][0].toFixed(1) + " " + pts[0][1].toFixed(1);
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i] / 3;
+    d += "C" + (pts[i][0] + h).toFixed(1) + " " + (pts[i][1] + t[i] * h).toFixed(1) + "," + (pts[i + 1][0] - h).toFixed(1) + " " + (pts[i + 1][1] - t[i + 1] * h).toFixed(1) + "," + pts[i + 1][0].toFixed(1) + " " + pts[i + 1][1].toFixed(1);
+  }
+  return d;
+}
+
+// 柱宽：一根 = 格宽 × 55%（并列双柱各 26%），按粒度封顶；根数少自然粗、多自然细
+const BAR_MAX = { day: 48, week: 48, month: 56, quarter: 64, year: 80 };
+function barW(grain) { return { wPct: 55, wMax: BAR_MAX[grain] || 48 }; }
+function pairW(grain) { return { wPct: 26, wMax: Math.round((BAR_MAX[grain] || 48) / 2) }; }
+// 双泳道：柱子只占下面 58%，折线只在上面 32%（68%–100%），中间留 10% 空隙，永不交叉
+const LANE_BAR = 58, LANE_LINE_FROM = 68, LANE_LINE = 32;
+
+/**
+ * domChart(el, cfg) —— 胶囊柱 + SVG 平滑曲线
+ *   height    绘图区高度 px（默认 250；双泳道建议 340）
+ *   bars      [{ segs: [{ v, color }], wPct, wMax | w(px), label, labelClass, dashed, minH }]  每根柱
+ *   max       柱的量纲上限（默认 niceMax(最大合计 × 1.1)）
+ *   line      { values: [number|null], color, width, max, dots }   右轴折线（可选）
+ *   yTicks    [{ pos(0-100), label }] 左轴刻度 + 虚线；hTicks 同形右轴刻度（双泳道时 pos 由调用方按泳道给）
+ *   xLabels   [{ left(0-100), label }] 绝对定位横轴；或 xPerBar: [string] 每柱一个（太密自动隔几根标）
+ *   band      { from, to, label }  当前周期：这几根柱背后铺一块绿底、左上角写「本周」
+ *   capLine   { pos, label }  警戒线
+ *   lanes     true = 双泳道；hoverInk true = 悬停列的柱子变墨色
+ *   tip(i)    → { title, rows, foot, notes }
+ */
+function domChart(el, cfg) {
+  if (!el) return;
+  const bars = cfg.bars || [];
+  const n = bars.length;
+  const H = cfg.height || 250;
+  const totals = bars.map((b) => (b.segs || []).reduce((a, s) => a + (Number(s.v) || 0), 0));
+  const max = cfg.max || niceMax(Math.max(...totals, 0) * 1.1);
+  const line = cfg.line;
+  const lineMax = line ? (line.max || niceMax(Math.max(...line.values.map((v) => Number(v) || 0), 0) * 1.15)) : 1;
+  const yTicks = cfg.yTicks || [], hTicks = cfg.hTicks || [];
+  const laneBar = cfg.lanes ? LANE_BAR : 100, laneFrom = cfg.lanes ? LANE_LINE_FROM : 0, laneLine = cfg.lanes ? LANE_LINE : 100;
+
+  const cols = bars.map((b, i) => {
+    const segs = (b.segs || []).filter((s) => Number(s.v) > 0);
+    const h = Math.max(b.minH || 0, (totals[i] / max) * laneBar);
+    const wStyle = b.wPct ? "width:" + b.wPct + "%;min-width:4px;max-width:" + (b.wMax || 48) + "px;" : "width:" + (b.w || 12) + "px;";
+    const inner = segs.length > 1 ? segs.slice().reverse().map((s) => '<i style="flex:' + Number(s.v) + " 1 0;background:" + s.color + '"></i>').join("") : "";
+    const bg = segs.length === 1 ? segs[0].color : (b.bg || "transparent");
+    return '<div class="dc-col" data-tip="' + i + '">' +
+      (b.label !== undefined && b.label !== "" ? '<span class="dc-label' + (b.labelClass ? " " + b.labelClass : "") + '">' + escHtml(b.label) + "</span>" : "") +
+      '<div class="dc-bar' + (inner ? " stacked" : "") + (b.dashed ? " dashed" : "") + '" style="' + wStyle + "height:" + Math.max(b.dashed ? 4 : 0, h).toFixed(2) + "%;" + (inner || b.dashed ? "" : "background:" + bg) + '">' + (b.dashed ? "" : inner) + "</div></div>";
+  }).join("");
+
+  let path = "", dots = "";
+  if (line && n) {
+    const pts = [];
+    const yOf = (v) => laneFrom + (Number(v) / lineMax) * laneLine;
+    line.values.forEach((v, i) => { if (v !== null && v !== undefined && isFinite(v)) pts.push([((i + 0.5) / n) * 1000, H - (yOf(v) / 100) * H]); });
+    path = smoothPath(pts);
+    if (line.dots) dots = '<div class="dc-dots">' + line.values.map((v) => "<b>" + (v !== null && v !== undefined && isFinite(v) ? '<i style="bottom:' + yOf(v).toFixed(2) + "%;background:" + (line.color || INK) + '"></i>' : "") + "</b>").join("") + "</div>";
+  }
+  const xAbs = cfg.xLabels ? '<div class="dc-x abs">' + cfg.xLabels.map((x) => '<span style="left:' + x.left + '%">' + escHtml(x.label) + "</span>").join("") + "</div>" : "";
+  const xPer = cfg.xPerBar ? '<div class="dc-x per">' + cfg.xPerBar.map((x) => "<span" + (x === "今天" ? ' class="today"' : "") + ">" + escHtml(x) + "</span>").join("") + "</div>" : "";
+
+  el.innerHTML =
+    '<div class="dc' + (cfg.hoverInk ? " hover-ink" : "") + '">' +
+    (yTicks.length ? '<div class="dc-y" style="height:' + H + 'px">' + yTicks.map((t) => '<span style="bottom:' + t.pos + '%">' + escHtml(t.label) + "</span>").join("") + "</div>" : "") +
+    '<div class="dc-body"><div class="dc-plot" style="height:' + H + 'px">' +
+    yTicks.map((t) => '<b class="dc-grid" style="bottom:' + t.pos + '%"></b>').join("") +
+    (cfg.lanes ? hTicks.map((t) => '<b class="dc-grid light" style="bottom:' + t.pos + '%"></b>').join("") : "") +
+    (cfg.capLine ? '<b class="dc-cap" style="bottom:' + cfg.capLine.pos + '%"></b>' + (cfg.capLine.label ? '<span class="dc-cap-label" style="bottom:' + cfg.capLine.pos + '%">' + escHtml(cfg.capLine.label) + "</span>" : "") : "") +
+    (cfg.band && n && cfg.band.to >= cfg.band.from ? '<div class="dc-band" style="left:' + ((cfg.band.from / n) * 100).toFixed(2) + "%;width:" + (((cfg.band.to - cfg.band.from + 1) / n) * 100).toFixed(2) + '%"><span>' + escHtml(cfg.band.label || "") + "</span></div>" : "") +
+    '<div class="dc-cols">' + cols + "</div>" +
+    (path ? '<svg class="dc-line" viewBox="0 0 1000 ' + H + '" preserveAspectRatio="none"><path d="' + path + '" fill="none" stroke="' + (line.color || INK) + '" stroke-width="' + (line.width || 2) + '" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path></svg>' : "") +
+    dots +
+    "</div>" + xAbs + xPer + "</div>" +
+    (hTicks.length ? '<div class="dc-h" style="height:' + H + 'px">' + hTicks.map((t) => '<span style="bottom:' + t.pos + '%">' + escHtml(t.label) + "</span>").join("") + "</div>" : "") +
+    "</div>";
+
+  thinPerBarLabels(el, n);
+  if (cfg.tip) {
+    el.$tip = cfg.tip;
+    if (!el.dataset.bound) { el.dataset.bound = "1"; bindDomTip(el, (i) => (el.$tip ? el.$tip(i) : null)); }
+  }
+}
+
+// 逐柱横轴标签太密时隔几根标一个，从最后一根往前数，保证最新的那根有标签；「今天」永远保留
+function thinPerBarLabels(el, n) {
+  const axis = el.querySelector(".dc-x.per");
+  if (!axis || !n) return;
+  const step = axis.clientWidth ? Math.ceil((n * 46) / axis.clientWidth) : 1;
+  if (step > 1) axis.querySelectorAll("span").forEach((sp, i) => { if ((n - 1 - i) % step && !sp.classList.contains("today")) sp.textContent = ""; });
+}
+
+/**
+ * pairChart(el, cfg) —— 并列双柱（彼此不构成整体的两个指标，如人数 vs 企业数）
+ *   height, band, xLabels / xPerBar 同 domChart；grain 决定柱宽
+ *   items [{ a, b, aLabel, bLabel }]，colors [colorA, colorB]，labels 是否标数（默认 ≤20 根时标）
+ *   tip(i)
+ */
+function pairChart(el, cfg) {
+  if (!el) return;
+  const items = cfg.items || [];
+  const n = items.length;
+  const H = cfg.height || 200;
+  const max = cfg.max || niceMax(Math.max(...items.map((x) => Math.max(Number(x.a) || 0, Number(x.b) || 0)), 0) * 1.15);
+  const pw = pairW(cfg.grain);
+  const wStyle = "width:" + pw.wPct + "%;min-width:3px;max-width:" + pw.wMax + "px";
+  const showLabels = cfg.labels !== undefined ? cfg.labels : n <= 20;
+  const [ca, cb] = cfg.colors || [INK, "#AAA9AB"];
+  const one = (v, label, color, dim) => '<div class="pair-one" style="' + wStyle + '">' + (showLabels ? '<span class="dc-label' + (dim ? " dim" : "") + '">' + escHtml(label) + "</span>" : "") + '<i style="height:' + ((Number(v) || 0) / max * 100).toFixed(1) + "%;background:" + color + '"></i></div>';
+  el.innerHTML =
+    '<div class="dc"><div class="dc-body"><div class="dc-plot pair-plot" style="height:' + H + 'px">' +
+    (cfg.band && n && cfg.band.to >= cfg.band.from ? '<div class="dc-band" style="left:' + ((cfg.band.from / n) * 100).toFixed(2) + "%;width:" + (((cfg.band.to - cfg.band.from + 1) / n) * 100).toFixed(2) + '%"><span>' + escHtml(cfg.band.label || "") + "</span></div>" : "") +
+    '<div class="dc-cols">' + items.map((x, i) => '<div class="dc-col pair" data-tip="' + i + '">' + one(x.a, x.aLabel ?? fmtNum(x.a), ca, false) + one(x.b, x.bLabel ?? fmtNum(x.b), cb, true) + "</div>").join("") + "</div></div>" +
+    (cfg.xPerBar ? '<div class="dc-x per">' + cfg.xPerBar.map((x) => "<span" + (x === "今天" ? ' class="today"' : "") + ">" + escHtml(x) + "</span>").join("") + "</div>"
+      : '<div class="dc-x abs">' + (cfg.xLabels || []).map((x) => '<span style="left:' + x.left + '%">' + escHtml(x.label) + "</span>").join("") + "</div>") +
+    "</div></div>";
+  thinPerBarLabels(el, n);
+  if (cfg.tip) {
+    el.$tip = cfg.tip;
+    if (!el.dataset.bound) { el.dataset.bound = "1"; bindDomTip(el, (i) => (el.$tip ? el.$tip(i) : null)); }
+  }
+}
+
+// 占比条（一行胶囊分段）+ 图例行：items [{ label, value, color }]
+function stackHtml(items, opts) {
+  const o = opts || {};
+  const sum = items.reduce((a, x) => a + x.value, 0);
+  const segs = items.filter((x) => x.value > 0).map((x) => '<i style="flex:' + x.value + " 1 0;background:" + x.color + '" title="' + escHtml(x.label + "：" + fmtNum(x.value)) + '"></i>').join("");
+  const rows = o.noLegend ? "" : '<div class="legend-rows">' + items.map((x) =>
+    '<div class="legend-row"><span class="sw" style="background:' + x.color + '"></span><span>' + escHtml(x.label) + "</span><b>" + fmtNum(x.value) + "</b><small>" + pct(x.value, sum) + "%</small></div>").join("") + "</div>";
+  return '<div class="stack">' + (segs || '<i style="flex:1;background:var(--soft)"></i>') + "</div>" + rows;
+}
+
+// 指标卡底部一排小柱：最近一根黑、其余浅灰
+function sparkHtml(vals) {
+  const max = Math.max(...vals, 1);
+  return '<div class="spark" aria-hidden="true">' + vals.map((v, i) => '<i style="height:' + ((v / max) * 100).toFixed(1) + "%;background:" + (i === vals.length - 1 ? INK : "#DBDADD") + '"></i>').join("") + "</div>";
+}
+
+// 热力格颜色：ratio 0–1，0 留白、浅 → 深单色阶，过半改白字；返回 { bg, fg }
+function cellTone(ratio) {
+  if (!(ratio > 0)) return { bg: "transparent", fg: "var(--ink)" };
+  const steps = ["#F1F0F3", "#DBDADD", "#C9C8CD", "#AAA9AB", "#8D8C93", "#55545A", "#0B0B0C"];
+  const k = Math.min(steps.length - 1, Math.floor(ratio * steps.length));
+  return { bg: steps[k], fg: k >= 4 ? "#fff" : "var(--ink)" };
+}
+
+// ============== 时间分桶 ==============
+const GRAIN_LIST = [["day", "日"], ["week", "周"], ["month", "月"], ["quarter", "季"], ["year", "年"]];
+const WD_CN = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+function isoWeekOf(day) {   // "2026-10-05" → "2026W41"
+  const d = new Date(day + "T00:00:00Z");
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  t.setUTCDate(t.getUTCDate() - ((t.getUTCDay() + 6) % 7) + 3);
+  const ft = new Date(Date.UTC(t.getUTCFullYear(), 0, 4));
+  ft.setUTCDate(ft.getUTCDate() - ((ft.getUTCDay() + 6) % 7) + 3);
+  return t.getUTCFullYear() + "W" + String(1 + Math.round((t - ft) / 604800000)).padStart(2, "0");
+}
+function periodKeyOf(day, grain) {
+  switch (grain) {
+    case "week": return isoWeekOf(day);
+    case "month": return day.slice(0, 7);
+    case "quarter": return day.slice(0, 4) + "-Q" + (Math.floor((Number(day.slice(5, 7)) - 1) / 3) + 1);
+    case "year": return day.slice(0, 4);
+    default: return day;
+  }
+}
+// 日桶 → 任意粒度：byDay = { "2026-10-05": { total: 12, dur: 300, dev: { pc: 8 } }, ... }
+// 数值字段直接相加，对象字段按 key 相加；每个桶带 key / first / last / days。去重数不能这样加（见规范）。
+function rollupDays(byDay, grain) {
+  const order = [], map = {};
+  const days = Object.keys(byDay || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  for (const day of days) {
+    const key = periodKeyOf(day, grain);
+    if (!map[key]) { map[key] = { key, first: day, last: day, days: 0 }; order.push(key); }
+    const t = map[key], b = byDay[day] || {};
+    t.last = day; t.days++;
+    for (const [k, v] of Object.entries(b)) {
+      if (typeof v === "number") t[k] = (t[k] || 0) + v;
+      else if (v && typeof v === "object") { t[k] = t[k] || {}; for (const [kk, vv] of Object.entries(v)) t[k][kk] = (t[k][kk] || 0) + (Number(vv) || 0); }
+    }
+  }
+  return { keys: order, buckets: order.map((k) => map[k]) };
+}
+
+// 当前周期：按天 = 最近 7 根「近 7 天」，其他粒度 = 最后一根「本周 / 本月 / 本季 / 本年」
+function currentBand(buckets, grain) {
+  const n = buckets.length;
+  if (!n) return null;
+  const LABEL = { week: "本周", month: "本月", quarter: "本季", year: "本年" };
+  if (grain !== "day") return { from: n - 1, to: n - 1, label: LABEL[grain] || "" };
+  return { from: Math.max(0, n - 7), to: n - 1, label: "近 7 天" };
+}
+function todayKey() { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+const isOngoing = (b) => !!b && b.last === todayKey();   // 还没过完的桶：虚线空心柱、横轴写「今天」
+
+// 横轴：按天只标每月 1 号（和首根），按周 > 12 根隔一根标 W41，月 / 季 / 年逐根标
+function xLabelsFor(buckets, grain) {
+  const n = buckets.length, out = [];
+  if (!n) return out;
+  if (grain === "day") { buckets.forEach((b, i) => { if (b.first.slice(8) === "01" || i === 0) out.push({ left: (((i + 0.5) / n) * 100).toFixed(2), label: Number(b.first.slice(5, 7)) + " 月" }); }); return out; }
+  const step = grain === "week" && n > 12 ? 2 : 1;
+  buckets.forEach((b, i) => {
+    if ((n - 1 - i) % step) return;
+    const k = b.key;
+    out.push({ left: (((i + 0.5) / n) * 100).toFixed(2), label: grain === "week" ? "W" + Number(k.slice(5)) : grain === "month" ? Number(k.slice(5, 7)) + " 月" : grain === "quarter" ? k.slice(5) : k });
+  });
+  return out;
+}
+// 按天 ≤ 31 天逐天写 MM-DD（今天写「今天」），其余用 xLabelsFor；直接展开进 domChart 的 cfg
+function axisFor(buckets, grain) {
+  if (grain === "day" && buckets.length <= 31) return { xPerBar: buckets.map((b) => (isOngoing(b) ? "今天" : b.first.slice(5))) };
+  return { xLabels: xLabelsFor(buckets, grain) };
+}
+// 悬停卡标题：2026-10-05 周一 / W41 · 10-05 – 10-11（不完整）/ 2026 年 10 月 / 2026 Q4 / 2026 年
+function bucketTitle(b, grain) {
+  const md = (d) => d.slice(5);
+  if (grain === "day") return b.first + " " + WD_CN[new Date(b.first + "T00:00:00Z").getUTCDay()];
+  if (grain === "week") return "W" + Number(b.key.slice(5)) + " · " + md(b.first) + " – " + md(b.last) + (b.days < 7 ? "（不完整）" : "");
+  if (grain === "month") return b.key.slice(0, 4) + " 年 " + Number(b.key.slice(5, 7)) + " 月";
+  if (grain === "quarter") return b.key.replace("-Q", " Q");
+  return b.key + " 年";
+}
+
+// 粒度页签：下划线式分段按钮，纯前端换分桶
+function initSeg(box, current, onPick) {
+  if (!box) return;
+  box.replaceChildren(...GRAIN_LIST.map(([g, label]) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.dataset.grain = g; b.textContent = label; b.setAttribute("role", "tab"); b.setAttribute("aria-pressed", String(g === current));
+    return b;
+  }));
+  box.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-grain]");
+    if (!b) return;
+    box.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    onPick(b.dataset.grain);
+  });
+}
+
+// ============== 手机抽屉菜单 + 筛选栏折叠 ==============
+// 需要的标记：#menuBtn（汉堡）、#menuClose、#menuBackdrop、.side-body（抽屉）、#filterToggle + .filterbar
+function initMenu() {
+  const btn = $("menuBtn"), close = $("menuClose"), backdrop = $("menuBackdrop");
+  if (btn) {
+    const set = (open) => { document.body.classList.toggle("menu-open", open); btn.setAttribute("aria-expanded", String(open)); };
+    btn.addEventListener("click", () => set(!document.body.classList.contains("menu-open")));
+    if (close) close.addEventListener("click", () => set(false));
+    if (backdrop) backdrop.addEventListener("click", () => set(false));
+    document.querySelectorAll(".nav-item").forEach((t) => t.addEventListener("click", () => set(false)));
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") set(false); });
+  }
+  const ft = $("filterToggle"), fb = document.querySelector(".filterbar");
+  if (ft && fb) ft.addEventListener("click", () => { const open = !fb.classList.contains("open"); fb.classList.toggle("open", open); ft.setAttribute("aria-expanded", String(open)); });
+}

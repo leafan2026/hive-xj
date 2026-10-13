@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>仪表盘样式包 v2 · 示例</title>
+<link rel="stylesheet" href="dashboard-kit.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><div class="brand-mark">D</div><div class="brand-text"><b>demo</b><small>仪表盘样式包</small></div></div>
+    <button type="button" class="menu-btn" id="menuBtn" aria-label="菜单" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+    <div class="side-body" id="sideBody">
+      <div class="drawer-head"><span>菜单</span><button type="button" class="menu-close" id="menuClose" aria-label="关闭"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <nav class="side-nav" aria-label="页面">
+        <div class="nav-group">
+          <div class="nav-group-head"><span>分析</span><small>随筛选变化</small></div>
+          <button type="button" class="nav-item active" data-tab="overview"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/></svg><span>总览</span></button>
+          <button type="button" class="nav-item" data-tab="volume"><svg viewBox="0 0 24 24"><path d="M5 20V11M10 20V5M15 20v-7M20 20V9"/></svg><span>量与来源</span></button>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-head"><span>报告</span><small>固定口径</small></div>
+          <button type="button" class="nav-item" data-tab="weekly"><svg viewBox="0 0 24 24"><path d="M6 3h9l5 5v13H6zM14 3v6h6"/></svg><span>周报</span></button>
+        </div>
+      </nav>
+      <div class="side-foot"><span>数据更新于 10-13 10:00</span><button type="button" class="btn">重新拉取数据</button></div>
+    </div>
+  </aside>
+  <div class="menu-backdrop" id="menuBackdrop"></div>
+
+  <main class="main">
+    <div class="page-head">
+      <div class="page-title"><span class="crumb">分析 / 总览</span><h1>总览</h1><p>会话量、AI 独立率与人工投入的整体走势</p></div>
+      <div class="page-tools"><span class="live-chip"><i></i>随筛选变化</span><span class="match-info">筛选后 <b>3,066</b> / 21,044 条</span></div>
+    </div>
+
+    <div class="sticky-top">
+      <div class="filterbar" id="filterbar">
+        <button type="button" class="filter-toggle" id="filterToggle" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg><span>近 14 天 · 全部设备</span><i></i></button>
+        <div class="filter-row">
+          <label class="f-label">时间 <select class="active"><option>近 14 天</option><option>本月</option><option>自定义</option></select></label>
+          <label class="f-label">从 <input type="date" value="2026-09-30"></label>
+          <label class="f-label">至 <input type="date" value="2026-10-13"></label>
+          <span class="filter-sep"></span>
+          <label class="f-label">设备 <select><option>全部</option></select></label>
+          <label class="f-label">场景 <select><option>全部</option></select></label>
+          <button type="button" class="btn-ghost reset-btn">重置</button>
+        </div>
+      </div>
+    </div>
+
+    <section class="panel active">
+      <div class="cards" id="cards"></div>
+
+      <div class="chart-card">
+        <div class="hero-head">
+          <div class="hero-title"><h3>会话接待分布</h3><div class="hero-big" id="heroTotal">—</div><div class="hero-caption" id="heroCaption"></div></div>
+          <div class="hero-right">
+            <div class="seg" id="granHero" role="tablist"></div>
+            <div class="legend"><span><i style="background:#4A494F"></i>会话量</span><span><i class="band"></i><span id="heroBand">近 7 天</span></span><span><i class="ln" style="background:#0B0B0C"></i>人工接待时长（右轴）</span></div>
+          </div>
+        </div>
+        <div id="heroChart"></div>
+      </div>
+
+      <div class="grid two">
+        <div class="chart-card">
+          <div class="chart-head between"><h3>会话接待分布 · 按设备</h3><div class="seg" id="granDist" role="tablist"></div></div>
+          <div class="legend" style="margin-bottom:14px"><span><i style="background:#0B0B0C"></i>pc</span><span><i style="background:#AAA9AB"></i>mobile</span><span><i style="background:#DBDADD"></i>未知</span></div>
+          <div id="distChart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-head between"><h3>接待人数与企业数</h3><span class="hint-pill">各周期独立去重，不可相加</span></div>
+          <div class="bignums"><div><b>7,518</b><span><i style="background:#0B0B0C"></i>接待人数</span></div><div><b>4,661</b><span><i style="background:#AAA9AB"></i>接待企业数</span></div></div>
+          <div id="pairChart"></div>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="chart-card"><div class="chart-head"><h3>设备构成</h3></div><div id="devStack"></div></div>
+        <div class="chart-card"><div class="chart-head"><h3>入口媒介 · 排名</h3></div><div class="rank" id="rank"></div></div>
+        <div class="chart-card"><div class="chart-head"><h3>达成情况</h3></div>
+          <div class="big-kpi"><b>88.7<small>%</small></b><span class="pill good">达标</span><span>目标 ≥ 85%</span></div>
+          <p class="chart-foot">环比 <span class="dl up">▲ 2.1pp</span>，上期 <b>86.6%</b>；最低一周 <span class="dl down">▼ 4.0pp</span>。</p>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-head"><h3>渠道 × 会话性质</h3><span class="chart-hint">热力格：0 留白，颜色随占比加深</span></div>
+        <div class="heat-scroll"><table class="heat-table" id="heat"></table></div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-head"><h3>周报 · 指标表</h3></div>
+        <div class="table-wrapper flat"><table class="report-table even">
+          <thead><tr><th>指标</th><th class="num">本周</th><th class="num">上周</th><th>环比</th><th class="num">占比</th></tr></thead>
+          <tbody>
+            <tr><td>接待次数</td><td class="num strong">1,456</td><td class="num dim-cell">1,320</td><td><span class="dl up">▲ 10.3%</span></td><td class="num">—</td></tr>
+            <tr><td>可避免转人工</td><td class="num strong">607</td><td class="num dim-cell">640</td><td><span class="dl down">▼ 5.2%</span></td><td class="num">43.5%</td></tr>
+            <tr class="hl"><td>团队合计</td><td class="num strong">2,063</td><td class="num dim-cell">1,960</td><td><span class="dl flat">持平</span></td><td class="num">100%</td></tr>
+          </tbody>
+        </table></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="dashboard-kit.js"></script>
+<script>
+// ---- 假数据：106 天日桶 ----
+function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const r = rng(20261013);
+const byDay = {};
+const today = new Date();
+for (let i = 105; i >= 0; i--) {
+  const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
+  const key = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  const weekend = d.getDay() === 0 || d.getDay() === 6;
+  const total = Math.round(weekend ? 40 + r() * 30 : 150 + r() * 120);
+  const pc = Math.round(total * (0.55 + r() * 0.1)), unk = Math.round(total * 0.03);
+  byDay[key] = { total, dur: weekend ? r() * 2000 : 6000 + r() * 9000, users: Math.round(total * 0.6), orgs: Math.round(total * 0.38), dev: { pc, mobile: total - pc - unk, "未知": unk } };
+}
+const DAYS14 = Object.fromEntries(Object.entries(byDay).slice(-14));
+const COLOR_DEVICE = { pc: "#0B0B0C", mobile: "#AAA9AB", "未知": "#DBDADD" };
+const deviceRows = (b) => Object.keys(COLOR_DEVICE).map((k) => ({ name: k, value: fmtNum((b.dev || {})[k] || 0), color: COLOR_DEVICE[k] }));
+
+// ---- 指标卡 ----
+const weeks = rollupDays(byDay, "week").buckets;
+$("cards").innerHTML = [
+  { label: "会话总数", value: "21,044", pill: pillHtml("▲ 4.2%"), sub: "有效会话 65%", spark: weeks.map((w) => w.total) },
+  { label: "AI 独立率", value: "88.7", unit: "%", pill: '<span class="pill good">达标</span>', sub: "目标 ≥ 85%", spark: weeks.map((w) => w.users) },
+  { label: "可避免转人工", value: "43.5", unit: "%", pill: pillHtml("▼ 2.1pp"), sub: "607 / 1,394 次", spark: weeks.map((w) => w.orgs) },
+  { label: "人工接待总时长", value: "258.8", unit: "小时", pill: pillHtml("▲ 6.8%"), sub: "单次中位 5 分 38 秒", spark: weeks.map((w) => w.dur) },
+  { label: "接待轮次", value: "1,831", pill: pillHtml("持平"), sub: "有时长记录 1,469 次", spark: weeks.map((w) => w.total) },
+].map((c) => '<div class="card"><div class="card-label">' + c.label + '</div><div class="card-value">' + c.value + (c.unit ? "<small>" + c.unit + "</small>" : "") + '</div><div class="card-meta">' + c.pill + '<span class="card-sub">' + c.sub + "</span></div>" + sparkHtml(c.spark) + "</div>").join("");
+
+// ---- 双泳道柱线图（14 天）----
+let heroGrain = "day";
+function drawHero() {
+  const g = heroGrain;
+  const { buckets } = rollupDays(g === "day" ? DAYS14 : byDay, g);
+  const n = buckets.length;
+  const maxS = niceMax(Math.max(...buckets.map((b) => b.total), 0) * 1.08);
+  const maxH = niceMax(Math.max(...buckets.map((b) => b.dur / 3600), 0) * 1.15);
+  const band = currentBand(buckets, g);
+  domChart($("heroChart"), {
+    height: 340, max: maxS, lanes: true, hoverInk: true, band,
+    bars: buckets.map((b) => ({ segs: [{ v: b.total, color: BAR_DARK }], ...barW(g), dashed: isOngoing(b) })),
+    line: { values: buckets.map((b) => b.dur / 3600), color: INK, width: 2.5, max: maxH, dots: n <= 31 },
+    yTicks: [0, 0.5, 1].map((p) => ({ pos: p * LANE_BAR, label: fmtNum(Math.round(maxS * p)) })),
+    hTicks: [0, 0.5, 1].map((p) => ({ pos: LANE_LINE_FROM + p * LANE_LINE, label: (maxH * p).toFixed(maxH * p < 10 && p ? 1 : 0) + "h" })),
+    ...axisFor(buckets, g),
+    tip: (i) => { const b = buckets[i], p = buckets[i - 1]; return b && { title: bucketTitle(b, g), rows: [...deviceRows(b), { name: "人工接待时长", value: (b.dur / 3600).toFixed(1) + " 小时", color: INK, line: true }], foot: { name: "会话量", value: fmtNum(b.total), delta: p ? changeText(b.total, p.total) : "" }, notes: [isOngoing(b) ? "还没过完，读数还会往上走" : ""] }; },
+  });
+  $("heroTotal").textContent = fmtNum(buckets.reduce((a, b) => a + b.total, 0));
+  $("heroCaption").textContent = "会话 · " + buckets[0].first.slice(5) + " 至 " + buckets[n - 1].last.slice(5) + " · 按" + GRAIN_LIST.find((x) => x[0] === g)[1] + "聚合，悬停柱子看明细";
+  $("heroBand").textContent = band ? band.label : "";
+}
+initSeg($("granHero"), heroGrain, (g) => { heroGrain = g; drawHero(); });
+drawHero();
+
+// ---- 堆叠柱（按周）----
+let distGrain = "week";
+function drawDist() {
+  const g = distGrain;
+  const { buckets } = rollupDays(byDay, g);
+  const maxS = niceMax(Math.max(...buckets.map((b) => b.total), 0) * 1.12);
+  domChart($("distChart"), {
+    height: 230, max: maxS, band: currentBand(buckets, g),
+    bars: buckets.map((b) => ({ segs: Object.keys(COLOR_DEVICE).map((k) => ({ v: (b.dev || {})[k] || 0, color: COLOR_DEVICE[k] })), ...barW(g), label: buckets.length <= 20 ? fmtNum(b.total) : "", dashed: isOngoing(b) })),
+    yTicks: [0, 0.5, 1].map((p) => ({ pos: p * 100, label: fmtNum(Math.round(maxS * p)) })),
+    ...axisFor(buckets, g),
+    tip: (i) => { const b = buckets[i], p = buckets[i - 1]; return b && { title: bucketTitle(b, g), rows: deviceRows(b), foot: { name: "合计", value: fmtNum(b.total), delta: p ? changeText(b.total, p.total) : "" } }; },
+  });
+}
+initSeg($("granDist"), distGrain, (g) => { distGrain = g; drawDist(); });
+drawDist();
+
+// ---- 并列双柱 ----
+{
+  const g = "week";
+  const { buckets } = rollupDays(byDay, g);
+  pairChart($("pairChart"), {
+    height: 200, grain: g, band: currentBand(buckets, g),
+    items: buckets.map((b) => ({ a: b.users, b: b.orgs })),
+    ...axisFor(buckets, g),
+    tip: (i) => { const b = buckets[i]; return b && { title: bucketTitle(b, g), rows: [{ name: "接待人数", value: fmtNum(b.users) + " 人", color: INK }, { name: "接待企业数", value: fmtNum(b.orgs) + " 家", color: "#AAA9AB" }], foot: { name: "人均会话", value: (b.total / b.users).toFixed(2) } }; },
+  });
+}
+
+// ---- 占比条、排名、热力表 ----
+$("devStack").innerHTML = stackHtml([{ label: "pc", value: 12800, color: "#0B0B0C" }, { label: "mobile", value: 7600, color: "#AAA9AB" }, { label: "未知", value: 644, color: "#DBDADD" }]);
+const media = [["官网帮助中心", 8120], ["微信公众号", 5130], ["App 内嵌", 3980], ["其他", 1200]];
+$("rank").innerHTML = media.map(([n, v], i) => '<div><div class="rank-row-head"><span>' + n + "</span><b>" + fmtNum(v) + '<small>' + pct(v, 18430) + "%</small></b></div><div class=\"track\"><i style=\"width:" + pct(v, 8120) + "%;background:" + (i === 0 ? INK : n === "其他" ? "#DBDADD" : "#8D8C93") + '"></i></div></div>').join("");
+const chans = ["官网", "公众号", "App", "小程序"], nats = ["有效", "填表人", "无效", "未标记"];
+const hr = rng(7);
+let html = "<thead><tr><th>渠道</th>" + nats.map((n) => "<th>" + n + "</th>").join("") + "<th>合计</th></tr></thead><tbody>";
+chans.forEach((c) => { const vals = nats.map(() => Math.round(hr() * 900)); const sum = vals.reduce((a, b) => a + b, 0); const mx = Math.max(...vals);
+  html += "<tr><td>" + c + "</td>" + vals.map((v) => { const t = cellTone(v / mx); return '<td style="background:' + t.bg + ";color:" + t.fg + '">' + (v ? fmtNum(v) : "") + "</td>"; }).join("") + '<td class="total">' + fmtNum(sum) + "</td></tr>"; });
+$("heat").innerHTML = html + "</tbody>";
+
+initMenu();
+</script>
+</body>
+</html>
