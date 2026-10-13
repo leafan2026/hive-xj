@@ -210,16 +210,28 @@ function bindDomTip(container, describe) {
 // 原型里的柱线图不是 Chart.js，而是 flex 排的胶囊柱 + 一条 SVG 平滑曲线；悬停整列铺浅灰底，提示卡走 bindDomTip。
 // 总览「会话接待分布」、接待量页的两张分布图、人工服务页的每日图 / 会话时长图全部用这一个函数。
 
-// Catmull-Rom → 三次贝塞尔的平滑折线；pts = [[x, y], ...]，坐标已映射到 viewBox
+// 单调三次插值（Fritsch–Carlson）的平滑折线：曲线不会在两个点之间冲过头——一串 0 旁边不会凹到 0 以下。
+// pts = [[x, y], ...]，坐标已映射到 viewBox
 function smoothPath(pts) {
-  if (!pts.length) return "";
-  if (pts.length === 1) return "M" + (pts[0][0] - 30).toFixed(1) + " " + pts[0][1].toFixed(1) + "L" + (pts[0][0] + 30).toFixed(1) + " " + pts[0][1].toFixed(1);
+  const n = pts.length;
+  if (!n) return "";
+  if (n === 1) return "M" + (pts[0][0] - 30).toFixed(1) + " " + pts[0][1].toFixed(1) + "L" + (pts[0][0] + 30).toFixed(1) + " " + pts[0][1].toFixed(1);
+  const dx = [], dy = [], m = [];
+  for (let i = 0; i < n - 1; i++) { dx.push(pts[i + 1][0] - pts[i][0]); dy.push(pts[i + 1][1] - pts[i][1]); m.push(dx[i] ? dy[i] / dx[i] : 0); }
+  const t = [m[0]];
+  for (let i = 1; i < n - 1; i++) t.push(m[i - 1] * m[i] <= 0 ? 0 : (m[i - 1] + m[i]) / 2);
+  t.push(m[n - 2]);
+  for (let i = 0; i < n - 1; i++) {
+    if (!m[i]) { t[i] = 0; t[i + 1] = 0; continue; }
+    const a = t[i] / m[i], b = t[i + 1] / m[i], h = Math.hypot(a, b);
+    if (h > 3) { t[i] = 3 * a / h * m[i]; t[i + 1] = 3 * b / h * m[i]; }
+  }
   let d = "M" + pts[0][0].toFixed(1) + " " + pts[0][1].toFixed(1);
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
-    d += "C" + (p1[0] + (p2[0] - p0[0]) / 6).toFixed(1) + " " + (p1[1] + (p2[1] - p0[1]) / 6).toFixed(1) + "," +
-      (p2[0] - (p3[0] - p1[0]) / 6).toFixed(1) + " " + (p2[1] - (p3[1] - p1[1]) / 6).toFixed(1) + "," +
-      p2[0].toFixed(1) + " " + p2[1].toFixed(1);
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i] / 3;
+    d += "C" + (pts[i][0] + h).toFixed(1) + " " + (pts[i][1] + t[i] * h).toFixed(1) + "," +
+      (pts[i + 1][0] - h).toFixed(1) + " " + (pts[i + 1][1] - t[i + 1] * h).toFixed(1) + "," +
+      pts[i + 1][0].toFixed(1) + " " + pts[i + 1][1].toFixed(1);
   }
   return d;
 }
@@ -233,6 +245,8 @@ function niceMax(v) {
 }
 
 const BAR_W = { day: 4, week: 16, month: 40, quarter: 64, year: 96 };   // 单柱宽度，按粒度
+// 按天的柱宽随天数变：≤31 天 14px、≤60 天 8px、更多 4px（原型按 106 天设计的 4px 在两周视图里太细）
+function barW(grain, n) { return grain === "day" ? (n <= 31 ? 14 : n <= 60 ? 8 : 4) : BAR_W[grain]; }
 const PAIR_W = { day: 2, week: 7, month: 18, quarter: 28, year: 40 };   // 并列双柱每根宽度
 
 /**
@@ -244,6 +258,7 @@ const PAIR_W = { day: 2, week: 7, month: 18, quarter: 28, year: 40 };   // 并�
  *   yTicks      [{ pos(0-100), label }]  左轴刻度 + 虚线（可选）
  *   hTicks      [{ pos, label }]           右轴刻度（可选）
  *   xLabels     [{ left(0-100), label }] 绝对定位的横轴标签；或 xPerBar: [string] 每柱一个
+ *   band        { from, to, label }  当前周期：这几根柱背后铺一块浅底、左上角写「本周」
  *   tip(i)      → { title, rows, foot, notes }
  */
 function domChart(el, cfg) {
@@ -267,7 +282,7 @@ function domChart(el, cfg) {
     const bg = segs.length === 1 ? segs[0].color : (b.bg || "transparent");
     return '<div class="dc-col" data-tip="' + i + '">' +
       (b.label !== undefined && b.label !== "" ? '<span class="dc-label' + (b.labelClass ? " " + b.labelClass : "") + '">' + escHtml(b.label) + "</span>" : "") +
-      '<div class="dc-bar' + (inner ? " stacked" : "") + '" style="width:' + (b.w || 12) + "px;height:" + h.toFixed(2) + "%;" + (inner ? "" : "background:" + bg) + '">' + inner + "</div></div>";
+      '<div class="dc-bar' + (inner ? " stacked" : "") + (b.dashed ? " dashed" : "") + '" style="width:' + (b.w || 12) + "px;height:" + Math.max(b.dashed ? 4 : 0, h).toFixed(2) + "%;" + (inner || b.dashed ? "" : "background:" + bg) + '">' + (b.dashed ? "" : inner) + "</div></div>";
   }).join("");
 
   let path = "";
@@ -278,7 +293,7 @@ function domChart(el, cfg) {
   }
 
   const xAbs = cfg.xLabels ? '<div class="dc-x abs">' + cfg.xLabels.map((x) => '<span style="left:' + x.left + '%">' + escHtml(x.label) + "</span>").join("") + "</div>" : "";
-  const xPer = cfg.xPerBar ? '<div class="dc-x per">' + cfg.xPerBar.map((x) => "<span>" + escHtml(x) + "</span>").join("") + "</div>" : "";
+  const xPer = cfg.xPerBar ? '<div class="dc-x per">' + cfg.xPerBar.map((x) => "<span" + (x === "今天" ? ' class="today"' : "") + ">" + escHtml(x) + "</span>").join("") + "</div>" : "";
 
   el.innerHTML =
     '<div class="dc">' +
@@ -286,6 +301,7 @@ function domChart(el, cfg) {
     '<div class="dc-body"><div class="dc-plot" style="height:' + H + 'px">' +
     yTicks.map((t) => '<b class="dc-grid" style="bottom:' + t.pos + '%"></b>').join("") +
     (cfg.capLine ? '<b class="dc-cap" style="bottom:' + cfg.capLine.pos + '%"></b>' + (cfg.capLine.label ? '<span class="dc-cap-label" style="bottom:' + cfg.capLine.pos + '%">' + escHtml(cfg.capLine.label) + "</span>" : "") : "") +
+    (cfg.band && n && cfg.band.to >= cfg.band.from ? '<div class="dc-band" style="left:' + ((cfg.band.from / n) * 100).toFixed(2) + "%;width:" + (((cfg.band.to - cfg.band.from + 1) / n) * 100).toFixed(2) + '%"><span>' + escHtml(cfg.band.label || "") + "</span></div>" : "") +
     '<div class="dc-cols">' + cols + "</div>" +
     (path ? '<svg class="dc-line" viewBox="0 0 1000 ' + H + '" preserveAspectRatio="none"><path d="' + path + '" fill="none" stroke="' + (line.color || INK) + '" stroke-width="' + (line.width || 2) + '" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path></svg>' : "") +
     "</div>" + xAbs + xPer + "</div>" +
@@ -297,7 +313,7 @@ function domChart(el, cfg) {
     const axis = el.querySelector(".dc-x.per");
     const width = axis ? axis.clientWidth : 0;
     const step = width ? Math.ceil((n * 46) / width) : 1;
-    if (step > 1) axis.querySelectorAll("span").forEach((sp, i) => { if ((n - 1 - i) % step) sp.textContent = ""; });
+    if (step > 1) axis.querySelectorAll("span").forEach((sp, i) => { if ((n - 1 - i) % step && !sp.classList.contains("today")) sp.textContent = ""; });
   }
   if (cfg.tip) {
     el.$tip = cfg.tip;
@@ -320,7 +336,7 @@ function xLabelsFor(buckets, grain) {
     buckets.forEach((b, i) => { if (b.first.slice(8) === "01" || i === 0) out.push({ left: (((i + 0.5) / n) * 100).toFixed(2), label: Number(b.first.slice(5, 7)) + " 月" }); });
     return out;
   }
-  const step = grain === "week" ? 2 : 1;
+  const step = grain === "week" && n > 12 ? 2 : 1;
   buckets.forEach((b, i) => {
     if ((n - 1 - i) % step) return;
     const k = b.key;
@@ -328,6 +344,26 @@ function xLabelsFor(buckets, grain) {
     out.push({ left: (((i + 0.5) / n) * 100).toFixed(2), label });
   });
   return out;
+}
+
+// 当前周期（2026-10-13 用户定，参考订单看板）：按天 = 最近 7 天铺一块浅底、写「近 7 天」；其他粒度 = 最后一个桶，写 本周 / 本月 / 本季 / 本年。
+// 返回 { from, to, label }
+function currentBand(buckets, grain) {
+  const n = buckets.length;
+  if (!n) return null;
+  const LABEL = { week: "本周", month: "本月", quarter: "本季", year: "本年" };
+  if (grain !== "day") return { from: n - 1, to: n - 1, label: LABEL[grain] || "" };
+  return { from: Math.max(0, n - 7), to: n - 1, label: "近 7 天" };
+}
+const inBand = (band, i) => !!band && i >= band.from && i <= band.to;
+// 还没过完的桶（含今天）画成虚线空心柱，横轴写「今天」；数据还会往上走，别和前面的实心柱比
+function todayKey() { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+const isOngoing = (b) => !!b && b.last === todayKey();
+
+// 按天且不超过 31 天时横轴逐天写 MM-DD（太密时 domChart 自己隔几天标一个），今天写「今天」；其余粒度用 xLabelsFor
+function axisFor(buckets, grain) {
+  if (grain === "day" && buckets.length <= 31) return { xPerBar: buckets.map((b) => (isOngoing(b) ? "今天" : b.first.slice(5))) };
+  return { xLabels: xLabelsFor(buckets, grain) };
 }
 
 const WD_CN = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
@@ -865,21 +901,23 @@ function drawReceptChart(s) {
   const n = buckets.length;
   const maxS = niceMax(Math.max(...buckets.map((b) => b.total), 0) * 1.08);
   const maxH = niceMax(Math.max(...buckets.map((b) => b.dur / 3600), 0) * 1.15);
-  const isCurrent = (i) => (g === "day" ? i >= n - 7 : i === n - 1);
+  const band = currentBand(buckets, g);
   domChart($("heroRecept"), {
     height: 270, max: maxS,
-    bars: buckets.map((b, i) => ({ segs: [{ v: b.total, color: isCurrent(i) ? "#4A4A50" : "#D3D2D6" }], w: BAR_W[g] })),
+    bars: buckets.map((b, i) => ({ segs: [{ v: b.total, color: inBand(band, i) ? INK : "#D3D2D6" }], w: barW(g, n), dashed: isOngoing(b) })),
     line: { values: buckets.map((b) => b.dur / 3600), color: INK, width: 2, max: maxH },
     yTicks: [0, 0.5, 1].map((p) => ({ pos: p * 100, label: fmtNum(Math.round(maxS * p)) })),
     hTicks: [0, 0.5, 1].map((p) => ({ pos: p * 100, label: (maxH * p).toFixed(maxH * p < 10 && p ? 1 : 0) + "h" })),
-    xLabels: xLabelsFor(buckets, g),
+    band, ...axisFor(buckets, g),
     tip: (i) => {
       const b = buckets[i];
       if (!b) return null;
       const p = buckets[i - 1];
-      return { title: bucketTitle(b, g), rows: deviceRows(b), foot: { name: "会话量", value: fmtNum(b.total), delta: p ? changeText(b.total, p.total) : "" } };
+      return { title: bucketTitle(b, g), rows: deviceRows(b), foot: { name: "会话量", value: fmtNum(b.total), delta: p ? changeText(b.total, p.total) : "" }, notes: [isOngoing(b) ? "还没过完，读数还会往上走" : ""] };
     },
   });
+  const lg = $("heroLegendCur");
+  if (lg) lg.textContent = band ? band.label : "当前周期";
   const total = buckets.reduce((a, b) => a + b.total, 0);
   const el = $("heroTotal");
   if (el) el.textContent = fmtNum(total);
@@ -936,15 +974,16 @@ function drawVolumeDist(s) {
   const { buckets } = rollupDays(s.byDay, g);
   const maxS = niceMax(Math.max(...buckets.map((b) => b.total), 0) * 1.12);
   const showLabels = buckets.length <= 20;
+  const band = currentBand(buckets, g);
   domChart($("volDist"), {
-    height: 250, max: maxS,
+    height: 250, max: maxS, band,
     bars: buckets.map((b) => {
       const dev = b.dev || {};
       const pc = dev.pc || 0, mob = dev.mobile || 0, unk = Math.max(0, b.total - pc - mob);
-      return { segs: [{ v: pc, color: COLOR_DEVICE.pc }, { v: mob, color: COLOR_DEVICE.mobile }, { v: unk, color: COLOR_DEVICE["未知"] }], w: BAR_W[g], label: showLabels ? fmtNum(b.total) : "" };
+      return { segs: [{ v: pc, color: COLOR_DEVICE.pc }, { v: mob, color: COLOR_DEVICE.mobile }, { v: unk, color: COLOR_DEVICE["未知"] }], w: barW(g, buckets.length), label: showLabels ? fmtNum(b.total) : "", dashed: isOngoing(b) };
     }),
     yTicks: [0, 0.5, 1].map((p) => ({ pos: p * 100, label: fmtNum(Math.round(maxS * p)) })),
-    xLabels: xLabelsFor(buckets, g),
+    ...axisFor(buckets, g),
     tip: (i) => {
       const b = buckets[i];
       if (!b) return null;
@@ -974,14 +1013,27 @@ function drawVolumeUniq(s) {
   const showLabels = keys.length <= 20;
   const w = PAIR_W[g];
   const n = keys.length;
+  const bk = keys.map((k) => byKey[k] || { key: k, first: k, last: k, days: 1 });
+  const band = currentBand(bk, g);
+  const ax = axisFor(bk, g);
   box.innerHTML =
-    '<div class="dc"><div class="dc-body"><div class="dc-plot pair-plot" style="height:200px"><div class="dc-cols">' +
+    '<div class="dc"><div class="dc-body"><div class="dc-plot pair-plot" style="height:200px">' +
+    (band ? '<div class="dc-band" style="left:' + ((band.from / n) * 100).toFixed(2) + "%;width:" + (((band.to - band.from + 1) / n) * 100).toFixed(2) + '%"><span>' + band.label + "</span></div>" : "") +
+    '<div class="dc-cols">' +
     keys.map((k, i) =>
       '<div class="dc-col pair" data-tip="' + i + '">' +
       '<div class="pair-one" style="width:' + w + 'px">' + (showLabels ? '<span class="dc-label">' + fmtNum(by[k].users) + "</span>" : "") + '<i style="height:' + ((by[k].users / max) * 100).toFixed(1) + "%;background:" + INK + '"></i></div>' +
       '<div class="pair-one" style="width:' + w + 'px">' + (showLabels ? '<span class="dc-label dim">' + fmtNum(by[k].orgs) + "</span>" : "") + '<i style="height:' + ((by[k].orgs / max) * 100).toFixed(1) + '%;background:#AAA9AB"></i></div></div>'
     ).join("") +
-    '</div></div><div class="dc-x abs">' + xLabelsFor(keys.map((k) => byKey[k] || { key: k, first: k, last: k, days: 1 }), g).map((x) => '<span style="left:' + x.left + '%">' + escHtml(x.label) + "</span>").join("") + "</div></div></div>";
+    "</div></div>" +
+    (ax.xPerBar ? '<div class="dc-x per">' + ax.xPerBar.map((x) => "<span>" + escHtml(x) + "</span>").join("") + "</div>"
+      : '<div class="dc-x abs">' + ax.xLabels.map((x) => '<span style="left:' + x.left + '%">' + escHtml(x.label) + "</span>").join("") + "</div>") +
+    "</div></div>";
+  if (ax.xPerBar) {
+    const axis = box.querySelector(".dc-x.per");
+    const step = axis && axis.clientWidth ? Math.ceil((n * 46) / axis.clientWidth) : 1;
+    if (step > 1) axis.querySelectorAll("span").forEach((sp, i) => { if ((n - 1 - i) % step) sp.textContent = ""; });
+  }
   box.$tip = (i) => {
     const k = keys[i];
     if (!k) return null;
@@ -1427,12 +1479,26 @@ function drawHourlyWeek(s) {
     '<div class="heat-row"><span>' + DOW_LABEL[d] + "</span>" +
     row.map((n, k) => {
       const lv = n ? Math.min(5, Math.max(1, Math.ceil((n / max) * 5))) : 0;
-      const m = (from + k) * step;
-      return '<i style="background:' + HEAT5[lv] + '" title="' + DOW_LABEL[d] + " " + minuteLabel(m) + "–" + minuteLabel(m + step) + " · 人工会话 " + n + ' 场"></i>';
+      return '<i data-tip="' + (d * cols + k) + '" style="background:' + HEAT5[lv] + '"></i>';
     }).join("") + "</div>"
   ).join("") +
     // 横轴：整点处标小时数
     '<div class="heat-row heat-axis"><span></span>' + Array.from({ length: cols }, (_, k) => { const m = (from + k) * step; return "<b>" + (m % 60 === 0 ? m / 60 : "") + "</b>"; }).join("") + "</div>";
+  // 悬停：深色卡片写「周几 时段 · 人工会话 N 场」，再给该星期几在区间内的天数和日均
+  grid.$tip = (i) => {
+    const d = Math.floor(i / cols), k = i % cols;
+    const n = (rows[d] || [])[k];
+    if (n === undefined) return null;
+    const m = (from + k) * step;
+    const days = (hw.dayCount || [])[d] || 0;
+    const lv = n ? Math.min(5, Math.max(1, Math.ceil((n / max) * 5))) : 0;
+    return {
+      title: DOW_LABEL[d] + " " + minuteLabel(m) + " – " + minuteLabel(m + step),
+      rows: [{ name: "人工会话", value: n + " 场", color: lv ? HEAT5[lv] : "#F1F0F3" }],
+      foot: days ? { name: "日均（" + days + " 个" + DOW_LABEL[d] + "）", value: (n / days).toFixed(1) + " 场" } : null,
+    };
+  };
+  if (!grid.dataset.bound) { grid.dataset.bound = "1"; bindDomTip(grid, (i) => grid.$tip(i)); }
 }
 
 // 人工服务忙闲：全天 96 个 15 分钟格，格高 = 同时在线人工会话数（工作日 / 周末各自的日均），虚线是在岗容量
@@ -1881,29 +1947,29 @@ function renderWeekly(week) {
   const pj = w.compare ? w.compare.prev.jiri : null;
   const jscope = w.compare ? dowLabel(w.compare.dows) : "";
   if (j) {
-    const pctOf = (n, d) => (d ? ((n / d) * 100).toFixed(2) + "%" : "—");
-    const line = (n, d) => n + " / " + pctOf(n, d);
-    const jrows = [
-      ["一次性浅问题", "单轮 " + line(j.one, j.base) + "；2 轮 " + line(j.two, j.base),
-        pj ? "单轮 " + line(pj.one, pj.base) + "；2 轮 " + line(pj.two, pj.base) : ""],
-      ["深度咨询（≥3 轮）", line(j.deep, j.base) + "，中位 " + j.deepMedian + " 轮",
-        pj ? line(pj.deep, pj.base) + "，中位 " + pj.deepMedian + " 轮" : ""],
-      ["复问（同一用户 6～36 小时内再问同一件事）", line(j.repeat, j.total), pj ? line(pj.repeat, pj.total) : ""],
-      ["填表人（AI 侧）", line(j.fillerAI, j.total) + "（含人工侧共 " + line(j.fillerAll, j.total) + "，分母均为剔内测 " + j.total + "）",
-        pj ? line(pj.fillerAI, pj.total) + "（含人工侧 " + line(pj.fillerAll, pj.total) + "）" : ""],
-      ["人工会话中客服 @jiri", j.atJiri + " / " + j.manual + " = " + pctOf(j.atJiri, j.manual) + "（分母为剔内测的全部仅人工）",
-        pj ? pj.atJiri + " / " + pj.manual + " = " + pctOf(pj.atJiri, pj.manual) : ""],
-    ];
+    // 2026-10-13 改：不再用句子表，改成和 03 / 04 同款的数字表：指标 / 本周 / 占比 / 环比 / 上周同期
+    const rate = (n, d) => (d ? (n / d) * 100 : 0);
+    const jr = (label, n, d, pn, pd, sub) => {
+      const cur = rate(n, d);
+      const prev = pj ? rate(pn, pd) : null;
+      return "<tr><td>" + label + (sub ? '<span class="cell-sub">' + sub + "</span>" : "") + '</td><td class="num strong">' + fmtNum(n) + '</td><td class="num">' + cur.toFixed(1) + "%</td>" +
+        '<td class="num">' + (prev === null ? "—" : ppPill(cur - prev, "pp")) + '</td><td class="num dim-cell">' + (pj ? fmtNum(pn) + " / " + prev.toFixed(1) + "%" : "—") + "</td></tr>";
+    };
+    const P = pj || {};
     $("tblJiri").innerHTML =
-      "<thead><tr><th>指标</th><th>结果</th>" + (pj ? "<th>上周同期" + (jscope ? "（" + jscope + "）" : "") + "</th>" : "") + "</tr></thead><tbody>" +
-      // 本周结果用正文色（数字加粗），上周同期灰色作参照
-      jrows.map((r) => "<tr><td>" + r[0] + '</td><td class="jiri-result">' + r[1].replace(/(\d[\d,.]*%?)/g, "<b>$1</b>") + "</td>" + (pj ? '<td class="dim">' + r[2] + "</td>" : "") + "</tr>").join("") +
+      '<thead><tr><th>指标</th><th class="num">本周</th><th class="num">占比</th><th class="num">环比</th><th class="num">上周同期' + (jscope ? "（" + jscope + "）" : "") + "</th></tr></thead><tbody>" +
+      jr("单轮", j.one, j.base, P.one, P.base) +
+      jr("2 轮", j.two, j.base, P.two, P.base) +
+      jr("深度咨询（≥3 轮）", j.deep, j.base, P.deep, P.base, "中位 " + j.deepMedian + " 轮" + (pj ? "（上周 " + pj.deepMedian + " 轮）" : "")) +
+      jr("复问", j.repeat, j.total, P.repeat, P.total, "同一用户 6～36 小时内再问同一件事") +
+      jr("填表人（AI 侧）", j.fillerAI, j.total, P.fillerAI, P.total, "含人工侧共 " + fmtNum(j.fillerAll) + " / " + rate(j.fillerAll, j.total).toFixed(1) + "%") +
+      jr("人工会话中客服 @jiri", j.atJiri, j.manual, P.atJiri, P.manual) +
       "</tbody>";
+    const hint = $("jiriHint");
+    if (hint) hint.textContent = "轮次三行的分母 = 仅 Jiri 且有效 " + fmtNum(j.base) + " 场（另有 " + j.zero + " 场用户没说话、只有 Jiri 单方回复" +
+      (j.unlabeled ? "，" + j.unlabeled + " 场还没算轮次" : "") + "）；复问、填表人的分母 = 剔内测的全部会话 " + fmtNum(j.total) + "；@jiri 的分母 = 剔内测的全部仅人工 " + fmtNum(j.manual) + "。";
     $("jiriNote").innerHTML =
-      '<span class="dim-note">口径：轮次三档的分母 = 仅 Jiri 且有效 ' + j.base + " 场；三档之和比分母少 " + j.zero +
-      " 场，是用户一句话没说、只有 Jiri 单方回复的 0 轮场次" + (j.unlabeled ? "，另有 " + j.unlabeled + " 场还没算轮次" : "") +
-      "。用户轮次 = 客户说话的条数；复问 = 同一用户隔 6～36 小时再进线且一句话总结相似（质检表「复问」列）；" +
-      "@jiri 只算客服侧。上周同期按相同星期对齐。</span>";
+      '<span class="dim-note">口径：用户轮次 = 客户说话的条数；复问 = 同一用户隔 6～36 小时再进线且一句话总结相似（质检表「复问」列）；@jiri 只算客服侧。上周同期按相同星期对齐。</span>';
   }
 
   // 三、周度接待概览：只看到所选周为止的最近 5 周，底部附同期对齐的环比

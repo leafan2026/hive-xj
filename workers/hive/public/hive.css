@@ -417,6 +417,11 @@ body:not(.is-weekly) .report-bar { display: none; }
 .dc-plot { position: relative; }
 .dc-grid { position: absolute; left: 0; right: 0; border-top: 1px dashed #E4E3E7; }
 .dc-cap { position: absolute; left: 0; right: 0; border-top: 2px dashed var(--ink); opacity: .35; pointer-events: none; }
+.dc-band { position: absolute; top: -8px; bottom: -4px; border-radius: 10px; background: var(--green-soft); }
+.dc-band span { position: absolute; left: 8px; top: 6px; font-size: 11px; font-weight: 600; color: var(--ink); white-space: nowrap; }
+.dc-bar.dashed { background: transparent; border: 1.5px dashed var(--ink); box-sizing: border-box; }
+.dc-x.per span.today { color: var(--ink); font-weight: 600; }
+.dc-col:hover::before, .pair-col:hover::before { background: #E9E8EC; }
 .dc-cols { position: absolute; inset: 0; display: flex; align-items: flex-end; }
 .dc-col { position: relative; flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; cursor: crosshair; }
 .dc-col::before { content: ""; position: absolute; inset: 0 1px; border-radius: 8px; background: transparent; }
@@ -489,7 +494,8 @@ ol.medium-list { list-style: none; margin: 0; padding: 0; display: flex; flex-di
 .heat-grid { --heat-cols: 24; min-width: 520px; }
 .heat-row { display: grid; grid-template-columns: 34px repeat(var(--heat-cols), minmax(0, 1fr)); gap: 3px; align-items: center; }
 .heat-row > span { font-size: 11px; color: var(--ink-2); }
-.heat-row > i { display: block; height: 22px; border-radius: 4px; }
+.heat-row > i { display: block; height: 22px; border-radius: 4px; cursor: crosshair; }
+.heat-row > i:hover { outline: 2px solid var(--ink); outline-offset: 1px; }
 .heat-axis { padding-top: 4px; }
 .heat-axis b { font-size: 10px; font-weight: 400; color: var(--muted); text-align: center; }
 
@@ -554,6 +560,9 @@ td a:hover { text-decoration-color: var(--ink); }
 .report-table.even colgroup + thead th:first-child { width: auto; }
 .report-table.even th { white-space: normal; vertical-align: bottom; line-height: 1.4; }
 .report-table.wrap th:first-child, .report-table.wrap td:first-child { width: 24%; }
+#tblJiri { min-width: 760px; }
+#tblJiri th:first-child, #tblJiri td:first-child { width: 34%; }
+.report-table td.dim-cell { color: var(--muted); }
 .report-table.wrap td { white-space: normal; }
 .report-table tr.team { background: var(--green-soft); font-weight: 600; }
 .report-table td.pos { color: #1E8A3E; }

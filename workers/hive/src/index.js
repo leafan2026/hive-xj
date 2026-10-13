@@ -1331,7 +1331,7 @@ async function renderPage(env, user) {
         <div class="hero-title"><h3>会话接待分布</h3><div class="hero-big" id="heroTotal">—</div><div class="hero-caption" id="heroCaption"></div></div>
         <div class="hero-right">
           <div class="seg" id="granRecept" role="tablist" aria-label="聚合粒度"></div>
-          <div class="legend"><span><i style="background:#D3D2D6"></i>会话量</span><span><i style="background:#4A4A50"></i>当前周期</span><span><i class="ln" style="background:#0B0B0C"></i>人工接待时长（右轴）</span></div>
+          <div class="legend"><span><i style="background:#D3D2D6"></i>会话量</span><span><i style="background:#0B0B0C"></i><span id="heroLegendCur">近 7 天</span></span><span><i class="ln" style="background:#0B0B0C"></i>人工接待时长（右轴）</span></div>
         </div>
       </div>
       <div id="heroRecept"></div>
@@ -1543,7 +1543,8 @@ async function renderPage(env, user) {
 
     <div class="report-block" id="wk2">
       <h3><span>02</span>JIRI（AI）接待现状<small>本周 vs 上周同期</small></h3>
-      <div class="table-wrapper"><table class="report-table even wrap" id="tblJiri"></table></div>
+      <div class="report-hint" id="jiriHint"></div>
+      <div class="table-wrapper"><table class="report-table even" id="tblJiri"></table></div>
       <div class="note kou" id="jiriNote"></div>
     </div>
 
