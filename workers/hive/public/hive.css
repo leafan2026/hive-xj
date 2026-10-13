@@ -379,6 +379,7 @@ body:not(.is-weekly) .report-bar { display: none; }
 .legend > span { display: inline-flex; align-items: center; gap: 7px; }
 .legend i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 .legend i.ln { width: 16px; height: 2px; border-radius: 2px; }
+.legend i.band { width: 16px; height: 10px; background: rgba(117, 251, 144, .3); box-shadow: inset 0 0 0 1px rgba(30, 158, 90, .25); }
 .legend i.ln.thick { height: 3px; }
 .legend i.dash { width: 18px; height: 0; border-top: 2px dashed var(--ink); border-radius: 0; }
 .legend.lg { font-size: 13px; gap: 18px; }
@@ -416,8 +417,10 @@ body:not(.is-weekly) .report-bar { display: none; }
 .dc-body { flex: 1 1 auto; min-width: 0; }
 .dc-plot { position: relative; }
 .dc-grid { position: absolute; left: 0; right: 0; border-top: 1px dashed #E4E3E7; }
+.dc-grid.light { border-top-color: #EDECF0; }
 .dc-cap { position: absolute; left: 0; right: 0; border-top: 2px dashed var(--ink); opacity: .35; pointer-events: none; }
-.dc-band { position: absolute; top: -8px; bottom: -4px; border-radius: 10px; background: var(--green-soft); }
+/* 当前周期底带（2026-10-13 用户定）：品牌绿 30% 透明度 */
+.dc-band { position: absolute; top: -8px; bottom: -4px; border-radius: 10px; background: rgba(117, 251, 144, .3); }
 .dc-band span { position: absolute; left: 8px; top: 6px; font-size: 11px; font-weight: 600; color: var(--ink); white-space: nowrap; }
 .dc-bar.dashed { background: transparent; border: 1.5px dashed var(--ink); box-sizing: border-box; }
 .dc-x.per span.today { color: var(--ink); font-weight: 600; }
@@ -430,14 +433,20 @@ body:not(.is-weekly) .report-bar { display: none; }
 .dc-label { font-size: 11px; font-weight: 600; margin-bottom: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .dc-label.dim { font-size: 10px; font-weight: 400; color: var(--ink-2); }
 .dc-bar { max-width: 86%; border-radius: 999px; flex: none; }
-.dc-bar.stacked { display: flex; flex-direction: column; gap: 2px; }
-.dc-bar.stacked i { display: block; border-radius: 999px; min-height: 0; }
+/* 堆叠柱：整根一个胶囊、内部平直分段（之前每段各自圆角，月粒度下像几个球叠着） */
+.dc-bar.stacked { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+.dc-bar.stacked i { display: block; min-height: 0; }
+/* 双泳道图：悬停列的柱子变墨色；折线圆点层 */
+.dc.hover-ink .dc-col:hover .dc-bar:not(.dashed) { background: var(--ink) !important; }
+.dc-dots { position: absolute; inset: 0; display: flex; pointer-events: none; }
+.dc-dots > b { position: relative; flex: 1 1 0; min-width: 0; height: 100%; }
+.dc-dots i { position: absolute; left: 50%; width: 7px; height: 7px; margin: 0 0 -3.5px -3.5px; border-radius: 50%; box-shadow: 0 0 0 2px #FFFFFF; }
 .dc-line { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
 .dc-x.abs { position: relative; height: 26px; margin-top: 8px; }
 .dc-x.abs span { position: absolute; transform: translateX(-50%); font-size: 12px; color: var(--muted); white-space: nowrap; }
 .dc-x.per { display: flex; margin-top: 8px; }
 .dc-x.per span { flex: 1 1 0; min-width: 0; text-align: center; font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; }
-.pair-plot .dc-col.pair { flex-direction: row; align-items: flex-end; gap: 3px; }
+.pair-plot .dc-col.pair { flex-direction: row; align-items: flex-end; justify-content: center; gap: 3px; }
 .pair-one { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
 .pair-one:first-child .dc-label { transform: translateX(-40%); }
 .pair-one:last-child .dc-label { transform: translateX(40%); }

@@ -244,10 +244,13 @@ function niceMax(v) {
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
 }
 
-const BAR_W = { day: 4, week: 16, month: 40, quarter: 64, year: 96 };   // 单柱宽度，按粒度
-// 按天的柱宽随天数变：≤31 天 14px、≤60 天 8px、更多 4px（原型按 106 天设计的 4px 在两周视图里太细）
-function barW(grain, n) { return grain === "day" ? (n <= 31 ? 14 : n <= 60 ? 8 : 4) : BAR_W[grain]; }
-const PAIR_W = { day: 2, week: 7, month: 18, quarter: 28, year: 40 };   // 并列双柱每根宽度
+// 柱宽（2026-10-13 定）：不定死像素，一根 = 格宽 × 55%（并列双柱各 26%），再按粒度封顶；根数少自然粗、根数多自然细
+const BAR_MAX = { day: 48, week: 48, month: 56, quarter: 64, year: 80 };
+function barW(grain) { return { wPct: 55, wMax: BAR_MAX[grain] || 48 }; }
+function pairW(grain) { return { wPct: 26, wMax: Math.round((BAR_MAX[grain] || 48) / 2) }; }
+// 柱线双泳道（2026-10-13 用户定，总览「会话接待分布」）：柱子只占绘图区下面 58%，折线只在上面 32%（68%–100%），中间留 10% 空隙，永不交叉
+const LANE_BAR = 58, LANE_LINE_FROM = 68, LANE_LINE = 32;
+const BAR_DARK = "#4A494F";   // 泳道图柱色（深灰），悬停变墨色
 
 /**
  * cfg:
@@ -259,6 +262,9 @@ const PAIR_W = { day: 2, week: 7, month: 18, quarter: 28, year: 40 };   // 并�
  *   hTicks      [{ pos, label }]           右轴刻度（可选）
  *   xLabels     [{ left(0-100), label }] 绝对定位的横轴标签；或 xPerBar: [string] 每柱一个
  *   band        { from, to, label }  当前周期：这几根柱背后铺一块浅底、左上角写「本周」
+ *   lanes       true = 双泳道：柱子压到下面 LANE_BAR%，折线抬到上面 LANE_LINE_FROM% 起；yTicks / hTicks 的 pos 由调用方按泳道给
+ *   line.dots   true = 折线每个点画一个圆点（白描边）
+ *   hoverInk    true = 悬停列的柱子变墨色
  *   tip(i)      → { title, rows, foot, notes }
  */
 function domChart(el, cfg) {
@@ -273,37 +279,43 @@ function domChart(el, cfg) {
 
   const yTicks = cfg.yTicks || [];
   const hTicks = cfg.hTicks || [];
+  const laneBar = cfg.lanes ? LANE_BAR : 100, laneFrom = cfg.lanes ? LANE_LINE_FROM : 0, laneLine = cfg.lanes ? LANE_LINE : 100;
   const cols = bars.map((b, i) => {
     const segs = (b.segs || []).filter((s) => Number(s.v) > 0);
-    const h = Math.max(b.minH || 0, (totals[i] / max) * 100);
+    const h = Math.max(b.minH || 0, (totals[i] / max) * laneBar);
+    const wStyle = b.wPct ? "width:" + b.wPct + "%;min-width:4px;max-width:" + (b.wMax || 48) + "px;" : "width:" + (b.w || 12) + "px;";
     const inner = segs.length > 1
       ? segs.slice().reverse().map((s) => '<i style="flex:' + Number(s.v) + " 1 0;background:" + s.color + '"></i>').join("")
       : "";
     const bg = segs.length === 1 ? segs[0].color : (b.bg || "transparent");
     return '<div class="dc-col" data-tip="' + i + '">' +
       (b.label !== undefined && b.label !== "" ? '<span class="dc-label' + (b.labelClass ? " " + b.labelClass : "") + '">' + escHtml(b.label) + "</span>" : "") +
-      '<div class="dc-bar' + (inner ? " stacked" : "") + (b.dashed ? " dashed" : "") + '" style="width:' + (b.w || 12) + "px;height:" + Math.max(b.dashed ? 4 : 0, h).toFixed(2) + "%;" + (inner || b.dashed ? "" : "background:" + bg) + '">' + (b.dashed ? "" : inner) + "</div></div>";
+      '<div class="dc-bar' + (inner ? " stacked" : "") + (b.dashed ? " dashed" : "") + '" style="' + wStyle + "height:" + Math.max(b.dashed ? 4 : 0, h).toFixed(2) + "%;" + (inner || b.dashed ? "" : "background:" + bg) + '">' + (b.dashed ? "" : inner) + "</div></div>";
   }).join("");
 
-  let path = "";
+  let path = "", dots = "";
   if (line && n) {
     const pts = [];
-    line.values.forEach((v, i) => { if (v !== null && v !== undefined && isFinite(v)) pts.push([((i + 0.5) / n) * 1000, H - (Number(v) / lineMax) * H]); });
+    const yOf = (v) => laneFrom + (Number(v) / lineMax) * laneLine;   // 0–100，自底向上
+    line.values.forEach((v, i) => { if (v !== null && v !== undefined && isFinite(v)) pts.push([((i + 0.5) / n) * 1000, H - (yOf(v) / 100) * H]); });
     path = smoothPath(pts);
+    if (line.dots) dots = '<div class="dc-dots">' + line.values.map((v) => "<b>" + (v !== null && v !== undefined && isFinite(v) ? '<i style="bottom:' + yOf(v).toFixed(2) + "%;background:" + (line.color || INK) + '"></i>' : "") + "</b>").join("") + "</div>";
   }
 
   const xAbs = cfg.xLabels ? '<div class="dc-x abs">' + cfg.xLabels.map((x) => '<span style="left:' + x.left + '%">' + escHtml(x.label) + "</span>").join("") + "</div>" : "";
   const xPer = cfg.xPerBar ? '<div class="dc-x per">' + cfg.xPerBar.map((x) => "<span" + (x === "今天" ? ' class="today"' : "") + ">" + escHtml(x) + "</span>").join("") + "</div>" : "";
 
   el.innerHTML =
-    '<div class="dc">' +
+    '<div class="dc' + (cfg.hoverInk ? " hover-ink" : "") + '">' +
     (yTicks.length ? '<div class="dc-y" style="height:' + H + 'px">' + yTicks.map((t) => '<span style="bottom:' + t.pos + '%">' + escHtml(t.label) + "</span>").join("") + "</div>" : "") +
     '<div class="dc-body"><div class="dc-plot" style="height:' + H + 'px">' +
     yTicks.map((t) => '<b class="dc-grid" style="bottom:' + t.pos + '%"></b>').join("") +
+    (cfg.lanes ? hTicks.map((t) => '<b class="dc-grid light" style="bottom:' + t.pos + '%"></b>').join("") : "") +
     (cfg.capLine ? '<b class="dc-cap" style="bottom:' + cfg.capLine.pos + '%"></b>' + (cfg.capLine.label ? '<span class="dc-cap-label" style="bottom:' + cfg.capLine.pos + '%">' + escHtml(cfg.capLine.label) + "</span>" : "") : "") +
     (cfg.band && n && cfg.band.to >= cfg.band.from ? '<div class="dc-band" style="left:' + ((cfg.band.from / n) * 100).toFixed(2) + "%;width:" + (((cfg.band.to - cfg.band.from + 1) / n) * 100).toFixed(2) + '%"><span>' + escHtml(cfg.band.label || "") + "</span></div>" : "") +
     '<div class="dc-cols">' + cols + "</div>" +
     (path ? '<svg class="dc-line" viewBox="0 0 1000 ' + H + '" preserveAspectRatio="none"><path d="' + path + '" fill="none" stroke="' + (line.color || INK) + '" stroke-width="' + (line.width || 2) + '" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path></svg>' : "") +
+    dots +
     "</div>" + xAbs + xPer + "</div>" +
     (hTicks.length ? '<div class="dc-h" style="height:' + H + 'px">' + hTicks.map((t) => '<span style="bottom:' + t.pos + '%">' + escHtml(t.label) + "</span>").join("") + "</div>" : "") +
     "</div>";
@@ -894,7 +906,7 @@ function deviceRows(b) {
 
 // ============== 总览 ==============
 
-// 会话接待分布：单系列灰柱（当前周期深灰）+ 一条黑色人工时长线（右轴）；左轴会话量、右轴小时
+// 会话接待分布（2026-10-13 用户定）：双泳道——深灰柱在下（悬停变黑），黑色实线 + 圆点在上（右轴小时），两者永不交叉；当前周期铺 30% 品牌绿底带
 function drawReceptChart(s) {
   const g = receptGrain;
   const { buckets } = rollupDays(s.byDay, g);
@@ -903,11 +915,11 @@ function drawReceptChart(s) {
   const maxH = niceMax(Math.max(...buckets.map((b) => b.dur / 3600), 0) * 1.15);
   const band = currentBand(buckets, g);
   domChart($("heroRecept"), {
-    height: 270, max: maxS,
-    bars: buckets.map((b, i) => ({ segs: [{ v: b.total, color: inBand(band, i) ? INK : "#D3D2D6" }], w: barW(g, n), dashed: isOngoing(b) })),
-    line: { values: buckets.map((b) => b.dur / 3600), color: INK, width: 2, max: maxH },
-    yTicks: [0, 0.5, 1].map((p) => ({ pos: p * 100, label: fmtNum(Math.round(maxS * p)) })),
-    hTicks: [0, 0.5, 1].map((p) => ({ pos: p * 100, label: (maxH * p).toFixed(maxH * p < 10 && p ? 1 : 0) + "h" })),
+    height: 340, max: maxS, lanes: true, hoverInk: true,
+    bars: buckets.map((b) => ({ segs: [{ v: b.total, color: BAR_DARK }], ...barW(g), dashed: isOngoing(b) })),
+    line: { values: buckets.map((b) => b.dur / 3600), color: INK, width: 2.5, max: maxH, dots: n <= 31 },
+    yTicks: [0, 0.5, 1].map((p) => ({ pos: p * LANE_BAR, label: fmtNum(Math.round(maxS * p)) })),
+    hTicks: [0, 0.5, 1].map((p) => ({ pos: LANE_LINE_FROM + p * LANE_LINE, label: (maxH * p).toFixed(maxH * p < 10 && p ? 1 : 0) + "h" })),
     band, ...axisFor(buckets, g),
     tip: (i) => {
       const b = buckets[i];
@@ -980,7 +992,7 @@ function drawVolumeDist(s) {
     bars: buckets.map((b) => {
       const dev = b.dev || {};
       const pc = dev.pc || 0, mob = dev.mobile || 0, unk = Math.max(0, b.total - pc - mob);
-      return { segs: [{ v: pc, color: COLOR_DEVICE.pc }, { v: mob, color: COLOR_DEVICE.mobile }, { v: unk, color: COLOR_DEVICE["未知"] }], w: barW(g, buckets.length), label: showLabels ? fmtNum(b.total) : "", dashed: isOngoing(b) };
+      return { segs: [{ v: pc, color: COLOR_DEVICE.pc }, { v: mob, color: COLOR_DEVICE.mobile }, { v: unk, color: COLOR_DEVICE["未知"] }], ...barW(g), label: showLabels ? fmtNum(b.total) : "", dashed: isOngoing(b) };
     }),
     yTicks: [0, 0.5, 1].map((p) => ({ pos: p * 100, label: fmtNum(Math.round(maxS * p)) })),
     ...axisFor(buckets, g),
@@ -1011,7 +1023,8 @@ function drawVolumeUniq(s) {
   buckets.forEach((b) => { byKey[b.key] = b; });
   const max = niceMax(Math.max(...keys.map((k) => by[k].users), 0) * 1.15);
   const showLabels = keys.length <= 20;
-  const w = PAIR_W[g];
+  const pw = pairW(g);
+  const wStyle = "width:" + pw.wPct + "%;min-width:3px;max-width:" + pw.wMax + "px";
   const n = keys.length;
   const bk = keys.map((k) => byKey[k] || { key: k, first: k, last: k, days: 1 });
   const band = currentBand(bk, g);
@@ -1022,8 +1035,8 @@ function drawVolumeUniq(s) {
     '<div class="dc-cols">' +
     keys.map((k, i) =>
       '<div class="dc-col pair" data-tip="' + i + '">' +
-      '<div class="pair-one" style="width:' + w + 'px">' + (showLabels ? '<span class="dc-label">' + fmtNum(by[k].users) + "</span>" : "") + '<i style="height:' + ((by[k].users / max) * 100).toFixed(1) + "%;background:" + INK + '"></i></div>' +
-      '<div class="pair-one" style="width:' + w + 'px">' + (showLabels ? '<span class="dc-label dim">' + fmtNum(by[k].orgs) + "</span>" : "") + '<i style="height:' + ((by[k].orgs / max) * 100).toFixed(1) + '%;background:#AAA9AB"></i></div></div>'
+      '<div class="pair-one" style="' + wStyle + '">' + (showLabels ? '<span class="dc-label">' + fmtNum(by[k].users) + "</span>" : "") + '<i style="height:' + ((by[k].users / max) * 100).toFixed(1) + "%;background:" + INK + '"></i></div>' +
+      '<div class="pair-one" style="' + wStyle + '">' + (showLabels ? '<span class="dc-label dim">' + fmtNum(by[k].orgs) + "</span>" : "") + '<i style="height:' + ((by[k].orgs / max) * 100).toFixed(1) + '%;background:#AAA9AB"></i></div></div>'
     ).join("") +
     "</div></div>" +
     (ax.xPerBar ? '<div class="dc-x per">' + ax.xPerBar.map((x) => "<span>" + escHtml(x) + "</span>").join("") + "</div>"
