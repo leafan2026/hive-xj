@@ -8,7 +8,7 @@ const INK = "#0B0B0C";
 const GREEN = "#75FB90";
 const GRAYS = ["#0B0B0C", "#55545A", "#8D8C93", "#AAA9AB", "#C9C8CD", "#DBDADD", "#E9E8EC"];
 
-const state = { stats: null, resolvedFrom: "", resolvedTo: "", facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null, loop: null, loopLoaded: false, hourlyDay: null, manualBusyMode: "weekday", tab: "overview" };
+const state = { stats: null, resolvedFrom: "", resolvedTo: "", facets: null, refreshing: false, polling: false, weeks: [], weeklyLoaded: false, latestDay: null, loop: null, loopLoaded: false, hourlyDay: null, tab: "overview" };
 
 // 筛选项 → 接口参数名；选项值来自首次全量结果，筛选后不再改动
 const DIM_SELECTS = {
@@ -530,7 +530,12 @@ async function reload() {
 async function loadDashboard() {
   try {
     const qs = currentQuery().toString();
-    const json = await api("/api/dashboard" + (qs ? "?" + qs : ""));
+    // 固定口径的「最近 24 周」只拉一次（接待量页三张图 + 总览接待人数图用，不随筛选）；拉不到就退回筛选后的 stats
+    const [json, fixed] = await Promise.all([
+      api("/api/dashboard" + (qs ? "?" + qs : "")),
+      state.fixed ? null : api("/api/fixed").catch(() => null),
+    ]);
+    if (fixed && fixed.success && fixed.stats) state.fixed = fixed.stats;
     if (!json.success) throw new Error(json.error || "未知错误");
     if (json.building) {
       banner(buildingText(json.meta), (json.meta || {}).status === "error" ? "warn" : "info");
@@ -975,8 +980,11 @@ function renderOverview(s) {
   const keys = Object.keys(dev).sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
   const box = $("devStack");
   if (box) box.innerHTML = stackHtml(keys.map((k, i) => ({ label: k, value: dev[k], color: colorFor(COLOR_DEVICE, k, i) })));
-  drawOverviewUniq(s);
+  drawOverviewUniq(fixedStats(s));
 }
+
+// 不随筛选的那几张图用「最近 24 周」的固定 stats；没拉到时退回当前 stats
+function fixedStats(s) { return state.fixed || s; }
 
 // ============== 接待量与来源 ==============
 
@@ -1079,9 +1087,9 @@ function natureCols(nature) {
 }
 
 function renderVolume(s) {
-  drawVolumeDist(s);
-  drawVolumeUniq(s);
-  renderChannelMultiples(s);
+  drawVolumeDist(fixedStats(s));
+  drawVolumeUniq(fixedStats(s));
+  renderChannelMultiples(fixedStats(s));
 
   const { cols, rest } = natureCols(s.nature);
   const valueOf = (map) => (row, k) => {
@@ -1145,14 +1153,14 @@ function renderAIPanel(s) {
   const tn = $("canAnswerTotal");
   if (tn) tn.textContent = fmtNum(s.transferred) + " 次转人工";
 
-  drawRepeatWeekly(s);
+  drawRepeatWeekly(fixedStats(s));
   drawTrio(s);
   renderRepeatsTable(s);
 }
 
 const REPEAT_LIMIT = 7;   // 复问率警戒线（%）
 
-// 复问率 · 每周：胶囊周柱 + 柱顶数值 + 7% 虚线警戒线；最近一周黑色、超线深灰、其余浅灰
+// 复问率 · 每周（最近 24 周，不随筛选）：胶囊周柱 + 柱顶数值 + 7% 虚线警戒线；最近一周黑色、超线深灰、其余浅灰
 function drawRepeatWeekly(s) {
   const { buckets } = rollupDays(s.byDay, "week");
   const vals = buckets.map((b) => (b.total ? (b.rep / b.total) * 100 : 0));
@@ -1257,16 +1265,17 @@ function renderServiceCards(s, previous) {
   const prevDur = previous && previous.byDay ? sum(previous.byDay, (b) => b.dur) : null;
   const durPill = prevDur === null ? "" : pillHtml(changeText(sum(s.byDay, (b) => b.dur), prevDur));
 
-  // 高峰时段：7 天 × 24 小时合计后找最忙的连续两小时；最忙的两个星期几
+  // 高峰时段：过去 7 天的 15 分钟格先并成 24 小时，再找最忙的连续两小时；最忙的两天写日期
   let peak = "—", peakSub = "";
   const hw = s.hourlyWeek;
-  if (hw && hw.manual) {
-    const byHour = Array.from({ length: 24 }, (_, h) => hw.manual.reduce((a, row) => a + (row[h] || 0), 0));
+  if (hw && hw.manual && Array.isArray(hw.days)) {
+    const per = Math.max(1, Math.round(60 / (Number(hw.slotMinutes) || 60)));
+    const byHour = Array.from({ length: 24 }, (_, h) => hw.manual.reduce((a, row) => { let t = 0; for (let k = h * per; k < (h + 1) * per; k++) t += row[k] || 0; return a + t; }, 0));
     let best = 0, bi = 0;
     for (let h = 0; h < 23; h++) { const v = byHour[h] + byHour[h + 1]; if (v > best) { best = v; bi = h; } }
     if (best > 0) peak = bi + "–" + (bi + 2);
-    const byDow = hw.manual.map((row, i) => [i, row.reduce((a, v) => a + v, 0)]).sort((a, b) => b[1] - a[1]).filter((x) => x[1] > 0).slice(0, 2);
-    if (byDow.length) peakSub = byDow.map((x) => DOW_LABEL[x[0]]).join("、") + "最忙";
+    const byDay = hw.manual.map((row, i) => [i, row.reduce((a, v) => a + v, 0)]).sort((a, b) => b[1] - a[1]).filter((x) => x[1] > 0).slice(0, 2);
+    if (byDay.length) peakSub = byDay.map((x) => hw.days[x[0]].slice(5)).join("、") + " 最忙";
   }
   const emo = (s.emotion || {}).team || {};
   const cards = [
@@ -1470,26 +1479,26 @@ async function renderAgentsCum() {
 
 // 24 小时服务节奏：周一～周日 × 24 小时的人工会话数热力格。0 留空白，其余按最大值分 5 档，最深一档是主色。
 const HEAT5 = ["transparent", "#E4E3E7", "#BDBCC2", "#8D8C93", "#4A4A50", "#0B0B0C"];
-const DOW_LABEL = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
 function drawHourlyWeek(s) {
   const grid = $("hourlyGrid");
   if (!grid) return;
   const hw = s.hourlyWeek;
-  if (!hw || !hw.manual) {
+  if (!hw || !hw.manual || !Array.isArray(hw.days)) {
     grid.innerHTML = '<p class="chart-foot">数据缓存是旧版本，点左下角「重新拉取数据」后本图才会出数</p>';
     return;
   }
-  // 只画 09:30～18:30（窗口随数据下发）；旧缓存还是 24 小时格时按 60 分钟一格退化处理
+  // 过去 7 个完整自然日（不含今天），一行一天、按日期排；只画 09:30～18:30（窗口随数据下发）
   const step = Number(hw.slotMinutes) || 60;
   const win = hw.window || { start: 0, end: 24 * 60 };
   const from = Math.floor(win.start / step), to = Math.ceil(win.end / step);
   const cols = to - from;
   const rows = hw.manual.map((row) => row.slice(from, to));
   const max = Math.max(...rows.flat(), 0);
+  const dayLabel = (d) => d.slice(5) + "（" + WD_CN[new Date(d + "T00:00:00Z").getUTCDay()] + "）";
   grid.style.setProperty("--heat-cols", cols);
   grid.innerHTML = rows.map((row, d) =>
-    '<div class="heat-row"><span>' + DOW_LABEL[d] + "</span>" +
+    '<div class="heat-row"><span>' + dayLabel(hw.days[d]) + "</span>" +
     row.map((n, k) => {
       const lv = n ? Math.min(5, Math.max(1, Math.ceil((n / max) * 5))) : 0;
       return '<i data-tip="' + (d * cols + k) + '" style="background:' + HEAT5[lv] + '"></i>';
@@ -1497,18 +1506,18 @@ function drawHourlyWeek(s) {
   ).join("") +
     // 横轴：整点处标小时数
     '<div class="heat-row heat-axis"><span></span>' + Array.from({ length: cols }, (_, k) => { const m = (from + k) * step; return "<b>" + (m % 60 === 0 ? m / 60 : "") + "</b>"; }).join("") + "</div>";
-  // 悬停：深色卡片写「周几 时段 · 人工会话 N 场」，再给该星期几在区间内的天数和日均
+  // 悬停：深色卡片写「日期（周几） 时段 · 人工会话 N 场」，底部给当天合计
   grid.$tip = (i) => {
     const d = Math.floor(i / cols), k = i % cols;
     const n = (rows[d] || [])[k];
     if (n === undefined) return null;
     const m = (from + k) * step;
-    const days = (hw.dayCount || [])[d] || 0;
     const lv = n ? Math.min(5, Math.max(1, Math.ceil((n / max) * 5))) : 0;
+    const dayTotal = (hw.manual[d] || []).reduce((a, b) => a + b, 0);
     return {
-      title: DOW_LABEL[d] + " " + minuteLabel(m) + " – " + minuteLabel(m + step),
+      title: dayLabel(hw.days[d]) + " " + minuteLabel(m) + " – " + minuteLabel(m + step),
       rows: [{ name: "人工会话", value: n + " 场", color: lv ? HEAT5[lv] : "#F1F0F3" }],
-      foot: days ? { name: "日均（" + days + " 个" + DOW_LABEL[d] + "）", value: (n / days).toFixed(1) + " 场" } : null,
+      foot: { name: "当天合计", value: dayTotal + " 场" },
     };
   };
   if (!grid.dataset.bound) { grid.dataset.bound = "1"; bindDomTip(grid, (i) => grid.$tip(i)); }
@@ -1523,18 +1532,20 @@ function drawManualBusy(s) {
   const busy = s.manualBusy || {};
   const box = $("manualBusyBars");
   if (!box) return;
-  if (!Array.isArray(busy.weekday)) {
+  if (!Array.isArray(busy.slots) || !busy.day) {
     box.innerHTML = '<p class="chart-foot">数据缓存是旧版本，点左下角「重新拉取数据」后本图才会出数</p>';
     return;
   }
-  const mode = state.manualBusyMode === "weekend" ? "weekend" : "weekday";
-  document.querySelectorAll("#manualBusyModes button[data-mode]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+  // 只看最近一个完整自然日（通常是昨天）
+  const dayLabel = busy.day.slice(5) + "（" + WD_CN[new Date(busy.day + "T00:00:00Z").getUTCDay()] + "）";
+  const sub = $("manualBusySub");
+  if (sub) sub.textContent = dayLabel + " · 09:30～18:30 同时在线人工会话数";
   const cap = Number(busy.capacity) || 6;
   const step = Number(busy.slotMinutes) || 15;
   // 只画 09:30～18:30（窗口随数据下发）
   const win = busy.window || { start: 0, end: 24 * 60 };
   const from = Math.floor(win.start / step), to = Math.ceil(win.end / step);
-  const vals = (busy[mode] || []).slice(from, to);
+  const vals = busy.slots.slice(from, to);
   const top = Math.max(cap * 1.5, Math.max(...vals, 0) * 1.1);
   const tone = (v) => (v === 0 ? "#ECEBEF" : v > cap ? INK : v > cap / 2 ? "#8E8D93" : "#DBDADD");
   box.innerHTML =
@@ -1553,18 +1564,17 @@ function drawManualBusy(s) {
     box.dataset.bound = "1";
     bindDomTip(box, (i) => {
       const b = (LAST_STATS || s).manualBusy || {};
-      const m = state.manualBusyMode === "weekend" ? "weekend" : "weekday";
       const w = b.window || { start: 0, end: 24 * 60 };
       const off = Math.floor(w.start / step);
-      const cur = (b[m] || [])[off + i];
+      const cur = (b.slots || [])[off + i];
       if (cur === undefined) return null;
       const c = Number(b.capacity) || 6;
-      const days = m === "weekend" ? b.weekendDays : b.weekdayDays;
+      const dl = b.day ? b.day.slice(5) + "（" + WD_CN[new Date(b.day + "T00:00:00Z").getUTCDay()] + "）" : "";
       return {
-        title: minuteLabel((off + i) * step) + " – " + minuteLabel((off + i + 1) * step) + "（" + (m === "weekend" ? "周末" : "工作日") + " " + (days || 0) + " 天平均）",
-        rows: [{ name: "同时在线人工会话", value: Number(cur).toFixed(1), color: tone(cur) }],
+        title: dl + " " + minuteLabel((off + i) * step) + " – " + minuteLabel((off + i + 1) * step),
+        rows: [{ name: "同时在线人工会话", value: String(cur) + " 场", color: tone(cur) }],
         foot: { name: "在岗容量", value: String(c) },
-        notes: [cur > c ? "超出容量" : "", b.noDuration ? "另有 " + b.noDuration + " 场无时长记录未计入" : ""],
+        notes: [cur > c ? "超出容量" : "", b.noDurationDay ? "当天另有 " + b.noDurationDay + " 场无时长记录未计入" : ""],
       };
     });
   }
@@ -1643,7 +1653,7 @@ function renderChannelMultiples(s) {
     });
   });
   const hint = $("hintWeekChannel");
-  if (hint) hint.textContent = (weeks.length ? label(weeks[0]) + " – " + label(weeks.at(-1)) : "") + (fullWeeks.length ? " · 只算完整周 · 黑色为最近一周" : " · 范围内没有完整周，浅色为不完整周");
+  if (hint) hint.textContent = "最近 24 周 · 不随筛选 · " + (weeks.length ? label(weeks[0]) + " – " + label(weeks.at(-1)) : "") + (fullWeeks.length ? " · 只算完整周 · 黑色为最近一周" : " · 范围内没有完整周，浅色为不完整周");
 }
 
 // ============== 分析页：业务与套餐 ==============
@@ -2305,8 +2315,8 @@ function initActions() {
 
   // 聚合粒度：纯前端换分桶，不重新请求接口
   initSeg("granRecept", receptGrain, (g) => { receptGrain = g; if (LAST_STATS) drawReceptChart(LAST_STATS); });
-  initSeg("granDist", distGrain, (g) => { distGrain = g; if (LAST_STATS) drawVolumeDist(LAST_STATS); });
-  initSeg("granUniq", uniqGrain, (g) => { uniqGrain = g; if (LAST_STATS) drawVolumeUniq(LAST_STATS); });
+  initSeg("granDist", distGrain, (g) => { distGrain = g; if (LAST_STATS) drawVolumeDist(fixedStats(LAST_STATS)); });
+  initSeg("granUniq", uniqGrain, (g) => { uniqGrain = g; if (LAST_STATS) drawVolumeUniq(fixedStats(LAST_STATS)); });
 
   // 情绪会话明细：负向 / 正向页签
   const emoTabs = $("emoTabs");
@@ -2335,14 +2345,6 @@ function initActions() {
     document.body.classList.toggle("show-kou", on);
     notes.setAttribute("aria-pressed", String(on));
     notes.textContent = on ? "隐藏口径说明" : "显示口径说明";
-  });
-
-  const manualBusyModes = $("manualBusyModes");
-  if (manualBusyModes) manualBusyModes.addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-mode]");
-    if (!button || !LAST_STATS) return;
-    state.manualBusyMode = button.dataset.mode === "weekend" ? "weekend" : "weekday";
-    drawManualBusy(LAST_STATS);
   });
 
   $("fRange").addEventListener("change", () => { applyRangePreset(); reload(); });

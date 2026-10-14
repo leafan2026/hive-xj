@@ -17,14 +17,17 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 // stats v10 / weekly v7 / q v5（2026-09-18）：情绪里加 emoList（负向 + 正向会话的时间/地址/末接客服），照规矩 bump。
 // entries v6 / stats v11 / q v6（2026-10-13 改版）：明细加 sum（field_11 一句话总结），复问明细改成按「复问链」合并：
 // 一行 = 首次提问摘要 + 复问了几次 + 最后一次谁接的。明细多了一个字段，所以 K_ENTRIES 也要换键、重新拉数。
-const K_STATS = "hive:stats:v13";
+const K_STATS = "hive:stats:v14";
 const K_ENTRIES = "hive:entries:v6";
 const K_WEEKLY = "hive:weekly:v7";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
 // 筛选结果记忆缓存：键里带 meta.updatedAt，数据一刷新自然失效；
 // TTL 只用来回收过期键，不承担正确性。
-const K_QUERY_PREFIX = "hive:q:v8:";
+const K_QUERY_PREFIX = "hive:q:v9:";
+// 固定口径的「最近 24 周」stats（2026-10-14 用户定：接待量页的三张图和总览的接待人数图不随筛选），按数据版本缓存
+const K_FIXED_PREFIX = "hive:fixed:v1:";
+const FIXED_WEEKS = 24;
 const QUERY_CACHE_TTL_S = 3600;
 
 // 金数据 per_page 实际封顶 50；next 是 serial_number 偏移，可并行取页
@@ -280,9 +283,10 @@ function buildStats(rows) {
     nature: {}, durSum: 0, durCount: 0, turnsSum: 0,
     // 按天 / 按周的复合桶，供堆叠柱 + 双轴折线用
     byDay: {}, byWeek: {},
-    // 服务节奏：周一～周日 × 全天 96 个 15 分钟格的人工会话数（整个筛选区间合计），按金数据记录的原始日历时间落格；
-    // 页面只画 window（09:30～18:30）那一段
-    hourlyWeek: { manual: Array.from({ length: 7 }, () => Array(BUSY_SLOT_COUNT).fill(0)), dayCount: Array(7).fill(0), slotMinutes: BUSY_SLOT_MINUTES, window: SERVICE_WINDOW },
+    // 服务节奏（2026-10-14 用户定）：**过去 7 个完整自然日**（不含今天）× 全天 96 个 15 分钟格的人工会话数，按日期排行，
+    // 每行一天（days[i] 是 YYYY-MM-DD）；按金数据记录的原始日历时间落格，页面只画 window（09:30～18:30）那一段。
+    // 以前是周一～周日按星期几合计整个区间，用户要的是「最近 7 天实时变化」，改回按天。days / manual 在循环结束后填
+    hourlyWeek: { days: [], manual: [], slotMinutes: BUSY_SLOT_MINUTES, window: SERVICE_WINDOW },
     // 人工服务忙闲：全天 96 个 15 分钟格，每格 = 同时处于人工接待中的会话数（靠时长铺开，所以只统计有时长的会话），
     // 按「工作日 / 周末」分别对区间内的自然日取平均；noDuration = 没有时长、进不了这张图的仅人工会话数。
     manualBusy: {
@@ -307,6 +311,8 @@ function buildStats(rows) {
   const repRows = [];     // 复问=是 的行，循环完再串成复问链
   const daysSeen = new Set();   // 区间内出现过会话的自然日，用来数工作日 / 周末各几天、每个星期几各几天
   const busyByDay = {};         // day → Int32Array(96)，循环完再按日型求平均
+  const manualByDay = {};       // day → Int32Array(96)，仅人工会话按记录时间落格，循环完取最近 7 个完整自然日
+  const noDurByDay = {};        // day → 没有时长、进不了忙闲图的仅人工会话数
   // 中间态：每个粒度每个周期一组 Set，收尾时转成计数再下发（不然 payload 会很大）
   const uniqSets = {};
   for (const g of UNIQ_GRAINS) uniqSets[g] = {};
@@ -332,10 +338,10 @@ function buildStats(rows) {
     if (hourSlot) {
       daysSeen.add(hourSlot.day);
       if (r.st === "仅人工") {
-        const dow = dowOf(hourSlot.day);
-        if (dow >= 0) s.hourlyWeek.manual[dow][Math.floor(hourSlot.minute / BUSY_SLOT_MINUTES)]++;
+        const mslots = manualByDay[hourSlot.day] || (manualByDay[hourSlot.day] = new Int32Array(BUSY_SLOT_COUNT));
+        mslots[Math.floor(hourSlot.minute / BUSY_SLOT_MINUTES)]++;
         const hasDuration = typeof r.dur === "number" && r.dur > 0;
-        if (!hasDuration) s.manualBusy.noDuration++;
+        if (!hasDuration) { s.manualBusy.noDuration++; noDurByDay[hourSlot.day] = (noDurByDay[hourSlot.day] || 0) + 1; }
         else {
           // 会话从记录时间起铺到 时长 结束，跨过午夜的部分截掉
           const slots = busyByDay[hourSlot.day] || (busyByDay[hourSlot.day] = new Int32Array(BUSY_SLOT_COUNT));
@@ -450,12 +456,24 @@ function buildStats(rows) {
   s.repeats = repeatChains(repRows, rows);
 
   // 忙闲：按日型求平均。分母是区间内**有会话的**自然日（不是日历天数：区间首尾不完整，也避免长区间里的假期把平均摊薄）
+  // 服务节奏：最近 7 个完整自然日 = 以「昨天」（北京时间）和区间内最晚一天中较早者为末日，往前数 7 天；没数据的天也占一行
+  {
+    const seen = [...daysSeen].sort();
+    const yesterday = shiftDay(todayInShanghai(), -1);
+    const end = seen.length && seen[seen.length - 1] < yesterday ? seen[seen.length - 1] : yesterday;
+    const days = Array.from({ length: 7 }, (_, i) => shiftDay(end, i - 6));
+    s.hourlyWeek.days = days;
+    s.hourlyWeek.manual = days.map((d) => Array.from(manualByDay[d] || new Int32Array(BUSY_SLOT_COUNT)));
+    // 人工服务忙闲（2026-10-14 用户定）：只看最近一个完整自然日（同上面的末日），每格 = 当时同时处于人工接待中的会话数，不再按日型平均
+    s.manualBusy.day = end;
+    s.manualBusy.slots = Array.from(busyByDay[end] || new Int32Array(BUSY_SLOT_COUNT));
+    s.manualBusy.noDurationDay = noDurByDay[end] || 0;
+  }
   for (const day of daysSeen) {
     const dow = dowOf(day);
     if (dow < 0) continue;
     const weekend = dow >= 5;
     if (weekend) s.manualBusy.weekendDays++; else s.manualBusy.weekdayDays++;
-    s.hourlyWeek.dayCount[dow]++;
     const slots = busyByDay[day];
     if (!slots) continue;
     const target = weekend ? s.manualBusy.weekend : s.manualBusy.weekday;
@@ -513,6 +531,23 @@ function guideSplitOf(effManual, totalShare) {
 }
 
 // 星期序号，周一 = 0
+// 「最近 24 周」窗口的起点：本周（北京时间）往前数 23 周的周一
+function fixedWindowFrom() {
+  const today = todayInShanghai();
+  const dow = (new Date(today + "T00:00:00Z").getUTCDay() + 6) % 7;   // 周一 = 0
+  return shiftDay(today, -dow - (FIXED_WEEKS - 1) * 7);
+}
+
+// 北京时间的今天（YYYY-MM-DD）；金数据记录的时间就是北京时间，两边要一致
+function todayInShanghai() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+}
+function shiftDay(day, n) {
+  const d = new Date(day + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 function dowOf(day) {
   const d = new Date(day + "T00:00:00Z");
   return isNaN(d) ? -1 : (d.getUTCDay() + 6) % 7;
@@ -1342,13 +1377,13 @@ async function renderPage(env, user) {
         <div class="dev-stack" id="devStack"></div>
       </section>
       <section class="chart-card" style="flex:2 1 600px" aria-label="接待人数与企业数">
-        <div class="chart-head between"><h3>接待人数与企业数</h3><span class="chart-hint">区间去重</span></div>
+        <div class="chart-head between"><h3>接待人数与企业数</h3><span class="chart-hint">最近 24 周 · 不随筛选</span></div>
         <div class="bignums">
           <div><b id="ovUniqUsers">—</b><span><i style="background:#0B0B0C"></i>接待人数</span></div>
           <div><b id="ovUniqOrgs">—</b><span><i style="background:#AAA9AB"></i>接待企业数</span></div>
         </div>
         <div class="pair-bars" id="ovUniqBars"></div>
-        <p class="chart-foot">按周去重，各周不可相加</p>
+        <p class="chart-foot">按周去重，各周不可相加；总数为 24 周去重</p>
       </section>
     </div>
   </section>
@@ -1357,7 +1392,7 @@ async function renderPage(env, user) {
   <section class="panel" id="panel-volume">
     <section class="chart-card hero-card" aria-label="会话接待分布（按设备）">
       <div class="hero-head">
-        <div class="hero-title"><h3>会话接待分布 · 按设备</h3><div class="hero-big sm" id="volDistTotal">—</div>
+        <div class="hero-title"><h3>会话接待分布 · 按设备</h3><div class="hero-big sm" id="volDistTotal">—</div><div class="hero-caption">最近 24 周 · 不随筛选</div>
           <div class="legend"><span><i style="background:#0B0B0C"></i>pc</span><span><i style="background:#AAA9AB"></i>mobile</span><span><i style="background:#DBDADD"></i>未知</span></div></div>
         <div class="seg" id="granDist" role="tablist" aria-label="聚合粒度"></div>
       </div>
@@ -1370,7 +1405,7 @@ async function renderPage(env, user) {
             <div><b id="volUniqUsers">—</b><span><i style="background:#0B0B0C"></i>接待人数 · user_id 去重</span></div>
             <div><b id="volUniqOrgs">—</b><span><i style="background:#AAA9AB"></i>接待企业数 · billing_account_id 去重</span></div>
           </div></div>
-        <div class="hero-right"><div class="seg" id="granUniq" role="tablist" aria-label="聚合粒度"></div><span class="hint-pill">各周期独立去重，不可相加；总数为全区间去重</span></div>
+        <div class="hero-right"><div class="seg" id="granUniq" role="tablist" aria-label="聚合粒度"></div><span class="hint-pill">最近 24 周 · 不随筛选 · 各周期独立去重，不可相加；总数为 24 周去重</span></div>
       </div>
       <div id="volUniq"></div>
     </section>
@@ -1411,7 +1446,7 @@ async function renderPage(env, user) {
     </div>
     <section class="chart-card" aria-label="复问率">
       <div class="hero-head">
-        <div class="hero-title"><h3>复问率 · 每周</h3><div class="big-kpi"><b class="mid" id="repeatBig">—</b><span id="repeatPill"></span></div><div class="hero-caption">同一用户隔 6～36 小时就同一问题再次进线的会话占比</div></div>
+        <div class="hero-title"><h3>复问率 · 每周</h3><div class="big-kpi"><b class="mid" id="repeatBig">—</b><span id="repeatPill"></span></div><div class="hero-caption">同一用户隔 6～36 小时就同一问题再次进线的会话占比 · 最近 24 周 · 不随筛选</div></div>
         <span class="legend"><span><i class="dash"></i>警戒线 7%</span></span>
       </div>
       <div class="repeat-bars" id="repeatBars"></div>
@@ -1441,15 +1476,11 @@ async function renderPage(env, user) {
     <div class="grid two">
       <section class="chart-card" aria-label="24 小时服务节奏">
         <div class="chart-head between top"><div class="hero-title"><h3>服务节奏 · 人工会话数</h3><span class="chart-sub">09:30～18:30，每格 15 分钟</span></div><span class="heat-legend"><span>少</span><i style="background:#E4E3E7"></i><i style="background:#BDBCC2"></i><i style="background:#8D8C93"></i><i style="background:#4A4A50"></i><i style="background:#0B0B0C"></i><span>多 · 空白 = 0</span></span></div>
-        <div class="heat-scroll"><div class="heat-grid" id="hourlyGrid" role="img" aria-label="周一到周日 × 24 小时的人工会话数热力图"></div></div>
+        <div class="heat-scroll"><div class="heat-grid" id="hourlyGrid" role="img" aria-label="过去 7 天 × 15 分钟格的人工会话数热力图"></div></div>
       </section>
       <section class="chart-card service-busy-card" aria-label="人工服务忙闲分布">
         <div class="chart-head between top">
-          <div class="hero-title"><h3>人工服务忙闲 · 15 分钟</h3><span class="chart-sub">09:30～18:30 同时在线人工会话数（平均）</span></div>
-          <div class="seg" id="manualBusyModes" role="tablist" aria-label="日期类型">
-            <button type="button" role="tab" data-mode="weekday" aria-pressed="true">工作日</button>
-            <button type="button" role="tab" data-mode="weekend" aria-pressed="false">周末</button>
-          </div>
+          <div class="hero-title"><h3>人工服务忙闲 · 15 分钟</h3><span class="chart-sub" id="manualBusySub">昨天 · 09:30～18:30 同时在线人工会话数</span></div>
         </div>
         <div class="busy-bars" id="manualBusyBars"></div>
         <div class="busy-axis" id="manualBusyAxis"></div>
@@ -1910,6 +1941,27 @@ export default {
     }
     if (!user) {
       return json({ success: false, error: "未登录", login: true }, 401);
+    }
+
+    // 最近 24 周（含本周）的固定口径 stats：接待量页的「按设备分布 / 接待人数与企业数 / 渠道来源」和总览的接待人数图用，不随筛选
+    if (path === "/api/fixed") {
+      const meta = await readMeta(env);
+      const version = dataVersionOf(meta);
+      const key = version ? K_FIXED_PREFIX + version : "";
+      if (key) {
+        const hit = await env.CACHE.get(key, { type: "json" });
+        if (hit) return json({ ...hit, meta });
+      }
+      const rows = await env.CACHE.get(K_ENTRIES, { type: "json" });
+      if (!rows) return 构建中(env, ctx, meta);
+      const from = fixedWindowFrom();
+      const st = buildStats(rows.filter((r) => (r.t || "").slice(0, 10) >= from));
+      const payload = {
+        success: true, from, weeks: FIXED_WEEKS,
+        stats: { total: st.total, byDay: st.byDay, byWeek: st.byWeek, uniq: st.uniq, uniqAll: st.uniqAll, channel: st.channel, device: st.device },
+      };
+      if (key) ctx.waitUntil(env.CACHE.put(key, JSON.stringify(payload)).catch((err) => console.error("[fixed] put failed:", err.message)));
+      return json({ ...payload, meta });
     }
 
     if (path === "/api/dashboard") {

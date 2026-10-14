@@ -501,8 +501,8 @@ ol.medium-list { list-style: none; margin: 0; padding: 0; display: flex; flex-di
 .heat-legend span { margin: 0 3px; }
 .heat-grid { display: flex; flex-direction: column; gap: 3px; }
 .heat-grid { --heat-cols: 24; min-width: 520px; }
-.heat-row { display: grid; grid-template-columns: 34px repeat(var(--heat-cols), minmax(0, 1fr)); gap: 3px; align-items: center; }
-.heat-row > span { font-size: 11px; color: var(--ink-2); }
+.heat-row { display: grid; grid-template-columns: 84px repeat(var(--heat-cols), minmax(0, 1fr)); gap: 3px; align-items: center; }
+.heat-row > span { font-size: 11px; color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .heat-row > i { display: block; height: 22px; border-radius: 4px; cursor: crosshair; }
 .heat-row > i:hover { outline: 2px solid var(--ink); outline-offset: 1px; }
 .heat-axis { padding-top: 4px; }
