@@ -505,6 +505,13 @@ ol.medium-list { list-style: none; margin: 0; padding: 0; display: flex; flex-di
 .heat-row > span { font-size: 11px; color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .heat-row > i { display: block; height: 22px; border-radius: 4px; cursor: crosshair; }
 .heat-row > i:hover { outline: 2px solid var(--ink); outline-offset: 1px; }
+/* 媒介 × 周矩阵：行标更宽、格更高、横轴逐列标周 */
+.heat-grid.wide-label { min-width: 640px; }
+.heat-grid.wide-label .heat-row { grid-template-columns: 170px repeat(var(--heat-cols), minmax(0, 1fr)); gap: 4px; }
+.heat-grid.wide-label .heat-row > span { overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.heat-grid.wide-label .heat-row > i { height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 500; font-style: normal; font-variant-numeric: tabular-nums; color: var(--ink); }
+.heat-grid.wide-label .heat-axis b { text-align: center; }
+.heat-grid.wide-label .heat-axis b.today { color: var(--ink); font-weight: 600; }
 .heat-axis { padding-top: 4px; }
 .heat-axis b { font-size: 10px; font-weight: 400; color: var(--muted); text-align: center; }
 

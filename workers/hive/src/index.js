@@ -17,16 +17,16 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 // stats v10 / weekly v7 / q v5（2026-09-18）：情绪里加 emoList（负向 + 正向会话的时间/地址/末接客服），照规矩 bump。
 // entries v6 / stats v11 / q v6（2026-10-13 改版）：明细加 sum（field_11 一句话总结），复问明细改成按「复问链」合并：
 // 一行 = 首次提问摘要 + 复问了几次 + 最后一次谁接的。明细多了一个字段，所以 K_ENTRIES 也要换键、重新拉数。
-const K_STATS = "hive:stats:v14";
+const K_STATS = "hive:stats:v15";
 const K_ENTRIES = "hive:entries:v6";
 const K_WEEKLY = "hive:weekly:v7";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
 // 筛选结果记忆缓存：键里带 meta.updatedAt，数据一刷新自然失效；
 // TTL 只用来回收过期键，不承担正确性。
-const K_QUERY_PREFIX = "hive:q:v9:";
+const K_QUERY_PREFIX = "hive:q:v10:";
 // 固定口径的「最近 24 周」stats（2026-10-14 用户定：接待量页的三张图和总览的接待人数图不随筛选），按数据版本缓存
-const K_FIXED_PREFIX = "hive:fixed:v1:";
+const K_FIXED_PREFIX = "hive:fixed:v2:";
 const FIXED_WEEKS = 24;
 const QUERY_CACHE_TTL_S = 3600;
 
@@ -205,6 +205,7 @@ function bucket() {
     // direct = 有效人工里「直接转」的场次，canA / canBase = 转人工会话里 Jiri 标了「能」/ 标了能否的场次
     manual: 0, effManual: 0, direct: 0, canA: 0, canBase: 0,
     dev: {}, ch: {}, nat: {}, natDur: {},
+    med: {},                       // 入口媒介 → 会话数（接待量页「入口媒介 · 最近 9 周」矩阵用，2026-10-14 加）
   };
 }
 
@@ -372,6 +373,7 @@ function buildStats(rows) {
         b.dev[r.dev] = (b.dev[r.dev] || 0) + 1;
         b.ch[r.ch] = (b.ch[r.ch] || 0) + 1;
         b.nat[r.nat] = (b.nat[r.nat] || 0) + 1;
+        if (r.med) b.med[r.med] = (b.med[r.med] || 0) + 1;
         if (typeof r.dur === "number" && r.dur > 0) {
           b.dur += r.dur; b.durCount++;
           b.natDur[r.nat] = (b.natDur[r.nat] || 0) + r.dur;   // 各会话性质的人工时长（秒），给「会话时长 · 按周」堆叠
@@ -1427,6 +1429,10 @@ async function renderPage(env, user) {
         <ol class="medium-list" id="mediumList"></ol>
       </section>
     </div>
+    <section class="chart-card" aria-label="入口媒介 · 最近 9 周">
+      <div class="chart-head between top"><div class="hero-title"><h3>入口媒介 · 最近 9 周</h3><span class="chart-sub">每格 = 该媒介当周会话数 · 不随筛选 · 悬停看明细</span></div><span class="heat-legend"><span>少</span><i style="background:#E4E3E7"></i><i style="background:#BDBCC2"></i><i style="background:#8D8C93"></i><i style="background:#4A4A50"></i><i style="background:#0B0B0C"></i><span>多 · 空白 = 0</span></span></div>
+      <div class="heat-scroll"><div class="heat-grid wide-label" id="mediumWeeks" role="img" aria-label="入口媒介 × 最近 9 周的会话数热力图"></div></div>
+    </section>
   </section>
 
   <!-- ============ 分析 · AI 表现 ============ -->

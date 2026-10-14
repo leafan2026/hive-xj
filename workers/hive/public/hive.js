@@ -859,14 +859,14 @@ function rollupDays(byDay, grain) {
     const key = periodKeyOf(day, grain);
     if (!key) continue;
     if (!map[key]) {
-      map[key] = { key, first: day, last: day, days: 0, dev: {}, ch: {}, nat: {}, natDur: {} };
+      map[key] = { key, first: day, last: day, days: 0, dev: {}, ch: {}, nat: {}, natDur: {}, med: {} };
       SUMS.forEach((k) => { map[key][k] = 0; });
       order.push(key);
     }
     const t = map[key], b = byDay[day];
     t.last = day; t.days++;
     SUMS.forEach((k) => { t[k] += Number(b[k]) || 0; });
-    for (const f of ["dev", "ch", "nat", "natDur"]) {
+    for (const f of ["dev", "ch", "nat", "natDur", "med"]) {
       for (const [k, v] of Object.entries(b[f] || {})) t[f][k] = (t[f][k] || 0) + v;
     }
   }
@@ -1080,6 +1080,45 @@ function renderMediumList(s) {
   ).join("") || '<li class="empty">范围内没有会话</li>';
 }
 
+// 入口媒介 · 最近 9 周（2026-10-14 用户定）：媒介 × 周的热力矩阵，画法同人工服务页的「服务节奏」；
+// 取固定口径数据里最近 9 个周桶（含本周），媒介按 9 周合计取前 12，颜色按整张矩阵的最大值分 5 档，0 留空白
+function renderMediumWeeks(s) {
+  const grid = $("mediumWeeks");
+  if (!grid) return;
+  const weeks = rollupDays(s.byDay, "week").buckets.slice(-9);
+  if (!weeks.length || !weeks.some((w) => w.med && Object.keys(w.med).length)) {
+    grid.innerHTML = '<p class="chart-foot">数据缓存是旧版本，点左下角「重新拉取数据」后本图才会出数</p>';
+    return;
+  }
+  const sum = {};
+  weeks.forEach((w) => { for (const [k, v] of Object.entries(w.med || {})) sum[k] = (sum[k] || 0) + v; });
+  const mediums = sortedPairs(sum, 12).map((p) => p[0]);
+  const cells = mediums.map((m) => weeks.map((w) => (w.med || {})[m] || 0));
+  const max = Math.max(...cells.flat(), 0);
+  const cols = weeks.length;
+  const level = (n) => (n ? Math.min(5, Math.max(1, Math.ceil((n / max) * 5))) : 0);
+  const wl = (w) => "W" + Number(w.key.slice(5));
+  grid.style.setProperty("--heat-cols", cols);
+  grid.innerHTML = mediums.map((m, r) =>
+    '<div class="heat-row"><span title="' + escHtml(m) + '">' + escHtml(m) + "</span>" +
+    cells[r].map((n, k) => { const lv = level(n); return '<i data-tip="' + (r * cols + k) + '" style="background:' + HEAT5[lv] + (lv >= 4 ? ";color:#fff" : "") + '">' + (n ? fmtNum(n) : "") + "</i>"; }).join("") + "</div>"
+  ).join("") +
+    '<div class="heat-row heat-axis"><span></span>' + weeks.map((w) => "<b" + (isOngoing(w) ? ' class="today"' : "") + ">" + wl(w) + (w.days < 7 ? "*" : "") + "</b>").join("") + "</div>";
+  grid.$tip = (i) => {
+    const r = Math.floor(i / cols), k = i % cols;
+    const w = weeks[k], m = mediums[r];
+    if (!w || !m) return null;
+    const n = cells[r][k];
+    return {
+      title: m + " · " + bucketTitle(w, "week"),
+      rows: [{ name: "会话", value: fmtNum(n) + " 场", color: n ? HEAT5[level(n)] : "#F1F0F3" }, { name: "占该周全部", value: pct(n, w.total) + "%", color: "#F1F0F3" }],
+      foot: { name: "该媒介 " + cols + " 周合计", value: fmtNum(sum[m]) + " 场" },
+      notes: [w.days < 7 ? "这一周还没过完（* 号）" : ""],
+    };
+  };
+  if (!grid.dataset.bound) { grid.dataset.bound = "1"; bindDomTip(grid, (i) => grid.$tip(i)); }
+}
+
 // 热力表的列：会话性质取前 5 + 其他（和原型一致）
 function natureCols(nature) {
   const all = sortedPairs(nature).map((p) => p[0]);
@@ -1090,6 +1129,7 @@ function renderVolume(s) {
   drawVolumeDist(fixedStats(s));
   drawVolumeUniq(fixedStats(s));
   renderChannelMultiples(fixedStats(s));
+  renderMediumWeeks(fixedStats(s));
 
   const { cols, rest } = natureCols(s.nature);
   const valueOf = (map) => (row, k) => {
