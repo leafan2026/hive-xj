@@ -174,17 +174,26 @@ function paintTip(title, rows, foot, notes) {
   return el;
 }
 
-// 放到锚点右侧；越过视口中线就翻到左侧，避免盖住鼠标正在看的那根柱子
+// 放到锚点右侧；越过视口中线就翻到左侧，避免盖住鼠标正在看的那根柱子。
+// 动效：已经显示着时，位置走弹簧过渡（hive.css 的 .chart-glass-tooltip.visible），换列时带着速度滑过去、中途换向也能接上；
+// 从隐藏到出现那一下先瞬移到位、再淡入上浮，不会从上一次的位置飞过来
 function placeTip(el, anchorX, anchorY) {
-  el.classList.remove("visible");
-  const box = el.getBoundingClientRect();
-  let left = anchorX > window.innerWidth / 2 ? anchorX - box.width - 14 : anchorX + 14;
-  left = Math.min(Math.max(12, left), window.innerWidth - box.width - 12);
-  let top = anchorY - box.height / 2;
-  top = Math.min(Math.max(12, top), window.innerHeight - box.height - 12);
-  el.style.left = left + "px";
-  el.style.top = top + "px";
-  el.classList.add("visible");
+  const w = el.offsetWidth, h = el.offsetHeight;
+  let left = anchorX > window.innerWidth / 2 ? anchorX - w - 14 : anchorX + 14;
+  left = Math.min(Math.max(12, left), window.innerWidth - w - 12);
+  let top = anchorY - h / 2;
+  top = Math.min(Math.max(12, top), window.innerHeight - h - 12);
+  if (!el.classList.contains("visible")) {
+    el.classList.add("jump");
+    el.style.left = left + "px";
+    el.style.top = top + "px";
+    void el.offsetWidth;
+    el.classList.remove("jump");
+    el.classList.add("visible");
+  } else {
+    el.style.left = left + "px";
+    el.style.top = top + "px";
+  }
 }
 
 function hideTip() {
@@ -236,6 +245,111 @@ function smoothPath(pts) {
   return d;
 }
 
+// ============== 动效（2026-10-15）：阻尼弹簧闭式解，不迭代、不用物理引擎 ==============
+// CSS 侧用 linear() 采样同一条弹簧（hive.css 的 --spring-soft / --spring-snap）；这里给 JS 补间（折线变形、数字滚动）用。
+// 系统开了「减少动态效果」时一律不动。
+const REDUCED_MOTION = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+// 归一化弹簧：t ∈ [0,1] → 位移比例；zeta 阻尼比，k 决定在 t=1 前衰减几个时间常数
+function springAt(t, zeta, k) {
+  if (t >= 1) return 1;
+  const w = k / zeta, wd = w * Math.sqrt(1 - zeta * zeta);
+  return 1 - Math.exp(-zeta * w * t) * (Math.cos(wd * t) + ((zeta * w) / wd) * Math.sin(wd * t));
+}
+const SPRING_SNAP = (t) => springAt(t, 0.86, 7);   // 回弹 0.5%：数据变化时的形变
+const EASE_OUT = (t) => 1 - Math.pow(1 - t, 3);
+// 通用补间：每帧回调 f(进度 0..1)，返回取消函数；同一个对象上新补间会取消旧的
+function tween(owner, key, ms, ease, f) {
+  if (owner[key]) owner[key]();
+  if (REDUCED_MOTION) { f(1); return; }
+  let raf = 0, alive = true;
+  const t0 = performance.now();
+  const step = (now) => {
+    if (!alive) return;
+    const t = Math.min(1, (now - t0) / ms);
+    f(ease(t));
+    if (t < 1) raf = requestAnimationFrame(step); else owner[key] = null;
+  };
+  raf = requestAnimationFrame(step);
+  owner[key] = () => { alive = false; cancelAnimationFrame(raf); };
+}
+
+// 数字滚动：el 的文本从上一次的值滚到 text（千分位、小数位跟随 text）；不是纯数字就直接换
+function rollTo(el, text) {
+  if (!el) return;
+  const str = String(text);
+  const m = str.match(/^(-?)([\d,]+)(\.\d+)?$/);
+  if (!m || REDUCED_MOTION) { el.textContent = str; el.$val = m ? Number(str.replace(/,/g, "")) : null; return; }
+  const to = Number(str.replace(/,/g, ""));
+  const dec = m[3] ? m[3].length - 1 : 0;
+  const comma = m[2].includes(",") || to >= 1000;
+  const from = typeof el.$val === "number" ? el.$val : 0;
+  el.$val = to;
+  if (from === to) { el.textContent = str; return; }
+  const fmt = (v) => { const fixed = v.toFixed(dec); if (!comma) return fixed; const [i, d] = fixed.split("."); return Number(i).toLocaleString("en-US") + (d ? "." + d : ""); };
+  tween(el, "$roll", 620, EASE_OUT, (k) => { el.textContent = k >= 1 ? str : fmt(from + (to - from) * k); });
+}
+// 容器里所有 .card-value（或 sel 指定的元素）的第一个文本节点做数字滚动（innerHTML 刚换过，上一次的值存在容器上按序号对齐）
+function rollCards(box, sel) {
+  if (!box) return;
+  const prev = box.$vals || [];
+  const next = [];
+  box.querySelectorAll(sel || ".card-value").forEach((v, i) => {
+    const node = v.firstChild;
+    if (!node || node.nodeType !== 3) { next.push(null); return; }
+    const span = document.createElement("span");
+    span.$val = prev[i];
+    v.replaceChild(span, node);
+    rollTo(span, node.textContent);
+    next.push(span.$val);
+  });
+  box.$vals = next;
+}
+
+// 刚渲染出来的 DOM 小图（迷你柱、排名条、热力格……）按位置错开起跳：同一个父元素下的同类元素各自排队，总时长封顶 360ms
+const STAGGER_SEL = ".spark i, .col .bar, .col .seg-stack, .loop-types > .loop-type, .rb-col i, .busy-bars > i, .units i, .pair-col i, .pair-one i, .track > i, .tr i, .cbar i b, .heat-row > i, .heat-table td, .hm-row > *, .goal-track .fill i";
+function staggerIn(root) {
+  if (!root || REDUCED_MOTION) return;
+  const groups = new Map();
+  root.querySelectorAll(STAGGER_SEL).forEach((el) => {
+    const p = el.parentElement;
+    if (!groups.has(p)) groups.set(p, []);
+    groups.get(p).push(el);
+  });
+  for (const list of groups.values()) {
+    const step = Math.min(22, 360 / Math.max(1, list.length));
+    list.forEach((el, i) => { el.style.animationDelay = Math.round(i * step) + "ms"; });
+  }
+}
+
+// 报告页（周报 / 业务闭环）的入场：区块按顺序错开上浮淡入，表格逐行淡入，里面的条形照常错开长出。
+// 每次进入页面、切换统计周都会重放；数据还没到时面板挂 .pending（区块半透明呼吸），到了再统一入场，不再「先空白后突然蹦出来」
+const REVEAL_SEL = ":scope > .toc, :scope > .report-block, :scope > .grid > *, :scope > .chart-card, :scope > .group-head";
+function revealIn(root) {
+  if (!root) return;
+  root.classList.remove("pending");
+  if (REDUCED_MOTION) return;
+  const blocks = [...root.querySelectorAll(REVEAL_SEL)].filter((el) => !el.hidden);
+  const rows = [];
+  root.querySelectorAll("tbody").forEach((tb) => {
+    const list = [...tb.rows];
+    const step = Math.min(18, 300 / Math.max(1, list.length));
+    list.forEach((r, i) => rows.push([r, Math.round(160 + i * step)]));
+  });
+  // 先统一清掉旧动画、只触发一次重排，再统一挂上，保证每次都能重放
+  blocks.forEach((el) => { el.style.animation = "none"; });
+  rows.forEach(([r]) => { r.style.animation = "none"; });
+  void root.offsetHeight;
+  blocks.forEach((el, i) => { el.style.animation = "dcRise 460ms var(--spring-snap) " + Math.min(i * 50, 360) + "ms both"; });
+  rows.forEach(([r, d]) => { r.style.animation = "dcFadeOnly 300ms ease-out " + d + "ms both"; });
+  staggerIn(root);
+}
+// 切换统计周：旧内容 120ms 淡出，换完再入场
+function swapIn(root, render) {
+  if (!root || REDUCED_MOTION) { render(); revealIn(root); return; }
+  root.classList.add("swapping");
+  setTimeout(() => { render(); root.classList.remove("swapping"); revealIn(root); }, 120);
+}
+
 // 1 / 2 / 2.5 / 5 / 10 × 10^n 的整刻度上限
 function niceMax(v) {
   if (!(v > 0)) return 1;
@@ -265,6 +379,8 @@ const BAR_DARK = "#4A494F";   // 泳道图柱色（深灰），悬停变墨色
  *   lanes       true = 双泳道：柱子压到下面 LANE_BAR%，折线抬到上面 LANE_LINE_FROM% 起；yTicks / hTicks 的 pos 由调用方按泳道给
  *   line.dots   true = 折线每个点画一个圆点（白描边）
  *   hoverInk    true = 悬停列的柱子变墨色
+ *   keys        [string] 每根柱的身份（通常是桶 key）。和上一次完全相同时走「形变」：柱高、折线、圆点从旧值弹到新值；
+ *               否则（第一次画、换粒度、换区间）走「长出」：柱子从底部错开长出、折线从左往右画、圆点依次弹出
  *   tip(i)      → { title, rows, foot, notes }
  */
 function domChart(el, cfg) {
@@ -280,33 +396,49 @@ function domChart(el, cfg) {
   const yTicks = cfg.yTicks || [];
   const hTicks = cfg.hTicks || [];
   const laneBar = cfg.lanes ? LANE_BAR : 100, laneFrom = cfg.lanes ? LANE_LINE_FROM : 0, laneLine = cfg.lanes ? LANE_LINE : 100;
+  const keys = cfg.keys || null;
+  const prev = el.$dc || null;
+  const morph = !REDUCED_MOTION && !!(keys && prev && prev.keys && prev.keys.length === keys.length && prev.keys.every((k, i) => k === keys[i]));
+  const grow = !REDUCED_MOTION && !morph;
+  const stagger = Math.min(22, 360 / Math.max(1, n));
+  const heights = [];
   const cols = bars.map((b, i) => {
     const segs = (b.segs || []).filter((s) => Number(s.v) > 0);
     const h = Math.max(b.minH || 0, (totals[i] / max) * laneBar);
+    heights.push(Math.max(b.dashed ? 4 : 0, h));
+    // 形变：先按旧高度画出来，插入后再改成新高度，靠 CSS transition 弹过去；长出：CSS animation 从 0 长到自身高度
+    const shownH = morph ? prev.heights[i] : heights[i];
+    const motion = grow ? "animation-delay:" + Math.round(i * stagger) + "ms;" : "";
     const wStyle = b.wPct ? "width:" + b.wPct + "%;min-width:4px;max-width:" + (b.wMax || 48) + "px;" : "width:" + (b.w || 12) + "px;";
     const inner = segs.length > 1
       ? segs.slice().reverse().map((s) => '<i style="flex:' + Number(s.v) + " 1 0;background:" + s.color + '"></i>').join("")
       : "";
     const bg = segs.length === 1 ? segs[0].color : (b.bg || "transparent");
     return '<div class="dc-col" data-tip="' + i + '">' +
-      (b.label !== undefined && b.label !== "" ? '<span class="dc-label' + (b.labelClass ? " " + b.labelClass : "") + '">' + escHtml(b.label) + "</span>" : "") +
-      '<div class="dc-bar' + (inner ? " stacked" : "") + (b.dashed ? " dashed" : "") + '" style="' + wStyle + "height:" + Math.max(b.dashed ? 4 : 0, h).toFixed(2) + "%;" + (inner || b.dashed ? "" : "background:" + bg) + '">' + (b.dashed ? "" : inner) + "</div></div>";
+      (b.label !== undefined && b.label !== "" ? '<span class="dc-label' + (b.labelClass ? " " + b.labelClass : "") + '"' + (grow ? ' style="animation-delay:' + Math.round(200 + i * stagger) + 'ms"' : "") + ">" + escHtml(b.label) + "</span>" : "") +
+      '<div class="dc-bar' + (inner ? " stacked" : "") + (b.dashed ? " dashed" : "") + '" style="' + wStyle + motion + "height:" + shownH.toFixed(2) + "%;" + (inner || b.dashed ? "" : "background:" + bg) + '">' + (b.dashed ? "" : inner) + "</div></div>";
   }).join("");
 
-  let path = "", dots = "";
+  let path = "", dots = "", pts = [], dotY = [];
   if (line && n) {
-    const pts = [];
     const yOf = (v) => laneFrom + (Number(v) / lineMax) * laneLine;   // 0–100，自底向上
     line.values.forEach((v, i) => { if (v !== null && v !== undefined && isFinite(v)) pts.push([((i + 0.5) / n) * 1000, H - (yOf(v) / 100) * H]); });
-    path = smoothPath(pts);
-    if (line.dots) dots = '<div class="dc-dots">' + line.values.map((v) => "<b>" + (v !== null && v !== undefined && isFinite(v) ? '<i style="bottom:' + yOf(v).toFixed(2) + "%;background:" + (line.color || INK) + '"></i>' : "") + "</b>").join("") + "</div>";
+    dotY = line.values.map((v) => (v !== null && v !== undefined && isFinite(v) ? yOf(v) : null));
+    // 形变且点数没变：先画旧折线，插入后逐帧补间到新折线
+    const lineMorph = morph && prev.pts && prev.pts.length === pts.length && prev.H === H;
+    path = smoothPath(lineMorph ? prev.pts : pts);
+    if (line.dots) dots = '<div class="dc-dots">' + dotY.map((y, i) => {
+      if (y === null) return "<b></b>";
+      const shown = morph && prev.dotY && prev.dotY[i] !== null && prev.dotY[i] !== undefined ? prev.dotY[i] : y;
+      return '<b><i style="bottom:' + shown.toFixed(2) + "%;background:" + (line.color || INK) + (grow ? ";animation-delay:" + Math.round(140 + (620 * (i + 0.5)) / n) + "ms" : "") + '"></i></b>';
+    }).join("") + "</div>";
   }
 
   const xAbs = cfg.xLabels ? '<div class="dc-x abs">' + cfg.xLabels.map((x) => '<span style="left:' + x.left + '%">' + escHtml(x.label) + "</span>").join("") + "</div>" : "";
   const xPer = cfg.xPerBar ? '<div class="dc-x per">' + cfg.xPerBar.map((x) => "<span" + (x === "今天" ? ' class="today"' : "") + ">" + escHtml(x) + "</span>").join("") + "</div>" : "";
 
   el.innerHTML =
-    '<div class="dc' + (cfg.hoverInk ? " hover-ink" : "") + '">' +
+    '<div class="dc' + (cfg.hoverInk ? " hover-ink" : "") + (grow ? " grow" : "") + '">' +
     (yTicks.length ? '<div class="dc-y" style="height:' + H + 'px">' + yTicks.map((t) => '<span style="bottom:' + t.pos + '%">' + escHtml(t.label) + "</span>").join("") + "</div>" : "") +
     '<div class="dc-body"><div class="dc-plot" style="height:' + H + 'px">' +
     yTicks.map((t) => '<b class="dc-grid" style="bottom:' + t.pos + '%"></b>').join("") +
@@ -319,6 +451,24 @@ function domChart(el, cfg) {
     "</div>" + xAbs + xPer + "</div>" +
     (hTicks.length ? '<div class="dc-h" style="height:' + H + 'px">' + hTicks.map((t) => '<span style="bottom:' + t.pos + '%">' + escHtml(t.label) + "</span>").join("") + "</div>" : "") +
     "</div>";
+
+  // 形变：插入后的下一帧把柱高、圆点改成新值（CSS transition 弹过去），折线逐帧补间
+  if (morph) {
+    const barEls = el.querySelectorAll(".dc-bar");
+    const dotEls = el.querySelectorAll(".dc-dots i");
+    void el.offsetHeight;   // 先让旧高度生效，transition 才有起点
+    barEls.forEach((b, i) => { b.style.height = heights[i].toFixed(2) + "%"; });
+    let di = 0;
+    dotY.forEach((y) => { if (y === null) return; const d = dotEls[di++]; if (d) d.style.bottom = y.toFixed(2) + "%"; });
+    const p = el.querySelector(".dc-line path");
+    if (p && prev.pts && prev.pts.length === pts.length && prev.H === H) {
+      const from = prev.pts;
+      tween(el, "$lineTween", 520, SPRING_SNAP, (k) => {
+        p.setAttribute("d", smoothPath(pts.map((q, i) => [q[0], from[i][1] + (q[1] - from[i][1]) * k])));
+      });
+    }
+  }
+  el.$dc = { keys, heights, pts, dotY, H };
 
   // 逐柱横轴标签太密（窄屏 / 柱多）时隔几根标一个，从最后一根往前数，保证最新的那根有标签
   if (cfg.xPerBar && n) {
@@ -592,6 +742,7 @@ function renderCharts(s) {
   LAST_STATS = s;
   const fn = PANEL_RENDER[state.tab];
   if (fn) fn(s);
+  staggerIn(document.querySelector(".panel.active"));
 }
 
 // 涨跌文字：计数看相对变化（%），比率看差值（pp）
@@ -845,6 +996,8 @@ function renderCards(s, previous) {
     '<div class="card-meta">' + (c.pill || "") + '<span class="card-sub">' + c.sub + "</span></div>" +
     c.spark + "</div>"
   ).join("");
+  rollCards($("cards"));
+  staggerIn($("cards"));
 }
 
 // ============== 日桶 → 任意粒度 ==============
@@ -920,7 +1073,7 @@ function drawReceptChart(s) {
   const maxH = niceMax(Math.max(...buckets.map((b) => b.dur / 3600), 0) * 1.15);
   const band = currentBand(buckets, g);
   domChart($("heroRecept"), {
-    height: 340, max: maxS, lanes: true, hoverInk: true,
+    height: 340, max: maxS, lanes: true, hoverInk: true, keys: buckets.map((b) => g + ":" + b.key),
     bars: buckets.map((b) => ({ segs: [{ v: b.total, color: BAR_DARK }], ...barW(g), dashed: isOngoing(b) })),
     line: { values: buckets.map((b) => b.dur / 3600), color: INK, width: 2.5, max: maxH, dots: n <= 31 },
     yTicks: [0, 0.5, 1].map((p) => ({ pos: p * LANE_BAR, label: fmtNum(Math.round(maxS * p)) })),
@@ -936,8 +1089,7 @@ function drawReceptChart(s) {
   const lg = $("heroLegendCur");
   if (lg) lg.textContent = band ? band.label : "当前周期";
   const total = buckets.reduce((a, b) => a + b.total, 0);
-  const el = $("heroTotal");
-  if (el) el.textContent = fmtNum(total);
+  rollTo($("heroTotal"), fmtNum(total));
   const cap = $("heroCaption");
   if (cap) {
     const from = state.resolvedFrom || (buckets[0] && buckets[0].first) || "";
@@ -951,9 +1103,8 @@ function drawOverviewUniq(s) {
   const by = (s.uniq && s.uniq.week) || {};
   const keys = Object.keys(by).sort();
   const all = s.uniqAll || { users: 0, orgs: 0 };
-  const u = $("ovUniqUsers"), o = $("ovUniqOrgs");
-  if (u) u.textContent = fmtNum(all.users);
-  if (o) o.textContent = fmtNum(all.orgs);
+  rollTo($("ovUniqUsers"), fmtNum(all.users));
+  rollTo($("ovUniqOrgs"), fmtNum(all.orgs));
   const box = $("ovUniqBars");
   if (!box) return;
   const max = Math.max(...keys.map((k) => by[k].users), 1);
@@ -996,7 +1147,7 @@ function drawVolumeDist(s) {
   const showLabels = buckets.length <= 20;
   const band = currentBand(buckets, g);
   domChart($("volDist"), {
-    height: 250, max: maxS, band,
+    height: 250, max: maxS, band, keys: buckets.map((b) => g + ":" + b.key),
     bars: buckets.map((b) => {
       const dev = b.dev || {};
       const pc = dev.pc || 0, mob = dev.mobile || 0, unk = Math.max(0, b.total - pc - mob);
@@ -1012,7 +1163,7 @@ function drawVolumeDist(s) {
     },
   });
   const t = $("volDistTotal");
-  if (t) t.textContent = fmtNum(buckets.reduce((a, b) => a + b.total, 0));
+  rollTo(t, fmtNum(buckets.reduce((a, b) => a + b.total, 0)));
 }
 
 // 接待人数与企业数（接待量页）：并列双柱 + 粒度切换；去重数只能来自服务端 s.uniq[粒度]，客户端不能从日粒度累加
@@ -1021,9 +1172,8 @@ function drawVolumeUniq(s) {
   const by = (s.uniq && s.uniq[g]) || {};
   const keys = Object.keys(by).sort();
   const all = s.uniqAll || { users: 0, orgs: 0 };
-  const u = $("volUniqUsers"), o = $("volUniqOrgs");
-  if (u) u.textContent = fmtNum(all.users);
-  if (o) o.textContent = fmtNum(all.orgs);
+  rollTo($("volUniqUsers"), fmtNum(all.users));
+  rollTo($("volUniqOrgs"), fmtNum(all.orgs));
   const box = $("volUniq");
   if (!box) return;
   const { buckets } = rollupDays(s.byDay, g);
@@ -1329,6 +1479,7 @@ function renderServiceCards(s, previous) {
     '<div class="card"><div class="card-label">' + c.label + '</div><div class="card-value">' + escHtml(c.value) + (c.unit ? "<small>" + c.unit + "</small>" : "") + "</div>" +
     '<div class="card-meta">' + (c.pill || "") + '<span class="card-sub">' + escHtml(c.sub) + "</span></div></div>"
   ).join("");
+  rollCards(box);
 }
 
 // 每日人工接待时长与转人工次数：灰色胶囊柱（小时，柱顶标数）+ 黑线转人工次数（右轴）；连续无人工接待的日期合并成一格「周末」
@@ -1776,7 +1927,6 @@ async function loadLoop() {
     }
     state.loop = json.loop;
     state.loopLoaded = true;
-    renderLoop(json.loop);
   } catch (err) {
     $("hintLoopWeek").textContent = "加载失败：" + err.message;
   }
@@ -1801,6 +1951,7 @@ function renderLoop(loop) {
         (hero.pending ? '<span class="dl flat">下限 · 只会上升</span>' : "") + "</div>" +
         "<span>是 " + hero.yes + " · 否 " + hero.no + " · 待定 " + hero.pending + "，适用 " + hero.applicable + " 场 · 全部周整体 " + rateText(o.rate) + "%</span>"
       : "<h3>闭环率</h3><span>暂无适用会话</span>";
+    rollCards(kpi, ".rate b");
   }
 
   // 每周趋势：是 / 否 / 待定 三段胶囊（段间 2px），柱顶为闭环率；待定超 30% 的周加虚线框、读数变浅
@@ -1937,7 +2088,7 @@ async function fetchWeekly() {
     // 默认本周：weeks 里只有有数据的周，所以最后一项就是本周；
     // 本周还没数据时最后一项自然是上周
     sel.value = state.weeks[state.weeks.length - 1].week;
-    sel.addEventListener("change", () => renderWeekly(sel.value));
+    sel.addEventListener("change", () => swapIn($("panel-weekly"), () => renderWeekly(sel.value)));
     renderWeekly(sel.value);
   } catch (err) {
     $("wkHint").textContent = "周报加载失败：" + err.message;
@@ -2309,10 +2460,30 @@ function showTab(name) {
   $("pageDesc").textContent = btn ? btn.dataset.desc || "" : "";
   document.title = label + " · hive 服务看板";
   hideTip();
-  if (tab === "weekly") loadWeekly().then(() => { if (state.weeklyLoaded && $("wkSelect").value) renderWeekly($("wkSelect").value); });
-  else if (tab === "loop") loadLoop();
-  // 隐藏面板里的 canvas 量不出尺寸：切到哪页就在下一帧画哪页
-  else if (state.stats) requestAnimationFrame(() => renderCharts(state.stats));
+  if (tab === "weekly") {
+    const panel = $("panel-weekly");
+    if (!state.weeklyLoaded) panel.classList.add("pending");
+    loadWeekly().then(() => {
+      if (state.tab !== "weekly") return;
+      if (state.weeklyLoaded && $("wkSelect").value) renderWeekly($("wkSelect").value);
+      revealIn(panel);
+    });
+  } else if (tab === "loop") {
+    const panel = $("panel-loop");
+    if (!state.loopLoaded) panel.classList.add("pending");
+    loadLoop().then(() => {
+      if (state.tab !== "loop") return;
+      if (state.loopLoaded && state.loop) renderLoop(state.loop);   // 已加载过也重画一次，让柱子重新长出
+      revealIn(panel);
+    });
+  }
+  // 隐藏面板里的 canvas 量不出尺寸：切到哪页就在下一帧画哪页。
+  // 切页时让这一页的柱线图都重新「长出」一次（清掉形变用的上一帧记录），和其他 DOM 小图的入场保持一致
+  else if (state.stats) {
+    const panel = $("panel-" + tab);
+    if (panel) panel.querySelectorAll(".dc").forEach((d) => { if (d.parentElement) d.parentElement.$dc = null; });
+    requestAnimationFrame(() => renderCharts(state.stats));
+  }
 }
 
 function initTabs() {

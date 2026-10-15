@@ -1,4 +1,4 @@
-/* 仪表盘样式包 v2（黑白灰 + 品牌绿、胶囊柱、深色悬停卡）
+/* 仪表盘样式包 v2.1（黑白灰 + 品牌绿、胶囊柱、深色悬停卡）
    从 hive 服务看板提炼，去掉业务专属部分。配套 dashboard-kit.js。改之前读 DESIGN-portable.md。 */
 
 :root {
@@ -18,6 +18,9 @@
   --hover: #E9E8EC;       /* 悬停列 */
   --radius: 22px;
   --font: "Urbanist", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* 动效（2026-10-15）：阻尼弹簧闭式解采样成 linear()。soft ≈ ζ0.72 回弹 3.8%（长出、悬停卡跟随），snap ≈ ζ0.86 回弹 0.5%（数据形变） */
+  --spring-soft: linear(0, 0.024, 0.085, 0.171, 0.27, 0.374, 0.477, 0.574, 0.663, 0.742, 0.811, 0.868, 0.916, 0.953, 0.982, 1.004, 1.019, 1.03, 1.035, 1.038, 1.038, 1.037, 1.034, 1.03, 1.026, 1.022, 1.018, 1.015, 1.012, 1.009, 1.006, 1.004, 1.003, 1.001, 1, 1, 1);
+  --spring-snap: linear(0, 0.022, 0.079, 0.156, 0.244, 0.335, 0.425, 0.511, 0.589, 0.659, 0.722, 0.775, 0.821, 0.86, 0.892, 0.919, 0.94, 0.957, 0.97, 0.98, 0.988, 0.994, 0.998, 1.001, 1.003, 1.004, 1.005, 1.005, 1.005, 1.005, 1.004, 1.004, 1.003, 1.003, 1.003, 1.002, 1);
 }
 
 * { box-sizing: border-box; }
@@ -239,6 +242,9 @@ button, select, input { font: inherit; }
 
 .chart-glass-tooltip { position: fixed; z-index: 80; width: 220px; padding: 12px 14px; border-radius: 14px; color: #fff; background: rgba(11, 11, 12, .94); box-shadow: 0 14px 34px rgba(11, 11, 12, .28); opacity: 0; visibility: hidden; pointer-events: none; display: flex; flex-direction: column; gap: 8px; font-family: var(--font); }
 .chart-glass-tooltip.visible { opacity: 1; visibility: visible; }
+.chart-glass-tooltip { transform: translateY(4px); transition: opacity 100ms ease-in, transform 100ms ease-in, visibility 0s linear 100ms; }
+.chart-glass-tooltip.visible { transform: none; transition: left 300ms var(--spring-soft), top 200ms var(--spring-snap), opacity 140ms ease-out, transform 180ms var(--spring-snap), visibility 0s; }
+.chart-glass-tooltip.jump { transition: none !important; }
 .chart-glass-tooltip-title { font-size: 12px; color: #C9C8CD; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chart-glass-tooltip-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #E4E3E7; }
 .chart-glass-tooltip-row b { margin-left: auto; color: #fff; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -332,6 +338,48 @@ tr.hl, tr.hl:hover { background: var(--green-soft); }
   .seg { margin-left: 0; }
   .hero-right { align-items: flex-start; }
   .chart-card { padding: 18px 16px 16px; border-radius: 18px; }
+}
+
+/* ============ 动效（2026-10-15）：数据出现时从 0 长出 / 淡入，数据变化时弹过去；只动 height / width / opacity / transform ============ */
+
+@keyframes dcGrow { from { height: 0; } }
+@keyframes dcGrowX { from { width: 0; } }
+@keyframes dcFade { from { opacity: 0; transform: translateY(4px); } }
+@keyframes dcFadeOnly { from { opacity: 0; } }
+@keyframes dcDraw { from { clip-path: inset(-20px 100% -20px 0); } to { clip-path: inset(-20px 0 -20px 0); } }
+@keyframes dcPop { from { opacity: 0; transform: scale(.3); } }
+@keyframes dcPanel { from { opacity: 0; transform: translateY(6px); } }
+@keyframes dcRise { from { opacity: 0; transform: translateY(10px); } }
+@keyframes dcBreathe { 0%, 100% { opacity: .35; } 50% { opacity: .55; } }
+
+/* 报告页：数据没到时区块半透明呼吸（不再空白）；切换统计周时旧内容先淡出 */
+.panel.pending > .report-block, .panel.pending > .chart-card, .panel.pending > .toc, .panel.pending > .grid > * { animation: dcBreathe 1.4s ease-in-out infinite !important; }
+.panel.swapping > .report-block, .panel.swapping > .chart-card, .panel.swapping > .grid > * { opacity: 0; transition: opacity 120ms ease-in; }
+
+/* 切页：面板淡入上浮 */
+.panel.active { animation: dcPanel 240ms ease-out both; }
+
+/* domChart：.grow = 第一次画 / 换粒度 / 换区间（柱子错开长出，延迟由 JS 按位置写在行内）；没有 .grow = 形变（高度弹过去） */
+.dc-bar { transition: height 460ms var(--spring-snap), background-color 140ms ease; }
+.dc.grow .dc-bar { animation: dcGrow 560ms var(--spring-soft) both; }
+.dc.grow .dc-label { animation: dcFade 320ms ease-out both; }
+.dc.grow .dc-line { animation: dcDraw 760ms cubic-bezier(.3, .7, .2, 1) 120ms both; }
+.dc.grow .dc-dots i { animation: dcPop 320ms var(--spring-soft) both; }
+.dc.grow .dc-x span { animation: dcFadeOnly 320ms ease-out 80ms both; }
+.dc-dots i { transition: bottom 460ms var(--spring-snap); }
+.dc-col::before, .pair-col::before, .rb-col::before { transition: background-color 140ms ease; }
+
+/* 其他 DOM 小图：插进来时从 0 长出 / 淡入；同组错开的延迟由 JS（staggerIn）写在行内 */
+.spark i, .col .bar, .col .seg-stack, .rb-col i, .busy-bars > i, .units i, .pair-col i, .pair-one i { animation: dcGrow 560ms var(--spring-soft) both; }
+/* 横向分段条（占比条）：从左往右擦出来 */
+@keyframes dcWipe { from { clip-path: inset(0 100% 0 0 round 999px); } to { clip-path: inset(0 0 0 0 round 999px); } }
+.stack { animation: dcWipe 620ms var(--spring-snap) both; }
+.track > i, .tr i, .cbar i b, .fill i { animation: dcGrowX 620ms var(--spring-soft) both; }
+.heat-row > i, .heat-table tbody td, .hm-row > * { animation: dcFadeOnly 360ms ease-out both; }
+.card-value { font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
 /* ============ 打印：只留当前页 ============ */

@@ -1,9 +1,9 @@
-# hive 服务看板 · 前端样式规范（v2，2026-10 改版）
+# hive 服务看板 · 前端样式规范（v2.1，2026-10 改版 + 2026-10-15 动效）
 
 本文是 `public/hive.css` 和 `public/hive.js` 里已有实现的提炼，**描述现状而非愿望**。
 改样式前读这里；改完若与本文冲突，要么改回来，要么连本文一起改。
 
-> 给别的仪表盘复用的通用版是 `DESIGN-portable.md`（v2，2026-10-13 更新）+ `portable/` 里的 `dashboard-kit.css / .js / demo.html`，
+> 给别的仪表盘复用的通用版是 `DESIGN-portable.md`（v2.1，2026-10-15 更新）+ `portable/` 里的 `dashboard-kit.css / .js / demo.html`，
 > 和本文同一套规则、去掉了 hive 专属内容。hive 页面以本文为准；规则有变时两份一起改。
 
 ## 信息架构
@@ -125,6 +125,19 @@ Urbanist 只自托管拉丁子集（`public/urbanist-latin.woff2`，约 28KB，S
   （SVG 面积 + 线，量纲不同不共轴）、100 根单位柱 `.units`（高度 62～100% 的固定伪随机，纯装饰）、
   入口媒介 / 转人工原因的横向排名条、情绪构成条（黑 / 灰 / 绿）。
 
+## 动效（v2.1，2026-10-15）
+
+规则和参数同通用版 `DESIGN-portable.md`「动效」一节（阻尼弹簧闭式解 → CSS `linear()`，`--spring-soft` / `--spring-snap`），hive 里的落点：
+
+- `domChart()`：总览「会话接待分布」和接待量页「按设备分布」传 `keys`（`粒度:桶 key`）——换粒度 / 换区间长出，只改维度筛选时形变；
+  其余 domChart（每日人工、会话时长）不传 `keys`，每次都长出。`showTab()` 切页时清掉本页的 `$dc`，让图重新长出。
+- 悬停卡 `placeTip()`：显示中走弹簧跟随，隐藏 → 出现先 `.jump`。
+- 数字滚动：总览 / 人工服务指标卡（`rollCards`）、`#heroTotal` `#volDistTotal` 接待人数 / 企业数（`rollTo`）、闭环率大数字（`rollCards(kpi, ".rate b")`）。
+- `renderCharts()` 末尾 `staggerIn(当前面板)`：迷你柱、排名条、热力格、媒介矩阵、闭环周柱等错开入场。
+- 周报 / 业务闭环：`showTab` 里数据没到先挂 `.pending`，到了 `revealIn(panel)`（区块依次上浮、表格逐行淡入）；
+  业务闭环加载过也每次重画一遍；切换统计周走 `swapIn()`（旧内容淡出 120ms 再入场）。
+- `prefers-reduced-motion` 时全部关闭。
+
 ## 布局
 
 - 分析页大图一张一张竖排（`.panel > .chart-card`），小卡用 `.grid`（三列）/ `.grid.two`（两列）/ `.flex-row`（原型的 flex-wrap）。
@@ -176,3 +189,5 @@ Urbanist 只自托管拉丁子集（`public/urbanist-latin.woff2`，约 28KB，S
 | 报告页还露出筛选栏 | 导航按钮缺 `data-kind="report"` |
 | 切页后图表空白或尺寸错 | 新面板没进 `PANEL_RENDER`，或在隐藏时画了图 |
 | 手机上找不到刷新 / 退出 | `.side-foot` 在 ≤900px 被隐藏了 |
+| 换粒度没有长出 / 改筛选整组重长 | `domChart` 的 `keys` 没传或每次都变 |
+| 周报 / 闭环先空白再蹦出来 | `showTab` 没挂 `.pending` 或没调 `revealIn` |

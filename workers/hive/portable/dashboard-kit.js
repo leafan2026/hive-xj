@@ -1,4 +1,4 @@
-// 仪表盘图表工具包 v2（配套 dashboard-kit.css）。从 hive 服务看板提炼，无任何第三方依赖，不用 Chart.js。
+// 仪表盘图表工具包 v2.1（配套 dashboard-kit.css）。v2.1 加入动效：弹簧长出 / 形变、悬停卡弹簧跟随、数字滚动、报告页入场。从 hive 服务看板提炼，无任何第三方依赖，不用 Chart.js。
 // 在页面里引入一次；所有柱线图用 domChart()，并列双柱用 pairChart()，悬停卡统一走 bindDomTip()。
 
 // ============== 颜色 ==============
@@ -21,6 +21,111 @@ function fmtNum(v) {   // 千分位，不缩写成 K；小数 < 10 保留 2 位�
   return n.toFixed(n < 10 ? 2 : 1);
 }
 function pct(n, d, digits) { return d ? ((n / d) * 100).toFixed(digits ?? 1) : "0"; }
+// ============== 动效（2026-10-15）：阻尼弹簧闭式解，不迭代、不用物理引擎 ==============
+// CSS 侧用 linear() 采样同一条弹簧（hive.css 的 --spring-soft / --spring-snap）；这里给 JS 补间（折线变形、数字滚动）用。
+// 系统开了「减少动态效果」时一律不动。
+const REDUCED_MOTION = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+// 归一化弹簧：t ∈ [0,1] → 位移比例；zeta 阻尼比，k 决定在 t=1 前衰减几个时间常数
+function springAt(t, zeta, k) {
+  if (t >= 1) return 1;
+  const w = k / zeta, wd = w * Math.sqrt(1 - zeta * zeta);
+  return 1 - Math.exp(-zeta * w * t) * (Math.cos(wd * t) + ((zeta * w) / wd) * Math.sin(wd * t));
+}
+const SPRING_SNAP = (t) => springAt(t, 0.86, 7);   // 回弹 0.5%：数据变化时的形变
+const EASE_OUT = (t) => 1 - Math.pow(1 - t, 3);
+// 通用补间：每帧回调 f(进度 0..1)，返回取消函数；同一个对象上新补间会取消旧的
+function tween(owner, key, ms, ease, f) {
+  if (owner[key]) owner[key]();
+  if (REDUCED_MOTION) { f(1); return; }
+  let raf = 0, alive = true;
+  const t0 = performance.now();
+  const step = (now) => {
+    if (!alive) return;
+    const t = Math.min(1, (now - t0) / ms);
+    f(ease(t));
+    if (t < 1) raf = requestAnimationFrame(step); else owner[key] = null;
+  };
+  raf = requestAnimationFrame(step);
+  owner[key] = () => { alive = false; cancelAnimationFrame(raf); };
+}
+
+// 数字滚动：el 的文本从上一次的值滚到 text（千分位、小数位跟随 text）；不是纯数字就直接换
+function rollTo(el, text) {
+  if (!el) return;
+  const str = String(text);
+  const m = str.match(/^(-?)([\d,]+)(\.\d+)?$/);
+  if (!m || REDUCED_MOTION) { el.textContent = str; el.$val = m ? Number(str.replace(/,/g, "")) : null; return; }
+  const to = Number(str.replace(/,/g, ""));
+  const dec = m[3] ? m[3].length - 1 : 0;
+  const comma = m[2].includes(",") || to >= 1000;
+  const from = typeof el.$val === "number" ? el.$val : 0;
+  el.$val = to;
+  if (from === to) { el.textContent = str; return; }
+  const fmt = (v) => { const fixed = v.toFixed(dec); if (!comma) return fixed; const [i, d] = fixed.split("."); return Number(i).toLocaleString("en-US") + (d ? "." + d : ""); };
+  tween(el, "$roll", 620, EASE_OUT, (k) => { el.textContent = k >= 1 ? str : fmt(from + (to - from) * k); });
+}
+// 容器里所有 .card-value（或 sel 指定的元素）的第一个文本节点做数字滚动（innerHTML 刚换过，上一次的值存在容器上按序号对齐）
+function rollCards(box, sel) {
+  if (!box) return;
+  const prev = box.$vals || [];
+  const next = [];
+  box.querySelectorAll(sel || ".card-value").forEach((v, i) => {
+    const node = v.firstChild;
+    if (!node || node.nodeType !== 3) { next.push(null); return; }
+    const span = document.createElement("span");
+    span.$val = prev[i];
+    v.replaceChild(span, node);
+    rollTo(span, node.textContent);
+    next.push(span.$val);
+  });
+  box.$vals = next;
+}
+
+// 刚渲染出来的 DOM 小图（迷你柱、排名条、热力格……）按位置错开起跳：同一个父元素下的同类元素各自排队，总时长封顶 360ms
+const STAGGER_SEL = ".spark i, .col .bar, .col .seg-stack, .rb-col i, .busy-bars > i, .units i, .pair-col i, .pair-one i, .track > i, .tr i, .cbar i b, .heat-row > i, .heat-table td, .hm-row > *, .fill i";
+function staggerIn(root) {
+  if (!root || REDUCED_MOTION) return;
+  const groups = new Map();
+  root.querySelectorAll(STAGGER_SEL).forEach((el) => {
+    const p = el.parentElement;
+    if (!groups.has(p)) groups.set(p, []);
+    groups.get(p).push(el);
+  });
+  for (const list of groups.values()) {
+    const step = Math.min(22, 360 / Math.max(1, list.length));
+    list.forEach((el, i) => { el.style.animationDelay = Math.round(i * step) + "ms"; });
+  }
+}
+
+// 报告页（周报 / 业务闭环）的入场：区块按顺序错开上浮淡入，表格逐行淡入，里面的条形照常错开长出。
+// 每次进入页面、切换统计周都会重放；数据还没到时面板挂 .pending（区块半透明呼吸），到了再统一入场，不再「先空白后突然蹦出来」
+const REVEAL_SEL = ":scope > .toc, :scope > .report-block, :scope > .grid > *, :scope > .chart-card, :scope > .group-head";
+function revealIn(root) {
+  if (!root) return;
+  root.classList.remove("pending");
+  if (REDUCED_MOTION) return;
+  const blocks = [...root.querySelectorAll(REVEAL_SEL)].filter((el) => !el.hidden);
+  const rows = [];
+  root.querySelectorAll("tbody").forEach((tb) => {
+    const list = [...tb.rows];
+    const step = Math.min(18, 300 / Math.max(1, list.length));
+    list.forEach((r, i) => rows.push([r, Math.round(160 + i * step)]));
+  });
+  // 先统一清掉旧动画、只触发一次重排，再统一挂上，保证每次都能重放
+  blocks.forEach((el) => { el.style.animation = "none"; });
+  rows.forEach(([r]) => { r.style.animation = "none"; });
+  void root.offsetHeight;
+  blocks.forEach((el, i) => { el.style.animation = "dcRise 460ms var(--spring-snap) " + Math.min(i * 50, 360) + "ms both"; });
+  rows.forEach(([r, d]) => { r.style.animation = "dcFadeOnly 300ms ease-out " + d + "ms both"; });
+  staggerIn(root);
+}
+// 切换统计周：旧内容 120ms 淡出，换完再入场
+function swapIn(root, render) {
+  if (!root || REDUCED_MOTION) { render(); revealIn(root); return; }
+  root.classList.add("swapping");
+  setTimeout(() => { render(); root.classList.remove("swapping"); revealIn(root); }, 120);
+}
+
 function niceMax(v) {   // 1 / 2 / 2.5 / 5 / 10 × 10^n 的整刻度上限
   if (!(v > 0)) return 1;
   const p = Math.pow(10, Math.floor(Math.log10(v)));
@@ -68,15 +173,17 @@ function paintTip(title, rows, foot, notes) {
   (notes || []).filter(Boolean).forEach((text) => { const n = document.createElement("div"); n.className = "chart-glass-tooltip-note"; n.textContent = text; el.appendChild(n); });
   return el;
 }
-function placeTip(el, x, y) {   // 锚在列旁边；越过视口中线翻到左侧
-  el.classList.remove("visible");
-  const box = el.getBoundingClientRect();
-  let left = x > window.innerWidth / 2 ? x - box.width - 14 : x + 14;
-  left = Math.min(Math.max(12, left), window.innerWidth - box.width - 12);
-  let top = y - box.height / 2;
-  top = Math.min(Math.max(12, top), window.innerHeight - box.height - 12);
-  el.style.left = left + "px"; el.style.top = top + "px";
-  el.classList.add("visible");
+// 锚在列旁边；越过视口中线翻到左侧。显示中换位置走弹簧过渡（CSS）；从隐藏到出现先瞬移到位（.jump）再淡入，不会从上次的位置飞过来
+function placeTip(el, x, y) {
+  const w = el.offsetWidth, h = el.offsetHeight;
+  let left = x > window.innerWidth / 2 ? x - w - 14 : x + 14;
+  left = Math.min(Math.max(12, left), window.innerWidth - w - 12);
+  let top = y - h / 2;
+  top = Math.min(Math.max(12, top), window.innerHeight - h - 12);
+  if (!el.classList.contains("visible")) {
+    el.classList.add("jump"); el.style.left = left + "px"; el.style.top = top + "px";
+    void el.offsetWidth; el.classList.remove("jump"); el.classList.add("visible");
+  } else { el.style.left = left + "px"; el.style.top = top + "px"; }
 }
 function hideTip() { const el = document.getElementById("glass-tooltip"); if (el) el.classList.remove("visible"); }
 // 容器里带 data-tip="i" 的元素悬停时调 describe(i) → { title, rows, foot, notes }；返回 null 则不显示
@@ -136,6 +243,8 @@ const LANE_BAR = 58, LANE_LINE_FROM = 68, LANE_LINE = 32;
  *   band      { from, to, label }  当前周期：这几根柱背后铺一块绿底、左上角写「本周」
  *   capLine   { pos, label }  警戒线
  *   lanes     true = 双泳道；hoverInk true = 悬停列的柱子变墨色
+ *   keys      [string] 每根柱的身份（如 "week:2026W41"）。和上一次完全相同 → 形变（柱高 / 折线 / 圆点从旧值弹到新值）；
+ *             否则（第一次画、换粒度、换区间）→ 长出（柱子从底部错开长出、折线从左往右画、圆点依次弹出）
  *   tip(i)    → { title, rows, foot, notes }
  */
 function domChart(el, cfg) {
@@ -149,31 +258,45 @@ function domChart(el, cfg) {
   const lineMax = line ? (line.max || niceMax(Math.max(...line.values.map((v) => Number(v) || 0), 0) * 1.15)) : 1;
   const yTicks = cfg.yTicks || [], hTicks = cfg.hTicks || [];
   const laneBar = cfg.lanes ? LANE_BAR : 100, laneFrom = cfg.lanes ? LANE_LINE_FROM : 0, laneLine = cfg.lanes ? LANE_LINE : 100;
+  const keys = cfg.keys || null;
+  const prev = el.$dc || null;
+  const morph = !REDUCED_MOTION && !!(keys && prev && prev.keys && prev.keys.length === keys.length && prev.keys.every((k, i) => k === keys[i]));
+  const grow = !REDUCED_MOTION && !morph;
+  const stagger = Math.min(22, 360 / Math.max(1, n));
+  const heights = [];
 
   const cols = bars.map((b, i) => {
     const segs = (b.segs || []).filter((s) => Number(s.v) > 0);
     const h = Math.max(b.minH || 0, (totals[i] / max) * laneBar);
+    heights.push(Math.max(b.dashed ? 4 : 0, h));
+    const shownH = morph ? prev.heights[i] : heights[i];
+    const motion = grow ? "animation-delay:" + Math.round(i * stagger) + "ms;" : "";
     const wStyle = b.wPct ? "width:" + b.wPct + "%;min-width:4px;max-width:" + (b.wMax || 48) + "px;" : "width:" + (b.w || 12) + "px;";
     const inner = segs.length > 1 ? segs.slice().reverse().map((s) => '<i style="flex:' + Number(s.v) + " 1 0;background:" + s.color + '"></i>').join("") : "";
     const bg = segs.length === 1 ? segs[0].color : (b.bg || "transparent");
     return '<div class="dc-col" data-tip="' + i + '">' +
-      (b.label !== undefined && b.label !== "" ? '<span class="dc-label' + (b.labelClass ? " " + b.labelClass : "") + '">' + escHtml(b.label) + "</span>" : "") +
-      '<div class="dc-bar' + (inner ? " stacked" : "") + (b.dashed ? " dashed" : "") + '" style="' + wStyle + "height:" + Math.max(b.dashed ? 4 : 0, h).toFixed(2) + "%;" + (inner || b.dashed ? "" : "background:" + bg) + '">' + (b.dashed ? "" : inner) + "</div></div>";
+      (b.label !== undefined && b.label !== "" ? '<span class="dc-label' + (b.labelClass ? " " + b.labelClass : "") + '"' + (grow ? ' style="animation-delay:' + Math.round(200 + i * stagger) + 'ms"' : "") + ">" + escHtml(b.label) + "</span>" : "") +
+      '<div class="dc-bar' + (inner ? " stacked" : "") + (b.dashed ? " dashed" : "") + '" style="' + wStyle + motion + "height:" + shownH.toFixed(2) + "%;" + (inner || b.dashed ? "" : "background:" + bg) + '">' + (b.dashed ? "" : inner) + "</div></div>";
   }).join("");
 
-  let path = "", dots = "";
+  let path = "", dots = "", pts = [], dotY = [];
   if (line && n) {
-    const pts = [];
     const yOf = (v) => laneFrom + (Number(v) / lineMax) * laneLine;
     line.values.forEach((v, i) => { if (v !== null && v !== undefined && isFinite(v)) pts.push([((i + 0.5) / n) * 1000, H - (yOf(v) / 100) * H]); });
-    path = smoothPath(pts);
-    if (line.dots) dots = '<div class="dc-dots">' + line.values.map((v) => "<b>" + (v !== null && v !== undefined && isFinite(v) ? '<i style="bottom:' + yOf(v).toFixed(2) + "%;background:" + (line.color || INK) + '"></i>' : "") + "</b>").join("") + "</div>";
+    dotY = line.values.map((v) => (v !== null && v !== undefined && isFinite(v) ? yOf(v) : null));
+    const lineMorph = morph && prev.pts && prev.pts.length === pts.length && prev.H === H;
+    path = smoothPath(lineMorph ? prev.pts : pts);
+    if (line.dots) dots = '<div class="dc-dots">' + dotY.map((y, i) => {
+      if (y === null) return "<b></b>";
+      const shown = morph && prev.dotY && prev.dotY[i] !== null && prev.dotY[i] !== undefined ? prev.dotY[i] : y;
+      return '<b><i style="bottom:' + shown.toFixed(2) + "%;background:" + (line.color || INK) + (grow ? ";animation-delay:" + Math.round(140 + (620 * (i + 0.5)) / n) + "ms" : "") + '"></i></b>';
+    }).join("") + "</div>";
   }
   const xAbs = cfg.xLabels ? '<div class="dc-x abs">' + cfg.xLabels.map((x) => '<span style="left:' + x.left + '%">' + escHtml(x.label) + "</span>").join("") + "</div>" : "";
   const xPer = cfg.xPerBar ? '<div class="dc-x per">' + cfg.xPerBar.map((x) => "<span" + (x === "今天" ? ' class="today"' : "") + ">" + escHtml(x) + "</span>").join("") + "</div>" : "";
 
   el.innerHTML =
-    '<div class="dc' + (cfg.hoverInk ? " hover-ink" : "") + '">' +
+    '<div class="dc' + (cfg.hoverInk ? " hover-ink" : "") + (grow ? " grow" : "") + '">' +
     (yTicks.length ? '<div class="dc-y" style="height:' + H + 'px">' + yTicks.map((t) => '<span style="bottom:' + t.pos + '%">' + escHtml(t.label) + "</span>").join("") + "</div>" : "") +
     '<div class="dc-body"><div class="dc-plot" style="height:' + H + 'px">' +
     yTicks.map((t) => '<b class="dc-grid" style="bottom:' + t.pos + '%"></b>').join("") +
@@ -186,6 +309,21 @@ function domChart(el, cfg) {
     "</div>" + xAbs + xPer + "</div>" +
     (hTicks.length ? '<div class="dc-h" style="height:' + H + 'px">' + hTicks.map((t) => '<span style="bottom:' + t.pos + '%">' + escHtml(t.label) + "</span>").join("") + "</div>" : "") +
     "</div>";
+
+  // 形变：插入后把柱高、圆点改成新值（CSS transition 弹过去），折线逐帧补间
+  if (morph) {
+    const barEls = el.querySelectorAll(".dc-bar"), dotEls = el.querySelectorAll(".dc-dots i");
+    void el.offsetHeight;
+    barEls.forEach((b, i) => { b.style.height = heights[i].toFixed(2) + "%"; });
+    let di = 0;
+    dotY.forEach((y) => { if (y === null) return; const d = dotEls[di++]; if (d) d.style.bottom = y.toFixed(2) + "%"; });
+    const p = el.querySelector(".dc-line path");
+    if (p && prev.pts && prev.pts.length === pts.length && prev.H === H) {
+      const from = prev.pts;
+      tween(el, "$lineTween", 520, SPRING_SNAP, (k) => { p.setAttribute("d", smoothPath(pts.map((q, i) => [q[0], from[i][1] + (q[1] - from[i][1]) * k]))); });
+    }
+  }
+  el.$dc = { keys, heights, pts, dotY, H };
 
   thinPerBarLabels(el, n);
   if (cfg.tip) {

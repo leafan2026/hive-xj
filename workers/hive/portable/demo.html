@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>仪表盘样式包 v2 · 示例</title>
+<title>仪表盘样式包 v2.1 · 示例</title>
 <link rel="stylesheet" href="dashboard-kit.css">
 </head>
 <body>
@@ -145,15 +145,15 @@ function drawHero() {
   const maxH = niceMax(Math.max(...buckets.map((b) => b.dur / 3600), 0) * 1.15);
   const band = currentBand(buckets, g);
   domChart($("heroChart"), {
-    height: 340, max: maxS, lanes: true, hoverInk: true, band,
+    height: 340, max: maxS, lanes: true, hoverInk: true, band, keys: buckets.map((b) => g + ':' + b.key),
     bars: buckets.map((b) => ({ segs: [{ v: b.total, color: BAR_DARK }], ...barW(g), dashed: isOngoing(b) })),
     line: { values: buckets.map((b) => b.dur / 3600), color: INK, width: 2.5, max: maxH, dots: n <= 31 },
     yTicks: [0, 0.5, 1].map((p) => ({ pos: p * LANE_BAR, label: fmtNum(Math.round(maxS * p)) })),
     hTicks: [0, 0.5, 1].map((p) => ({ pos: LANE_LINE_FROM + p * LANE_LINE, label: (maxH * p).toFixed(maxH * p < 10 && p ? 1 : 0) + "h" })),
     ...axisFor(buckets, g),
-    tip: (i) => { const b = buckets[i], p = buckets[i - 1]; return b && { title: bucketTitle(b, g), rows: [...deviceRows(b), { name: "人工接待时长", value: (b.dur / 3600).toFixed(1) + " 小时", color: INK, line: true }], foot: { name: "会话量", value: fmtNum(b.total), delta: p ? changeText(b.total, p.total) : "" }, notes: [isOngoing(b) ? "还没过完，读数还会往上走" : ""] }; },
+    tip: (i) => { const b = buckets[i], p = buckets[i - 1]; return b && { title: bucketTitle(b, g), rows: [...deviceRows(b), { name: "人工接待时长", value: (b.dur / 3600).toFixed(1) + " 小时", color: "#FFFFFF", line: true }], foot: { name: "会话量", value: fmtNum(b.total), delta: p ? changeText(b.total, p.total) : "" }, notes: [isOngoing(b) ? "还没过完，读数还会往上走" : ""] }; },
   });
-  $("heroTotal").textContent = fmtNum(buckets.reduce((a, b) => a + b.total, 0));
+  rollTo($("heroTotal"), fmtNum(buckets.reduce((a, b) => a + b.total, 0)));
   $("heroCaption").textContent = "会话 · " + buckets[0].first.slice(5) + " 至 " + buckets[n - 1].last.slice(5) + " · 按" + GRAIN_LIST.find((x) => x[0] === g)[1] + "聚合，悬停柱子看明细";
   $("heroBand").textContent = band ? band.label : "";
 }
@@ -167,7 +167,7 @@ function drawDist() {
   const { buckets } = rollupDays(byDay, g);
   const maxS = niceMax(Math.max(...buckets.map((b) => b.total), 0) * 1.12);
   domChart($("distChart"), {
-    height: 230, max: maxS, band: currentBand(buckets, g),
+    height: 230, max: maxS, band: currentBand(buckets, g), keys: buckets.map((b) => g + ':' + b.key),
     bars: buckets.map((b) => ({ segs: Object.keys(COLOR_DEVICE).map((k) => ({ v: (b.dev || {})[k] || 0, color: COLOR_DEVICE[k] })), ...barW(g), label: buckets.length <= 20 ? fmtNum(b.total) : "", dashed: isOngoing(b) })),
     yTicks: [0, 0.5, 1].map((p) => ({ pos: p * 100, label: fmtNum(Math.round(maxS * p)) })),
     ...axisFor(buckets, g),
@@ -200,6 +200,8 @@ chans.forEach((c) => { const vals = nats.map(() => Math.round(hr() * 900)); cons
   html += "<tr><td>" + c + "</td>" + vals.map((v) => { const t = cellTone(v / mx); return '<td style="background:' + t.bg + ";color:" + t.fg + '">' + (v ? fmtNum(v) : "") + "</td>"; }).join("") + '<td class="total">' + fmtNum(sum) + "</td></tr>"; });
 $("heat").innerHTML = html + "</tbody>";
 
+rollCards($("cards"));
+staggerIn(document.querySelector(".panel.active"));
 initMenu();
 </script>
 </body>
