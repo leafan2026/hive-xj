@@ -31,7 +31,7 @@ const rows = [
   { t: `${day(-2)}T15:10:00Z`, st: "仅人工", jiri: "不能", ch: "gd_app", dev: "pc", med: "网页", plan: "企业高级版", cat: "无关", nat: "无效", scene: "账务", dur: 240, turns: 1, way: "", reason: "", uid: "u14", baid: "b14", csFirst: "乙", csLast: "乙", csAll: ["乙"], emo: "正向" },
   { t: `${day(-3)}T16:10:00Z`, st: "仅人工", jiri: "能", ch: "gd_next", dev: "pc", med: "网页", plan: "免费版", cat: "无关", nat: "有效", scene: "账务", dur: 420, turns: 1, way: "直接转", reason: "可自助", uid: "u15", baid: "b15", csFirst: "甲", csLast: "甲", csAll: ["甲"], emo: "" },
 ];
-rows.push(...synthRows());
+rows.push(...synthRows({ days: 364 }));   // 一整年，总览条带才有东西可拖
 // 手写行只写了关心的字段；补齐成 trim() 的完整形状，否则周报里读 csAll.length 之类会直接抛错
 const ROW_DEFAULTS = { url: "", uid: "", baid: "", ch: "未知", dev: "未知", med: "未知", st: "未标记", plan: "免费版", dur: null, turns: null, nat: "未标记", scene: "未分类", cat: "无关", jiri: "未标记", way: "", reason: "", biz: "", onTarget: "", gotData: "", jiriBuilt: "", loop: "", rep: false, repFrom: "", uturns: null, atJiri: false, csFirst: "", csLast: "", csAll: [], emo: "" };
 rows.forEach((row, i) => { rows[i] = { ...ROW_DEFAULTS, ...row }; });
@@ -87,7 +87,8 @@ createServer(async (req, res) => {
         return;
       }
       const content = await readFile(join("public", name));
-      res.writeHead(200, { "content-type": assetTypes[extname(name)] || "application/octet-stream" }).end(content);
+      // 预览改完文件刷新就要生效，不让浏览器缓存静态文件
+      res.writeHead(200, { "content-type": assetTypes[extname(name)] || "application/octet-stream", "cache-control": "no-store" }).end(content);
       return;
     }
 

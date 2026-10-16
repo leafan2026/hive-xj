@@ -51,7 +51,7 @@ curl 裸调是 401），或等 cron 的下一个半点。
   v6 加了 `sum`（一句话总结，截 120 字）给复问明细 / 情绪会话明细的摘要列；
   换键后首次访问会后台重建缓存，页面显示「正在整理数据」是正常的。
   **规矩：stats 的 payload 形状一变就 bump `K_STATS` 和 `K_QUERY_PREFIX`，明细字段一变就 bump `K_ENTRIES`。**
-- **筛选结果记忆缓存**（`hive:q:v10:<updatedAt>:<hash>`）：页面默认就是「过去 14 天」，
+- **筛选结果记忆缓存**（`hive:q:v11:<updatedAt>:<hash>`，v11 起带 `series`）：页面默认就是「过去 14 天」，
   所以每次加载都带筛选参数、都走明细路径，预聚合的 `hive:stats:v15` 常年命不中。
 - **固定口径的「最近 24 周」**（`/api/fixed`，缓存 `hive:fixed:v2:<updatedAt>`）：2026-10-14 用户定，接待量页的三张图
   （按设备分布、接待人数与企业数、渠道来源每周会话数）、总览的接待人数与企业数、AI 表现页的复问率每周
@@ -284,7 +284,7 @@ curl 裸调是 401），或等 cron 的下一个半点。
 | 路径 | 说明 |
 |---|---|
 | `GET /` | 看板页面 |
-| `GET /api/dashboard` | 聚合指标。无参数时返回预聚合缓存；带筛选参数（`from` / `to` / `channel` / `device` / `status` / `scene` / `nature` / `plan` / `qc`）时先查记忆缓存，未命中才读明细现算 |
+| `GET /api/dashboard` | 聚合指标。无参数时返回预聚合缓存；带筛选参数（`from` / `to` / `channel` / `device` / `status` / `scene` / `nature` / `plan` / `qc`）时先查记忆缓存，未命中才读明细现算。带筛选时另附 `series: { from, byDay }`——总览区间条带用的全序列日桶（最近 52 周 ∪ 筛选区间、只套维度筛选，每天 `{ total, dur, dev }`）；全部时间时前端直接用 `stats.byDay` |
 | `POST /api/refresh` | 触发后台全量刷新 |
 | `GET /api/weekly` | 按周的周报数据（目标追踪、接待概览、人工场景工作量、仅 Jiri 场景） |
 | `GET /api/loop` | 业务闭环（每周趋势、按业务分型），不受顶部筛选影响 |

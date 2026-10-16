@@ -24,10 +24,12 @@ const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
 // 筛选结果记忆缓存：键里带 meta.updatedAt，数据一刷新自然失效；
 // TTL 只用来回收过期键，不承担正确性。
-const K_QUERY_PREFIX = "hive:q:v10:";
+const K_QUERY_PREFIX = "hive:q:v11:";   // v11：响应里加了 series（总览条带的全序列日桶）
 // 固定口径的「最近 24 周」stats（2026-10-14 用户定：接待量页的三张图和总览的接待人数图不随筛选），按数据版本缓存
 const K_FIXED_PREFIX = "hive:fixed:v2:";
 const FIXED_WEEKS = 24;
+// 总览「会话接待分布」下方条带的全序列：最近 52 周（筛选区间更早时往前延到筛选起点），只套维度筛选、不套日期
+const SERIES_DAYS = 364;
 const QUERY_CACHE_TTL_S = 3600;
 
 // 金数据 per_page 实际封顶 50；next 是 serial_number 偏移，可并行取页
@@ -1179,6 +1181,23 @@ function applyFilters(rows, q, range) {
   });
 }
 
+// 条带用的全序列日桶：维度筛选照套，日期放宽到「最近 52 周 ∪ 筛选区间」，这样默认窗口永远落在序列里、
+// 窗口合计和筛选后的总数一致。每天只留主图要的三样（会话数、人工时长、设备），约 60 字节一天。
+function buildSeries(rows, q, range) {
+  const floor = shiftDay(todayInShanghai(), -(SERIES_DAYS - 1));
+  const from = range && range.from && range.from < floor ? range.from : floor;
+  const byDay = {};
+  for (const r of applyFilters(rows, q, { from, to: "9999-12-31" })) {
+    const day = (r.t || "").slice(0, 10);
+    if (!day) continue;
+    const b = byDay[day] || (byDay[day] = { total: 0, dur: 0, dev: {} });
+    b.total++;
+    b.dev[r.dev] = (b.dev[r.dev] || 0) + 1;
+    if (typeof r.dur === "number" && r.dur > 0) b.dur += r.dur;
+  }
+  return { from, byDay };
+}
+
 // ============== 筛选结果记忆缓存 ==============
 // 时间下拉默认就是「过去 14 天」，所以**每一次**看板加载都带筛选参数、都走明细路径：
 // 读全量明细 → JSON.parse → applyFilters → buildStats 两次（当前区间 + 上一等长区间）。
@@ -1365,13 +1384,21 @@ async function renderPage(env, user) {
     <section class="cards" id="cards"></section>
     <section class="chart-card hero-card" aria-label="会话接待分布">
       <div class="hero-head">
-        <div class="hero-title"><h3>会话接待分布</h3><div class="hero-big" id="heroTotal">—</div><div class="hero-caption" id="heroCaption"></div></div>
+        <div class="hero-title"><h3>会话接待分布</h3><div class="hero-big" id="heroTotal">—</div><div class="hero-caption" id="heroCaption"></div><div class="lens-state" id="lensState" aria-live="polite"></div></div>
         <div class="hero-right">
           <div class="seg" id="granRecept" role="tablist" aria-label="聚合粒度"></div>
           <div class="legend"><span><i style="background:#4A494F"></i>会话量</span><span><i class="band"></i><span id="heroLegendCur">近 7 天</span></span><span><i class="ln" style="background:#0B0B0C;height:2.5px"></i>人工接待时长（右轴）</span></div>
         </div>
       </div>
       <div id="heroRecept"></div>
+      <!-- 区间条带（Range Lens）：整条序列一根一天，窗口默认 = 顶部筛选的时间；拖中间平移、拖两端改宽度、点空白处跳过去、双击看全部 -->
+      <div class="lens" id="heroLens" hidden>
+        <div class="lens-strip" id="lensStrip" tabindex="0" role="slider" aria-label="查看区间：左右键平移，上下键放宽收窄，Esc 回到筛选">
+          <div class="lens-track"><div class="lens-bars dim" id="lensDim"></div><div class="lens-bars lit" id="lensLit"></div></div>
+          <div class="lens-win" id="lensWin"><i class="lens-h l"><b></b></i><i class="lens-h r"><b></b></i></div>
+        </div>
+        <div class="lens-x" id="lensX"></div>
+      </div>
     </section>
     <div class="flex-row">
       <section class="chart-card" style="flex:1 1 300px" aria-label="设备构成">
@@ -2019,6 +2046,7 @@ export default {
         latestDay: latestDayOf(full),
         resolvedFrom: range.from,
         resolvedTo: range.to,
+        series: buildSeries(rows, q, range),
         previous: previous
           ? { ...buildStats(applyFilters(rows, q, previous)), ...previous }
           : null,

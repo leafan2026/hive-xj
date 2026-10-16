@@ -398,8 +398,14 @@ function domChart(el, cfg) {
   const laneBar = cfg.lanes ? LANE_BAR : 100, laneFrom = cfg.lanes ? LANE_LINE_FROM : 0, laneLine = cfg.lanes ? LANE_LINE : 100;
   const keys = cfg.keys || null;
   const prev = el.$dc || null;
-  const morph = !REDUCED_MOTION && !!(keys && prev && prev.keys && prev.keys.length === keys.length && prev.keys.every((k, i) => k === keys[i]));
-  const grow = !REDUCED_MOTION && !morph;
+  // instant：条带拖动 / 滑动时逐帧重画，既不长出也不形变（柱子跟着窗口走，上限由调用方逐帧缓动）
+  const instant = !!cfg.instant;
+  if (instant && el.$lineTween) { el.$lineTween(); el.$lineTween = null; }
+  const morph = !instant && !REDUCED_MOTION && !!(keys && prev && prev.keys && prev.keys.length === keys.length && prev.keys.every((k, i) => k === keys[i]));
+  const grow = !instant && !cfg.noGrow && !REDUCED_MOTION && !morph;
+  // slide：内容比绘图区宽（R 倍）、整体左移 S（占内容宽的比例）——条带拖动时按小数天平移，不必每帧重画
+  const slide = cfg.slide || null;
+  const slideStyle = slide ? ' style="width:' + (slide.R * 100).toFixed(4) + "%;transform:translateX(" + (-slide.S * 100).toFixed(4) + '%)"' : "";
   const stagger = Math.min(22, 360 / Math.max(1, n));
   const heights = [];
   const cols = bars.map((b, i) => {
@@ -438,17 +444,19 @@ function domChart(el, cfg) {
   const xPer = cfg.xPerBar ? '<div class="dc-x per">' + cfg.xPerBar.map((x) => "<span" + (x === "今天" ? ' class="today"' : "") + ">" + escHtml(x) + "</span>").join("") + "</div>" : "";
 
   el.innerHTML =
-    '<div class="dc' + (cfg.hoverInk ? " hover-ink" : "") + (grow ? " grow" : "") + '">' +
+    '<div class="dc' + (cfg.hoverInk ? " hover-ink" : "") + (grow ? " grow" : "") + (instant ? " instant" : "") + '">' +
     (yTicks.length ? '<div class="dc-y" style="height:' + H + 'px">' + yTicks.map((t) => '<span style="bottom:' + t.pos + '%">' + escHtml(t.label) + "</span>").join("") + "</div>" : "") +
     '<div class="dc-body"><div class="dc-plot" style="height:' + H + 'px">' +
     yTicks.map((t) => '<b class="dc-grid" style="bottom:' + t.pos + '%"></b>').join("") +
     (cfg.lanes ? hTicks.map((t) => '<b class="dc-grid light" style="bottom:' + t.pos + '%"></b>').join("") : "") +
     (cfg.capLine ? '<b class="dc-cap" style="bottom:' + cfg.capLine.pos + '%"></b>' + (cfg.capLine.label ? '<span class="dc-cap-label" style="bottom:' + cfg.capLine.pos + '%">' + escHtml(cfg.capLine.label) + "</span>" : "") : "") +
+    (slide ? '<div class="dc-slide"' + slideStyle + ">" : "") +
     (cfg.band && n && cfg.band.to >= cfg.band.from ? '<div class="dc-band" style="left:' + ((cfg.band.from / n) * 100).toFixed(2) + "%;width:" + (((cfg.band.to - cfg.band.from + 1) / n) * 100).toFixed(2) + '%"><span>' + escHtml(cfg.band.label || "") + "</span></div>" : "") +
     '<div class="dc-cols">' + cols + "</div>" +
     (path ? '<svg class="dc-line" viewBox="0 0 1000 ' + H + '" preserveAspectRatio="none"><path d="' + path + '" fill="none" stroke="' + (line.color || INK) + '" stroke-width="' + (line.width || 2) + '" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path></svg>' : "") +
     dots +
-    "</div>" + xAbs + xPer + "</div>" +
+    (slide ? "</div>" : "") +
+    "</div>" + (slide ? '<div class="dc-xclip"><div class="dc-xslide"' + slideStyle + ">" + xAbs + xPer + "</div></div>" : xAbs + xPer) + "</div>" +
     (hTicks.length ? '<div class="dc-h" style="height:' + H + 'px">' + hTicks.map((t) => '<span style="bottom:' + t.pos + '%">' + escHtml(t.label) + "</span>").join("") + "</div>" : "") +
     "</div>";
 
@@ -475,7 +483,9 @@ function domChart(el, cfg) {
     const axis = el.querySelector(".dc-x.per");
     const width = axis ? axis.clientWidth : 0;
     const step = width ? Math.ceil((n * 46) / width) : 1;
-    if (step > 1) axis.querySelectorAll("span").forEach((sp, i) => { if ((n - 1 - i) % step && !sp.classList.contains("today")) sp.textContent = ""; });
+    // 有 xIndexBase 时按整条序列的下标对齐（从序列最后一天往前数），窗口平移时标签不会跳来跳去
+    const pos = (i) => (cfg.xIndexBase !== undefined ? cfg.xIndexEnd - (cfg.xIndexBase + i) : n - 1 - i);
+    if (step > 1) axis.querySelectorAll("span").forEach((sp, i) => { if (pos(i) % step && !sp.classList.contains("today")) sp.textContent = ""; });
   }
   if (cfg.tip) {
     el.$tip = cfg.tip;
@@ -696,6 +706,7 @@ async function loadDashboard() {
     state.previous = json.previous || null;
     state.resolvedFrom = json.resolvedFrom || "";
     state.resolvedTo = json.resolvedTo || "";
+    state.series = json.series || null;   // 条带的全序列（全部时间走预聚合时没有，前端用 stats.byDay）
     fillFacets(json.facets);
     if (json.latestDay) state.latestDay = json.latestDay;
     // 预设区间回显服务端换算出的起止日期
@@ -1064,38 +1075,465 @@ function deviceRows(b) {
 
 // ============== 总览 ==============
 
-// 会话接待分布（2026-10-13 用户定）：双泳道——深灰柱在下（悬停变黑），黑色实线 + 圆点在上（右轴小时），两者永不交叉；当前周期铺 30% 品牌绿底带
-function drawReceptChart(s) {
-  const g = receptGrain;
-  const { buckets } = rollupDays(s.byDay, g);
-  const n = buckets.length;
-  const maxS = niceMax(Math.max(...buckets.map((b) => b.total), 0) * 1.08);
-  const maxH = niceMax(Math.max(...buckets.map((b) => b.dur / 3600), 0) * 1.15);
-  const band = currentBand(buckets, g);
-  domChart($("heroRecept"), {
-    height: 340, max: maxS, lanes: true, hoverInk: true, keys: buckets.map((b) => g + ":" + b.key),
-    bars: buckets.map((b) => ({ segs: [{ v: b.total, color: BAR_DARK }], ...barW(g), dashed: isOngoing(b) })),
-    line: { values: buckets.map((b) => b.dur / 3600), color: INK, width: 2.5, max: maxH, dots: n <= 31 },
-    yTicks: [0, 0.5, 1].map((p) => ({ pos: p * LANE_BAR, label: fmtNum(Math.round(maxS * p)) })),
-    hTicks: [0, 0.5, 1].map((p) => ({ pos: LANE_LINE_FROM + p * LANE_LINE, label: (maxH * p).toFixed(maxH * p < 10 && p ? 1 : 0) + "h" })),
-    band, ...axisFor(buckets, g),
-    tip: (i) => {
-      const b = buckets[i];
-      if (!b) return null;
-      const p = buckets[i - 1];
-      return { title: bucketTitle(b, g), rows: deviceRows(b), foot: { name: "会话量", value: fmtNum(b.total), delta: p ? changeText(b.total, p.total) : "" }, notes: [isOngoing(b) ? "还没过完，读数还会往上走" : ""] };
-    },
-  });
-  const lg = $("heroLegendCur");
-  if (lg) lg.textContent = band ? band.label : "当前周期";
-  const total = buckets.reduce((a, b) => a + b.total, 0);
-  rollTo($("heroTotal"), fmtNum(total));
-  const cap = $("heroCaption");
-  if (cap) {
-    const from = state.resolvedFrom || (buckets[0] && buckets[0].first) || "";
-    const to = state.resolvedTo || (buckets[n - 1] && buckets[n - 1].last) || "";
-    cap.textContent = "会话 · " + from.slice(5) + " 至 " + to.slice(5) + " · 按" + (GRAIN_LIST.find((x) => x[0] === g) || ["", ""])[1] + "聚合，悬停柱子看明细";
+// ============== 区间条带（Range Lens，2026-10-16） ==============
+// 主图看「窗口」那一段，下面的条带是整条序列（最近 52 周 ∪ 筛选区间，一根一天，维度筛选照套）。
+// 窗口默认 = 顶部筛选的时间；人可以拖：拖中间平移、拖两端改宽度、点空白处跳过去、双击看全部 / 回到上一段、
+// 键盘 ←→ 平移、↑↓ 放宽收窄、Esc 回到筛选。窗口只管这一张图，不写回筛选；离开筛选区间时窗口旁出现
+// 「回到筛选」和「应用到全页」（后者才把窗口写进顶部筛选、整页重算）。
+// 动效：手指 / 鼠标下直接跟手不加动画；松手按速度滑一段再用弹簧落到整天；程序改窗口（点空白、回到筛选、改筛选）弹簧滑过去。
+// 主图在拖动和滑动时逐帧按整天窗口重画（domChart instant），纵轴上限逐帧缓动、不回弹。
+
+const LENS_MIN_SPAN = 7;          // 窗口至少 7 天（筛选本身更短时以筛选为准）
+const LENS_STEP = 7;              // 键盘一步 = 一周
+const LENS_RUBBER_PX = 28;        // 拖出序列两端的橡皮筋上限
+const ZERO_DAY = Object.freeze({ total: 0, dur: 0, dev: Object.freeze({}) });
+
+const lens = {
+  days: [], byDay: {}, n: 0, sig: "",
+  a: 0, b: 0,                     // 窗口 [a, b)，以天为单位的浮点下标；画的时候取整
+  def: null, prev: null,          // 默认窗口（= 筛选）、双击前的窗口
+  drag: null, maxS: 0, maxH: 0, rkey: "", hkey: "", fsig2: "", easing: false, va: 0, vb: 0, lastT: 0, stateKey: "", ready: false, stripW: 0, fsig: "",
+};
+
+const clampN = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const nextDay = (d) => { const t = new Date(d + "T00:00:00Z"); t.setUTCDate(t.getUTCDate() + 1); return t.toISOString().slice(0, 10); };
+function lensMinSpan() { return Math.max(1, Math.min(LENS_MIN_SPAN, lens.def ? lens.def.b - lens.def.a : LENS_MIN_SPAN, lens.n)); }
+function lensWhole() {
+  const a = clampN(Math.round(lens.a), 0, Math.max(0, lens.n - 1));
+  const b = clampN(Math.round(lens.b), a + 1, lens.n);
+  return [a, b];
+}
+function lensDeviated() {
+  if (!lens.def) return false;
+  const [a, b] = lensWhole();
+  return a !== lens.def.a || b !== lens.def.b;
+}
+
+// 由 /api/dashboard 的 series（没有时退回 stats.byDay = 全部时间）建整条序列：从起点到最后一天逐天补齐，空的天记 0
+function syncLensSeries(s) {
+  const src = state.series || { from: "", byDay: s.byDay || {} };
+  const keys = Object.keys(src.byDay || {}).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  let first = src.from || keys[0] || state.resolvedFrom || "";
+  let last = keys[keys.length - 1] || "";
+  if (state.resolvedTo && state.resolvedTo > last) last = state.resolvedTo;
+  if (state.resolvedFrom && (!first || state.resolvedFrom < first)) first = state.resolvedFrom;
+  const days = [];
+  if (first && last) for (let d = first; d <= last && days.length < 4000; d = nextDay(d)) days.push(d);
+  const sig = days[0] + ".." + days[days.length - 1] + "|" + keys.length + "|" + keys.reduce((a, k) => a + src.byDay[k].total, 0);
+  const oldDays = lens.days, oldA = lens.a, oldB = lens.b;
+  lens.days = days; lens.byDay = src.byDay || {}; lens.n = days.length;
+  // 默认窗口 = 筛选区间（全部时间 = 整条序列）
+  const idx = (d, fallback) => { const i = days.indexOf(d); return i < 0 ? fallback : i; };
+  const da = state.resolvedFrom ? idx(state.resolvedFrom, 0) : 0;
+  const db = state.resolvedTo ? idx(state.resolvedTo, days.length - 1) + 1 : days.length;
+  lens.def = { a: da, b: Math.max(da + 1, db) };
+  // 旧窗口换算到新序列的下标（序列起点可能变了），好从旧位置滑到新默认
+  let from = null;
+  if (lens.ready && oldDays.length) {
+    const oa = days.indexOf(oldDays[clampN(Math.round(oldA), 0, oldDays.length - 1)]);
+    const ob = days.indexOf(oldDays[clampN(Math.round(oldB) - 1, 0, oldDays.length - 1)]);
+    if (oa >= 0 && ob >= 0) from = { a: oa, b: ob + 1 };
   }
+  const changed = sig !== lens.sig;
+  lens.sig = sig;
+  if (changed) paintLensStrip();
+  // 只有顶部的时间变了才把窗口拉回默认；切页回来、只改维度筛选时保住人拖好的窗口
+  const fsig = (state.resolvedFrom || "") + ".." + (state.resolvedTo || "");
+  const reset = fsig !== lens.fsig;
+  lens.fsig = fsig;
+  if (reset) lens.prev = null;
+  return { from, reset };
+}
+
+// 条带底图：上下两层一样的柱子（下层浅灰、上层深灰按窗口裁切）+ 月份刻度
+function paintLensStrip() {
+  const box = $("heroLens");
+  if (!box) return;
+  box.hidden = lens.n < 2;
+  const vals = lens.days.map((d) => (lens.byDay[d] || ZERO_DAY).total);
+  const max = Math.max(...vals, 1);
+  const html = vals.map((v) => '<i style="height:' + Math.max(v ? 4 : 0, (v / max) * 100).toFixed(1) + '%"></i>').join("");
+  $("lensDim").innerHTML = html;
+  $("lensLit").innerHTML = html;
+  const strip = $("lensStrip");
+  const per = (strip.clientWidth || 800) / Math.max(1, lens.n);
+  // 一天不到 3px 时柱子贴在一起、不倒圆角，整年读成一条剪影；宽了才留 1px 缝、两头圆
+  strip.style.setProperty("--lens-gap", per >= 3 ? "1px" : "0px");
+  strip.style.setProperty("--lens-r", per >= 3 ? "999px" : "0");
+  paintLensAxis();
+}
+
+function paintLensAxis() {
+  const axis = $("lensX");
+  if (!axis) return;
+  const n = lens.n, days = lens.days;
+  const width = axis.clientWidth || 800;
+  const marks = [];
+  if (n > 62) {
+    days.forEach((d, i) => { if (d.slice(8) === "01") marks.push({ i, label: d.slice(5, 7) === "01" ? d.slice(0, 4) : Number(d.slice(5, 7)) + " 月", yr: d.slice(5, 7) === "01" }); });
+  } else {
+    days.forEach((d, i) => { if (new Date(d + "T00:00:00Z").getUTCDay() === 1) marks.push({ i, label: d.slice(5) }); });
+  }
+  // 太密就挑着标：年份先占位，其余按等距隔几个取一个，离已占位的标记不足 40px 的跳过
+  const px = (m) => ((m.i + 0.5) / n) * width;
+  const stride = Math.max(1, Math.ceil((marks.length * 44) / width));
+  const kept = marks.filter((m) => m.yr);
+  marks.forEach((m, k) => { if (!m.yr && k % stride === 0 && kept.every((o) => Math.abs(px(o) - px(m)) >= 40)) kept.push(m); });
+  kept.sort((x, y) => x.i - y.i);
+  axis.innerHTML = kept
+    .map((m) => '<span class="' + (m.yr ? "yr" : "") + '" style="left:' + (((m.i + 0.5) / n) * 100).toFixed(2) + '%">' + m.label + "</span>").join("");
+}
+
+// 窗口位置 → 条带上的框 + 上层裁切
+function placeLensWin() {
+  const n = Math.max(1, lens.n);
+  let a = (lens.a / n) * 100, b = (lens.b / n) * 100;
+  // 窗口画出来至少 28px 宽（两只把手之间还要有能抓的中间），不够就以中心往两边撑开；数据窗口不变
+  const sw = ($("lensStrip") || {}).clientWidth || 0;
+  const minPct = sw ? (28 / sw) * 100 : 0;
+  if (b - a < minPct) {
+    const c = clampN((a + b) / 2, minPct / 2, 100 - minPct / 2);
+    a = c - minPct / 2; b = c + minPct / 2;
+  }
+  const win = $("lensWin");
+  if (win) { win.style.left = a.toFixed(3) + "%"; win.style.width = Math.max(0, b - a).toFixed(3) + "%"; }
+  const lit = $("lensLit");
+  if (lit) lit.style.clipPath = "inset(0 " + Math.max(0, 100 - b).toFixed(3) + "% 0 " + Math.max(0, a).toFixed(3) + "%)";
+  const strip = $("lensStrip");
+  const [wa, wb] = lensWhole();
+  if (strip && lens.days[wa]) strip.setAttribute("aria-valuetext", lens.days[wa] + " 至 " + lens.days[wb - 1] + "，共 " + (wb - wa) + " 天");
+}
+
+// 会话接待分布（2026-10-13 用户定）：双泳道——深灰柱在下（悬停变黑），黑色实线 + 圆点在上（右轴小时），两者永不交叉；
+// 当前周期铺 30% 品牌绿底带（只在窗口截到序列末尾时画，往回看的窗口没有「当前周期」）。
+// mode：undefined = 正常（换粒度 / 换区间长出，同组桶形变）；"pan" = 拖动 / 滑动中的逐帧更新：
+//   · 按天：窗口按小数天平移——多画两头露出半截的那天，整块内容按比例加宽、左移小数部分（只改 transform，不重画）；
+//     跨过整天时才重画一次，重画前后每根柱子的位置一模一样，所以看起来是连续滑动。纵轴上限逐帧往目标靠、不回弹。
+//   · 按周 / 月 / 季 / 年：一个桶要好几天才变，整天变化时重画，柱高靠 CSS 形变过渡（不重新长出）。
+function lensDayBuckets(i0, i1, g) {
+  const byDay = {};
+  for (let i = i0; i < i1; i++) byDay[lens.days[i]] = lens.byDay[lens.days[i]] || ZERO_DAY;
+  return rollupDays(byDay, g).buckets;
+}
+
+function drawReceptChart(s, mode) {
+  if (!lens.n) return;
+  const g = receptGrain, n = lens.n;
+  const pan = mode === "pan";
+  const sliding = pan && g === "day" && !REDUCED_MOTION;
+  let i0, i1, slide = null;
+  if (sliding) {
+    let ca = lens.va, cb = lens.vb;
+    // 橡皮筋只在条带上体现；主图把窗口推回序列内（跨度不变）
+    if (ca < 0) { cb = Math.min(n, cb - ca); ca = 0; }
+    if (cb > n) { ca = Math.max(0, ca - (cb - n)); cb = n; }
+    if (cb - ca < 1) cb = Math.min(n, ca + 1);
+    i0 = Math.floor(ca + 1e-6);
+    i1 = Math.max(i0 + 1, Math.min(n, Math.ceil(cb - 1e-6)));
+    slide = { R: (i1 - i0) / (cb - ca), S: (ca - i0) / (i1 - i0) };
+  } else {
+    [i0, i1] = lensWhole();
+    if (!pan) { lens.va = lens.a; lens.vb = lens.b; }
+  }
+  const buckets = lensDayBuckets(i0, i1, g);
+  const m = buckets.length;
+  const tMaxS = niceMax(Math.max(...buckets.map((x) => x.total), 0) * 1.08);
+  const tMaxH = niceMax(Math.max(...buckets.map((x) => x.dur / 3600), 0) * 1.15);
+  // 滑动时上限逐帧往目标靠（临界阻尼，不回弹），柱子不会忽大忽小地跳
+  if (sliding && lens.maxS) {
+    lens.maxS += (tMaxS - lens.maxS) * 0.2;
+    lens.maxH += (tMaxH - lens.maxH) * 0.2;
+    if (Math.abs(lens.maxS - tMaxS) < tMaxS * 0.003) lens.maxS = tMaxS;
+    if (Math.abs(lens.maxH - tMaxH) < tMaxH * 0.003) lens.maxH = tMaxH;
+  } else { lens.maxS = tMaxS; lens.maxH = tMaxH; }
+  const maxS = lens.maxS, maxH = lens.maxH;
+  lens.easing = sliding && (maxS !== tMaxS || maxH !== tMaxH);
+  const el = $("heroRecept");
+  const rkey = g + ":" + i0 + ":" + i1 + ":" + maxS.toFixed(2) + ":" + maxH.toFixed(3);
+  if (sliding && lens.rkey === rkey && el.querySelector(".dc-slide")) {
+    // 同一批柱子：只挪 transform
+    const w = (slide.R * 100).toFixed(4) + "%", t = "translateX(" + (-slide.S * 100).toFixed(4) + "%)";
+    el.querySelectorAll(".dc-slide, .dc-xslide").forEach((x) => { x.style.width = w; x.style.transform = t; });
+  } else {
+    lens.rkey = sliding ? rkey : "";
+    const band = i1 === n ? currentBand(buckets, g) : null;
+    domChart(el, {
+      height: 340, max: maxS, lanes: true, hoverInk: true, keys: buckets.map((x) => g + ":" + x.key),
+      instant: sliding, noGrow: pan, slide, xIndexBase: sliding ? i0 : undefined, xIndexEnd: n - 1,
+      bars: buckets.map((x) => ({ segs: [{ v: x.total, color: BAR_DARK }], ...barW(g), dashed: isOngoing(x) })),
+      line: { values: buckets.map((x) => x.dur / 3600), color: INK, width: 2.5, max: maxH, dots: m <= 32 },
+      yTicks: [0, 0.5, 1].map((p) => ({ pos: p * LANE_BAR, label: fmtNum(Math.round(maxS * p)) })),
+      hTicks: [0, 0.5, 1].map((p) => ({ pos: LANE_LINE_FROM + p * LANE_LINE, label: (maxH * p).toFixed(maxH * p < 10 && p ? 1 : 0) + "h" })),
+      band, ...axisFor(buckets, g),
+      tip: (i) => {
+        const x = buckets[i];
+        if (!x) return null;
+        const p = buckets[i - 1];
+        return { title: bucketTitle(x, g), rows: deviceRows(x), foot: { name: "会话量", value: fmtNum(x.total), delta: p ? changeText(x.total, p.total) : "" }, notes: [isOngoing(x) ? "还没过完，读数还会往上走" : ""] };
+      },
+    });
+    const lg = $("heroLegendCur");
+    if (lg) { lg.textContent = band ? band.label : "当前周期"; lg.parentElement.style.display = band ? "" : "none"; }
+  }
+  // 大数字和日期按整天窗口算，整天变了才更新
+  const [a, b] = lensWhole();
+  const hkey = g + ":" + a + ":" + b + ":" + lens.sig;
+  if (pan && hkey === lens.hkey) return;
+  lens.hkey = hkey;
+  let total = 0;
+  for (let i = a; i < b; i++) total += (lens.byDay[lens.days[i]] || ZERO_DAY).total;
+  const big = $("heroTotal");
+  // 手底下的数字原地换（读得清），程序改窗口时才滚动
+  if (pan && big) { if (big.$roll) big.$roll(); big.textContent = fmtNum(total); big.$val = total; }
+  else rollTo(big, fmtNum(total));
+  const cap = $("heroCaption");
+  // 跨年或不在今年时日期带上年份，否则只写 MM-DD
+  const da = lens.days[a], db = lens.days[b - 1];
+  const fd = da.slice(0, 4) !== db.slice(0, 4) || db.slice(0, 4) !== todayKey().slice(0, 4) ? (d) => d : (d) => d.slice(5);
+  if (cap) cap.textContent = "会话 · " + fd(da) + " 至 " + fd(db) + " · " + (b - a) + " 天 · 按" + (GRAIN_LIST.find((x) => x[0] === g) || ["", ""])[1] + "聚合，悬停柱子看明细";
+  paintLensState();
+}
+
+function paintLensState() {
+  const box = $("lensState");
+  if (!box) return;
+  const dev = lensDeviated();
+  const key = dev ? "dev" : "follow";
+  if (key === lens.stateKey) return;
+  lens.stateKey = key;
+  box.innerHTML = dev
+    ? '<button type="button" class="btn-ghost" data-lens="reset">回到筛选</button><button type="button" class="btn-ghost" data-lens="apply">应用到全页</button>'
+    : "跟随筛选 · 拖动下方条带可换一段看";
+}
+
+// 逐帧：窗口的整天区间变了，或纵轴上限还在往目标缓动，就重画主图；只挪框不重画
+let lensRaf = 0;
+function lensFrame() {
+  placeLensWin();
+  if (!lensRaf) lensRaf = requestAnimationFrame(lensStep);
+}
+// 条带上的框直接跟手；主图的视口（va / vb）用一阶临界阻尼追着框走（τ = 70ms，不回弹）。
+// 条带 1px ≈ 主图几十 px（一年的条带看两周），鼠标按整像素动，主图如果直接跟会一格一格地跳；追一下就成了连续的滑动。
+const LENS_FOLLOW_S = 0.07;
+function lensStep(now) {
+  lensRaf = 0;
+  if (!LAST_STATS || state.tab !== "overview") { lens.va = lens.a; lens.vb = lens.b; lens.lastT = 0; return; }
+  const dt = lens.lastT ? Math.min(0.05, (now - lens.lastT) / 1000) : 1 / 60;
+  lens.lastT = now;
+  const k = REDUCED_MOTION ? 1 : 1 - Math.exp(-dt / LENS_FOLLOW_S);
+  lens.va += (lens.a - lens.va) * k;
+  lens.vb += (lens.b - lens.vb) * k;
+  if (Math.abs(lens.a - lens.va) < 0.01) lens.va = lens.a;
+  if (Math.abs(lens.b - lens.vb) < 0.01) lens.vb = lens.b;
+  const following = lens.va !== lens.a || lens.vb !== lens.b;
+  const sig = receptGrain + ":" + lens.va.toFixed(4) + ":" + lens.vb.toFixed(4) + ":" + lens.a.toFixed(3) + ":" + lens.b.toFixed(3);
+  if (sig !== lens.fsig2 || lens.easing) { lens.fsig2 = sig; drawReceptChart(LAST_STATS, "pan"); }
+  if (following || lens.easing) lensRaf = requestAnimationFrame(lensStep);
+  else lens.lastT = 0;
+}
+
+// 程序改窗口：弹簧滑过去（REDUCED_MOTION 时 tween 直接落位）
+function lensGlide(ta, tb, ms) {
+  const a0 = lens.a, b0 = lens.b;
+  tween(lens, "$glide", ms || 460, SPRING_SNAP, (k) => {
+    lens.a = a0 + (ta - a0) * k;
+    lens.b = b0 + (tb - b0) * k;
+    if (k >= 1) { lens.a = ta; lens.b = tb; }
+    lensFrame();
+  });
+}
+
+// 夹回序列内、保住最小跨度，取整天。keep："span" 平移（跨度不变）/ "end" 拖左端（结束日不动）/ "start" 拖右端
+function lensSnapTarget(a, b, keep) {
+  const n = lens.n, min = lensMinSpan();
+  if (keep === "span") {
+    const span = clampN(Math.round(b - a), min, n);
+    const ta = clampN(Math.round(a), 0, n - span);
+    return [ta, ta + span];
+  }
+  let ta = clampN(Math.round(a), 0, n), tb = clampN(Math.round(b), 0, n);
+  if (tb - ta < min) {
+    if (keep === "end") { ta = Math.max(0, tb - min); tb = ta + min; }
+    else { tb = Math.min(n, ta + min); ta = tb - min; }
+  }
+  return [ta, tb];
+}
+
+// 序列两端的橡皮筋：越拉越紧，最多出去 28px
+function rubber(overDays, perPx) {
+  const limit = LENS_RUBBER_PX / perPx;
+  return limit * (1 - 1 / ((overDays * 0.55) / limit + 1));
+}
+
+function initLens() {
+  const strip = $("lensStrip");
+  if (!strip) return;
+  const dayAt = (clientX) => {
+    const r = strip.getBoundingClientRect();
+    return ((clientX - r.left) / Math.max(1, r.width)) * lens.n;
+  };
+  const pxPerDay = () => strip.getBoundingClientRect().width / Math.max(1, lens.n);
+  const partAt = (clientX) => {
+    const r = strip.getBoundingClientRect();
+    const per = r.width / Math.max(1, lens.n);
+    let xa = lens.a * per, xb = lens.b * per;
+    if (xb - xa < 28) { const c = clampN((xa + xb) / 2, 14, r.width - 14); xa = c - 14; xb = c + 14; }
+    const x = clientX - r.left;
+    const reach = Math.min(16, (xb - xa) / 3);
+    if (x >= xa - 16 && x <= xa + reach) return "l";
+    if (x <= xb + 16 && x >= xb - reach) return "r";
+    if (x > xa && x < xb) return "move";
+    return null;
+  };
+
+  strip.addEventListener("pointerdown", (e) => {
+    if (!lens.n || (e.pointerType === "mouse" && e.button !== 0)) return;
+    if (lens.$glide) { lens.$glide(); lens.$glide = null; }
+    hideTip();
+    let part = partAt(e.clientX);
+    if (!part) {
+      // 点在窗口外：窗口先滑过去以手指为中心，接着当成拖中间
+      const span = lens.b - lens.a;
+      const c = dayAt(e.clientX);
+      const [ta, tb] = lensSnapTarget(c - span / 2, c + span / 2, "span");
+      lensGlide(ta, tb, 240);
+      part = "move";
+      lens.drag = { part, x0: e.clientX, a0: ta, b0: tb, moved: false, hist: [], jumped: true };
+    } else {
+      lens.drag = { part, x0: e.clientX, a0: lens.a, b0: lens.b, moved: false, hist: [], jumped: false };
+    }
+    strip.setPointerCapture(e.pointerId);
+    $("lensWin").classList.add("held");
+    if (part === "l" || part === "r") strip.querySelector(".lens-h." + part).classList.add("on");
+  });
+
+  strip.addEventListener("pointermove", (e) => {
+    const d = lens.drag;
+    if (!d) {
+      const p = partAt(e.clientX);
+      strip.style.cursor = p === "l" || p === "r" ? "ew-resize" : p === "move" ? "grab" : "pointer";
+      return;
+    }
+    const per = pxPerDay();
+    const dx = (e.clientX - d.x0) / per;
+    if (!d.moved && Math.abs(e.clientX - d.x0) < 3) return;
+    if (!d.moved && lens.$glide) { lens.$glide(); lens.$glide = null; }
+    d.moved = true;
+    d.hist.push([performance.now(), e.clientX]);
+    if (d.hist.length > 6) d.hist.shift();
+    const n = lens.n, min = lensMinSpan();
+    if (d.part === "move") {
+      const span = d.b0 - d.a0;
+      let a = d.a0 + dx;
+      if (a < 0) a = -rubber(-a, per);
+      if (a + span > n) a = n - span + rubber(a + span - n, per);
+      lens.a = a; lens.b = a + span;
+    } else if (d.part === "l") {
+      let a = Math.min(d.a0 + dx, d.b0 - min);
+      if (a < 0) a = -rubber(-a, per);
+      lens.a = a; lens.b = d.b0;
+    } else {
+      let b = Math.max(d.b0 + dx, d.a0 + min);
+      if (b > n) b = n + rubber(b - n, per);
+      lens.a = d.a0; lens.b = b;
+    }
+    lensFrame();
+  });
+
+  const end = () => {
+    const d = lens.drag;
+    if (!d) return;
+    lens.drag = null;
+    $("lensWin").classList.remove("held");
+    strip.querySelectorAll(".lens-h.on").forEach((h) => h.classList.remove("on"));
+    if (!d.moved) return;   // 只是点了一下：点在窗口外的那次已经在滑过去了
+    // 松手：按最后几帧的速度往前滑一段（≈ 0.1 秒的距离），再弹簧落到整天
+    let v = 0;
+    const h = d.hist;
+    if (h.length >= 2) {
+      const [t0, x0] = h[0], [t1, x1] = h[h.length - 1];
+      if (t1 - t0 > 0 && performance.now() - t1 < 80) v = (x1 - x0) / (t1 - t0);   // px/ms
+    }
+    const coast = (v * 99) / pxPerDay();
+    let a = lens.a, b = lens.b;
+    if (d.part === "move") { a += coast; b += coast; }
+    else if (d.part === "l") a = Math.min(a + coast, b - lensMinSpan());
+    else b = Math.max(b + coast, a + lensMinSpan());
+    const [ta, tb] = lensSnapTarget(a, b, d.part === "move" ? "span" : d.part === "l" ? "end" : "start");
+    lensGlide(ta, tb, 520);
+  };
+  strip.addEventListener("pointerup", end);
+  strip.addEventListener("pointercancel", end);
+
+  // 双击：看全部；再双击回到上一段
+  strip.addEventListener("dblclick", () => {
+    if (!lens.n) return;
+    if (lens.prev) { const p = lens.prev; lens.prev = null; lensGlide(p.a, p.b); return; }
+    const [a, b] = lensWhole();
+    if (a === 0 && b === lens.n) return;
+    lens.prev = { a, b };
+    lensGlide(0, lens.n);
+  });
+
+  strip.addEventListener("keydown", (e) => {
+    if (!lens.n) return;
+    const [a, b] = lensWhole();
+    let t = null;
+    if (e.key === "ArrowLeft") t = lensSnapTarget(a - LENS_STEP, b - LENS_STEP, "span");
+    else if (e.key === "ArrowRight") t = lensSnapTarget(a + LENS_STEP, b + LENS_STEP, "span");
+    // 放宽 / 收窄都保住结束日：截到今天的窗口一直截到今天；顶到序列开头再放宽就往后长
+    else if (e.key === "ArrowUp") t = a - LENS_STEP >= 0 ? lensSnapTarget(a - LENS_STEP, b, "end") : lensSnapTarget(0, b + (LENS_STEP - a), "start");
+    else if (e.key === "ArrowDown") t = lensSnapTarget(a + LENS_STEP, b, "end");
+    else if (e.key === "Escape" && lens.def) t = [lens.def.a, lens.def.b];
+    else if (e.key === "Home") t = lensSnapTarget(0, b - a, "span");
+    else if (e.key === "End") t = lensSnapTarget(lens.n - (b - a), lens.n, "span");
+    if (!t) return;
+    e.preventDefault();
+    lensGlide(t[0], t[1], 320);
+  });
+
+  $("lensState").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-lens]");
+    if (!btn || !lens.def) return;
+    if (btn.dataset.lens === "reset") { lens.prev = null; lensGlide(lens.def.a, lens.def.b); return; }
+    // 应用到全页：窗口写进顶部「自定义」时间，整页按它重算
+    const [a, b] = lensWhole();
+    $("fRange").value = "custom";
+    applyRangePreset();
+    $("fFrom").value = lens.days[a];
+    $("fTo").value = lens.days[b - 1];
+    reload();
+  });
+
+  window.addEventListener("resize", () => { if (lens.n) { lens.stripW = $("lensStrip").clientWidth; paintLensStrip(); placeLensWin(); } });
+}
+
+// 总览渲染入口：同步序列 → 首次直接落位并正常画（长出）；改了筛选时间就从旧窗口滑到新默认；只改维度就原地形变
+function renderReceptHero(s) {
+  const { from, reset } = syncLensSeries(s);
+  if (!lens.n) return;
+  // 条带在隐藏的面板里量不出宽度：回到总览、或宽度变了就重铺一次（缝和刻度跟宽度走）
+  const sw = $("lensStrip").clientWidth;
+  if (sw && sw !== lens.stripW) { lens.stripW = sw; paintLensStrip(); }
+  const def = lens.def;
+  if (lens.$glide) { lens.$glide(); lens.$glide = null; }
+  if (!lens.ready || !from || REDUCED_MOTION) {
+    const keep = lens.ready && from && !reset;
+    lens.a = keep ? from.a : def.a; lens.b = keep ? from.b : def.b; lens.ready = true;
+    placeLensWin();
+    drawReceptChart(s);
+    return;
+  }
+  if (!reset || (from.a === def.a && from.b === def.b)) {
+    lens.a = reset ? def.a : from.a; lens.b = reset ? def.b : from.b;
+    placeLensWin();
+    drawReceptChart(s);
+    return;
+  }
+  lens.a = from.a; lens.b = from.b;
+  placeLensWin();
+  drawReceptChart(s, "pan");
+  lensGlide(def.a, def.b);
 }
 
 // 接待人数与企业数（总览）：两个大数字 + 按周并列细柱，不带粒度切换
@@ -1125,7 +1563,7 @@ function drawOverviewUniq(s) {
 }
 
 function renderOverview(s) {
-  drawReceptChart(s);
+  renderReceptHero(s);
   const dev = s.device || {};
   const order = ["pc", "mobile", "未知"];
   const keys = Object.keys(dev).sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
@@ -2526,6 +2964,7 @@ function initActions() {
 
   // 聚合粒度：纯前端换分桶，不重新请求接口
   initSeg("granRecept", receptGrain, (g) => { receptGrain = g; if (LAST_STATS) drawReceptChart(LAST_STATS); });
+  initLens();
   initSeg("granDist", distGrain, (g) => { distGrain = g; if (LAST_STATS) drawVolumeDist(fixedStats(LAST_STATS)); });
   initSeg("granUniq", uniqGrain, (g) => { uniqGrain = g; if (LAST_STATS) drawVolumeUniq(fixedStats(LAST_STATS)); });
 

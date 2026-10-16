@@ -798,24 +798,25 @@ body.show-kou .note.kou:not(:empty) { display: block; }
   .loop-type { grid-template-columns: 90px minmax(0, 1fr) 60px; }
   .loop-type span:last-child { display: none; }
 }
-}
 
 
 /* ============ 登录页 ============ */
 
-.login-body { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 24px; }
-.login-wrap { width: 100%; max-width: 400px; }
-.login-card { background: var(--card); border-radius: 24px; padding: 40px 36px 30px; text-align: center; }
-.login-logo { width: 54px; height: 54px; margin: 0 auto 18px; border-radius: 16px; background: var(--ink); color: var(--green); font-size: 17px; font-weight: 700; letter-spacing: .5px; display: flex; align-items: center; justify-content: center; }
-.login-card h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
-.login-sub { color: var(--muted); font-size: 13px; margin: 0 0 26px; }
-.login-field { display: block; text-align: left; margin-bottom: 15px; }
-.login-field span { display: block; font-size: 12px; color: var(--ink-2); margin-bottom: 7px; font-weight: 500; }
-.login-field input { width: 100%; min-height: 44px; padding: 0 14px; border: 1px solid transparent; border-radius: 12px; background: #F3F2F5; font: inherit; font-size: 14px; color: var(--ink); outline: none; }
+/* 登录卡按视口等比放大（2026-10-16 用户定）：--u 是「1px 的放大倍数」，约占屏宽 38%、屏高 74%；
+   小屏不小于 1（手机上就是原来的 400px 卡），大屏封顶 2 倍。所有尺寸都写成 N × --u。 */
+.login-body { --u: clamp(1px, min(0.095vw, 0.155vh), 2px); min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 24px; }
+.login-wrap { width: 100%; max-width: calc(400 * var(--u)); }
+.login-card { background: var(--card); border-radius: calc(24 * var(--u)); padding: calc(40 * var(--u)) calc(36 * var(--u)) calc(30 * var(--u)); text-align: center; }
+.login-logo { width: calc(54 * var(--u)); height: calc(54 * var(--u)); margin: 0 auto calc(18 * var(--u)); border-radius: calc(16 * var(--u)); background: var(--ink); color: var(--green); font-size: calc(17 * var(--u)); font-weight: 700; letter-spacing: .5px; display: flex; align-items: center; justify-content: center; }
+.login-card h1 { font-size: calc(22 * var(--u)); font-weight: 600; margin: 0 0 calc(6 * var(--u)); }
+.login-sub { color: var(--muted); font-size: calc(13 * var(--u)); margin: 0 0 calc(26 * var(--u)); }
+.login-field { display: block; text-align: left; margin-bottom: calc(15 * var(--u)); }
+.login-field span { display: block; font-size: calc(12 * var(--u)); color: var(--ink-2); margin-bottom: calc(7 * var(--u)); font-weight: 500; }
+.login-field input { width: 100%; min-height: calc(44 * var(--u)); padding: 0 calc(14 * var(--u)); border: 1px solid transparent; border-radius: calc(12 * var(--u)); background: #F3F2F5; font: inherit; font-size: calc(14 * var(--u)); color: var(--ink); outline: none; }
 .login-field input:focus { border-color: var(--ink); background: #fff; }
-.login-error { background: var(--ink); color: #fff; border-radius: 12px; padding: 10px 13px; font-size: 12.5px; margin: 4px 0 14px; text-align: left; }
-.login-btn { width: 100%; min-height: 46px; font-size: 14px; letter-spacing: 2px; margin-top: 6px; }
-.login-foot { color: var(--muted); font-size: 11.5px; margin: 20px 0 0; }
+.login-error { background: var(--ink); color: #fff; border-radius: calc(12 * var(--u)); padding: calc(10 * var(--u)) calc(13 * var(--u)); font-size: calc(12.5 * var(--u)); margin: calc(4 * var(--u)) 0 calc(14 * var(--u)); text-align: left; }
+.login-btn { width: 100%; min-height: calc(46 * var(--u)); border-radius: calc(12 * var(--u)); font-size: calc(14 * var(--u)); letter-spacing: 2px; margin-top: calc(6 * var(--u)); }
+.login-foot { color: var(--muted); font-size: calc(11.5 * var(--u)); margin: calc(20 * var(--u)) 0 0; }
 
 /* ============ 打印 / 导出：只留当前页 ============ */
 
@@ -870,6 +871,40 @@ body.show-kou .note.kou:not(:empty) { display: block; }
 .track > i, .tr i, .cbar i b, .goal-track .fill i { animation: dcGrowX 620ms var(--spring-soft) both; }
 .heat-row > i, .heat-table tbody td, .hm-row > * { animation: dcFadeOnly 360ms ease-out both; }
 .card-value { font-variant-numeric: tabular-nums; }
+
+/* ============ 区间条带（Range Lens，2026-10-16）：主图下面整条序列一根一天，窗口 = 主图看的那段 ============
+   柱子是内容、窗口是控件：窗口外的柱子浅灰，窗口内的柱子深灰（上下两层同样的柱子，上层按窗口裁切，拖动时只改一个 clip-path）。
+   窗口是一圈墨色细框 + 两端墨色胶囊把手，不用玻璃、不用阴影、不用绿（绿只给当前周期）。 */
+.lens { margin-top: 18px; user-select: none; -webkit-user-select: none; }
+.lens[hidden] { display: none; }
+.lens-strip { position: relative; height: 56px; margin: 0 58px 0 62px; touch-action: pan-y; cursor: pointer; outline: none; }
+.lens-track { position: absolute; inset: 0 -10px; border-radius: 12px; background: var(--soft); overflow: hidden; }
+.lens-bars { position: absolute; left: 0; right: 0; top: 8px; bottom: 6px; display: flex; align-items: flex-end; gap: var(--lens-gap, 1px); }
+.lens-bars i { flex: 1 1 0; min-width: 0; min-height: 1px; border-radius: var(--lens-r, 999px); background: #DBDADD; }
+.lens-bars.lit i { background: #4A494F; }
+.lens-bars.lit { clip-path: inset(0 100% 0 0); }
+.lens-win { position: absolute; top: 0; bottom: 0; border-top: 2px solid var(--ink); border-bottom: 2px solid var(--ink); background: rgba(11, 11, 12, .03); cursor: grab; transition: background-color 140ms ease; }
+.lens-win.held { background: rgba(11, 11, 12, .07); cursor: grabbing; }
+.lens-h { position: absolute; top: -2px; bottom: -2px; width: 12px; border-radius: 6px; background: var(--ink); cursor: ew-resize; display: flex; align-items: center; justify-content: center; }
+.lens-h.l { left: -6px; }
+.lens-h.r { right: -6px; }
+.lens-h b { width: 2px; height: 16px; border-radius: 1px; background: #FFFFFF; transition: transform 160ms var(--spring-snap); }
+.lens-h.on b { transform: scaleY(1.25); }
+.lens-strip:focus-visible .lens-win { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 4px; }
+.lens-x { position: relative; height: 18px; margin: 6px 58px 0 62px; }
+.lens-x span { position: absolute; top: 0; font-size: 11px; color: var(--muted); white-space: nowrap; transform: translateX(-50%); }
+.lens-x span.yr { color: var(--ink-2); font-weight: 600; }
+/* 窗口状态：跟随筛选 / 已偏离筛选 + 回到筛选 · 应用到全页 */
+.lens-state { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-height: 28px; font-size: 12px; color: var(--muted); }
+.lens-state .btn-ghost { min-height: 28px; padding: 0 10px; font-size: 12px; border-radius: 9px; background: var(--soft); color: var(--ink); }
+.lens-state .btn-ghost:hover { background: var(--ink); color: #fff; }
+.dc.instant .dc-bar, .dc.instant .dc-dots i { transition: none; }
+/* 条带拖动时主图按小数天平移：内容层比绘图区宽、整体 translateX；上下留出圆点和底带的余量，只裁左右 */
+.dc-slide { position: absolute; top: 0; bottom: 0; left: 0; will-change: transform; }
+.dc-plot:has(> .dc-slide) { clip-path: inset(-14px 0 -12px 0); }
+.dc-xclip { overflow: hidden; }
+.dc-xslide { position: relative; will-change: transform; }
+@media (max-width: 640px) { .lens-strip, .lens-x { margin-left: 10px; margin-right: 10px; } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

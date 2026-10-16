@@ -48,7 +48,9 @@ export function synthRows({ days = 112, seed = 20261013, now = Date.now() } = {}
     const date = new Date(dayMs);
     const dow = date.getUTCDay();
     const weekend = dow === 0 || dow === 6;
-    const n = weekend ? 30 + Math.round(r() * 20) : 105 + Math.round(r() * 45);
+    // 慢变的起伏（约 4 个月一个周期 + 一年里缓慢上升），让总览条带的全序列看得出高低段
+    const wave = 0.78 + 0.22 * Math.sin((2 * Math.PI * d) / 120) + 0.25 * (1 - d / Math.max(1, days));
+    const n = Math.round((weekend ? 30 + r() * 20 : 105 + r() * 45) * wave);
     for (let i = 0; i < n; i++) {
       const hour = Number(pick(r, HOUR_W.map((w, h) => [h, weekend ? w * 0.6 + 0.2 : w])));
       const minute = Math.floor(r() * 60);
