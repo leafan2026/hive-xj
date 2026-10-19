@@ -1394,8 +1394,10 @@ async function renderPage(env, user) {
       <!-- 区间条带（Range Lens）：整条序列一根一天，窗口默认 = 顶部筛选的时间；拖中间平移、拖两端改宽度、点空白处跳过去、双击看全部 -->
       <div class="lens" id="heroLens" hidden>
         <div class="lens-strip" id="lensStrip" tabindex="0" role="slider" aria-label="查看区间：左右键平移，上下键放宽收窄，Esc 回到筛选">
-          <div class="lens-track"><div class="lens-bars dim" id="lensDim"></div><div class="lens-bars lit" id="lensLit"></div></div>
-          <div class="lens-win" id="lensWin"><i class="lens-h l"><b></b></i><i class="lens-h r"><b></b></i></div>
+          <div class="lens-track"><div class="lens-bars dim" id="lensDim"></div></div>
+          <div class="lens-slab" id="lensSlab"></div>
+          <div class="lens-bars lit" id="lensLit"></div>
+          <div class="lens-win" id="lensWin"><i class="lens-h l glass-light"><b></b></i><i class="lens-h r glass-light"><b></b></i></div>
         </div>
         <div class="lens-x" id="lensX"></div>
       </div>
