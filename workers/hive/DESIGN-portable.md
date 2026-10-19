@@ -1,4 +1,4 @@
-# 仪表盘前端设计规范 v2.1（通用版）
+# 仪表盘前端设计规范 v2.2（通用版）
 
 从 hive 服务看板 2026-10 改版的实现中提炼，去掉业务专属的维度、接口和文件路径，供**其他仪表盘项目**直接复用。
 hive 仓库内部改样式请读同目录的 `DESIGN.md`（它描述 hive 的现状，本文描述规范）。
@@ -7,8 +7,8 @@ hive 仓库内部改样式请读同目录的 `DESIGN.md`（它描述 hive 的现
 
 | 文件 | 作用 |
 | --- | --- |
-| `dashboard-kit.css` | 全部样式：token、框架、筛选栏、卡片、胶囊、图例、DOM 柱线图、悬停卡、表格、热力格、手机 / 打印 |
-| `dashboard-kit.js` | 图表工具：`domChart()` / `pairChart()` / `stackHtml()` / `sparkHtml()` / `cellTone()`、悬停卡 `bindDomTip()`、时间分桶 `rollupDays()`，动效 `rollTo()` / `rollCards()` / `staggerIn()` / `revealIn()` / `swapIn()` 等，**无任何第三方依赖** |
+| `dashboard-kit.css` | 全部样式：token、框架、筛选栏、卡片、胶囊、图例、DOM 柱线图、悬停卡、表格、热力格、液态玻璃与悬停、手机 / 打印 |
+| `dashboard-kit.js` | 图表工具：`domChart()` / `pairChart()` / `stackHtml()` / `sparkHtml()` / `cellTone()`、悬停卡 `bindDomTip()`、时间分桶 `rollupDays()`，动效 `rollTo()` / `rollCards()` / `staggerIn()` / `revealIn()` / `swapIn()`，液态玻璃 `glassify()`、悬停 `initHoverGlass()` 等，**无任何第三方依赖** |
 | `demo.html` | 一页把所有组件走一遍的示例，照着拷页面骨架 |
 
 ## 使用方式
@@ -17,12 +17,13 @@ hive 仓库内部改样式请读同目录的 `DESIGN.md`（它描述 hive 的现
 
 1. 页面引入 `dashboard-kit.css`，在 `</body>` 前引入 `dashboard-kit.js`
 2. 页面骨架照 `demo.html`：`.app > .side + .main`，侧边栏里 `.side-body` 包住导航和底部块（手机抽屉要靠它）
-3. 柱 / 线图一律 `domChart()`，并列双柱 `pairChart()`，悬停卡一律 `bindDomTip()`（`domChart` 已内置）
+3. 柱 / 线图一律 `domChart()`，并列双柱 `pairChart()`，悬停卡一律 `bindDomTip()`（`domChart` 已内置）；页面初始化时调一次 `initHoverGlass()`
 4. 字体：`Urbanist` 自托管拉丁子集（约 28KB，SIL OFL），**不走 Google Fonts**；没有就落到系统字体，不影响布局
 5. 画完对照末尾「走样自查」逐项检查
 
 v1（紫色轻卡片 + Chart.js）已废弃，两者不能混用：v2 没有 Chart.js、没有阴影、没有红色。
 v2.1（2026-10-15）在 v2 基础上加了一层动效（见「动效」一节），视觉规则不变；样式包已内置，照抄即生效。
+v2.2（2026-10-19）加了液态玻璃和 Apple 式悬停（见「液态玻璃与悬停」一节）：**卡片仍然实心、无阴影**，只有浮在内容上的控件是玻璃。
 
 ## 基调
 
@@ -123,8 +124,8 @@ JS 侧对应：`INK`、`GREEN`、`GRAYS`（7 级灰阶，深 → 浅）、`BAR_D
 - **横轴**（`axisFor(buckets, grain)`）：按天 ≤ 31 天逐天写 MM-DD（太密自动隔几根标，「今天」永远保留），更长只标每月 1 号；
   按周 ≤ 12 根逐根标 `W41`、更多隔根标；月 / 季 / 年逐根标。
 - **柱顶数值**（`label`）：≤ 20 根时才标，11px/600。
-- **悬停**：整列铺一块 `--hover` 圆角底（CSS 的 `.dc-col:hover::before`），**不画竖虚线**；提示卡是深色卡片 `.chart-glass-tooltip`
-  （`rgba(11,11,12,.94)`、圆角 14、宽 220）：标题（`bucketTitle()`：`2026-10-05 周一` / `W41 · 10-05 – 10-11（不完整）`）→
+- **悬停**：整列后面垫一块白色玻璃托板（v2.2，`initHoverGlass()`；没调时退回 `.dc-col:hover::before` 的 `--hover` 灰底），**不画竖虚线**；
+  提示卡是深色玻璃卡 `.chart-glass-tooltip`（底 `rgba(16,16,18,.78)` + 模糊 10px、圆角 14、宽 220）：标题（`bucketTitle()`：`2026-10-05 周一` / `W41 · 10-05 – 10-11（不完整）`）→
   每个系列一行（柱 = 10×10 方块、线 = 14×3 短横 + 名称 + 右对齐数值）→ 底部合计 + 涨跌胶囊 → 可选灰色备注。
   位置锚在所在列旁边，**越过视口中线翻到左侧**。数据变了只换 `el.$tip`，不重复绑事件。
 
@@ -224,6 +225,32 @@ const t = cellTone(v / rowMax);   // → { bg, fg }，写进 <td style="backgrou
 - 系统开了「减少动态效果」（`prefers-reduced-motion`）时全部关掉，JS 补间直接跳到终值。
 - 同一份数据重画（例如切页回来）不要无意义地重复形变；要么长出，要么不动。
 
+## 液态玻璃与悬停（v2.2 新增）
+
+**玻璃只给浮在内容上的控件**：图表悬停卡（深色）、吸顶筛选栏（吸住后）、手机顶栏和抽屉、悬停托板。卡片、表格、图表本身仍然实心、无阴影、无描边；
+浮起来的玻璃才带一点影子（没有影子玻璃浮不起来）。
+
+- 材质 = 半透明底 + `backdrop-filter: blur() saturate(170–180%)` + 边缘高光（顶边更亮、底边一线暗）。
+  token：`--glass-light-bg` / `--glass-light-rim` / `--glass-dark-bg` / `--glass-dark-rim` / `--glass-lift`。
+- **边缘折射**（只在 Chromium）：`glassify(el, { radius, bezel, scale, tail })` 按元素尺寸算一张圆角矩形位移图
+  （边缘带里沿法线往里取样，按屏幕像素密度画），用 SVG `feDisplacementMap` 作为 `backdrop-filter` 的第一步；
+  Safari / Firefox 不支持 `backdrop-filter: url()`，只有模糊。悬停卡已经在 `placeTip()` 里自动调用。
+- **结构**：玻璃本体是元素里垫在最底下的一层 `.glass-g`（底色 + 模糊 + 折射，`glassify()` 自动插入），高光和影子画在元素的 `::after` 上。
+  **不要给玻璃元素本身加 `box-shadow`**——Chromium 会把折射的坐标原点挪到影子外沿，折射整个错位。
+- 系统开了「减少透明度」（`prefers-reduced-transparency`）时一律退回实色、不模糊不折射。
+
+**悬停**按 Apple 指针交互的两种效果（`initHoverGlass()`，只给鼠标，触屏没有悬停）：
+
+| 对象 | 效果 | 做法 |
+| --- | --- | --- |
+| 热力格 / 透视表的格子 | Lift（原地抬起） | 格子自己放大 6%、白色 2px 高光边 + 柔影、数字加粗；所在行名和列头一起加深加粗（十字定位） |
+| 数据表的整行 | Highlight（托板） | 白色玻璃托板垫在表格**后面**、在相邻行之间滑动；行里每格的字按各列对齐方向放大 6%、加粗、墨色；托起那行上下的分隔线让位；格子里有铺满整格的横条（`.cbar` 等）时只放大字 |
+| 柱线图 / 并列柱的列 | Highlight（托板） | 白色托板垫在柱子后面滑动，柱子照旧变黑 |
+
+- 弹簧一律**临界阻尼** `--spring-crit`（ζ = 1、响应 0.3s、440ms 到位、**不回弹**）——悬停没有甩动，不该有回弹；进场缩放 + 淡入一起做。
+- 离开的格子和新格子各自过渡，**不要用一块东西载着内容在表上滑**（看着像在拖内容，很怪）；也**不要复制内容浮在上面**。
+- 托板是白色玻璃，不用灰色；被托起的原件用 `opacity` 隐藏或不隐藏，**不能用 `visibility: hidden`**（原件收不到鼠标，悬停会一闪一闪）。
+
 ## 数据表达规则（硬约束）
 
 这几条不是样式偏好，违反了会让人读错数。
@@ -264,3 +291,8 @@ const t = cellTone(v / rowMax);   // → { bg, fg }，写进 <td style="backgrou
 | 悬停卡从上一次的位置飞过来 | `placeTip` 没走「隐藏时先 `.jump` 瞬移再显示」 |
 | 数字跳变不滚动 | 直接写了 `textContent`；改 `rollTo()` / `rollCards()` |
 | 报告页先空白再整块蹦出来 | 加载时没挂 `.pending`、到了没调 `revealIn()` |
+| 悬停还是灰底 / 黑描边，没有玻璃 | 页面没调 `initHoverGlass()`，或没引 v2.2 的 CSS |
+| 悬停时一块东西拖着内容在表上滑、回弹 | 用了旧的浮层复制做法；格子要原地抬起，行 / 列用垫在后面的托板，弹簧用 `--spring-crit` |
+| 玻璃里的折射偏到一角、出现色块 | 给玻璃元素本身加了 `box-shadow`；影子改画到 `::after` |
+| 悬停表格整行时数值被横条压住 | 带横条的格子整格放大了；应只放大文字（`lift-text-only`） |
+| 卡片也变成了玻璃 / 带了影子 | 玻璃只给浮层；卡片仍然实心无阴影 |

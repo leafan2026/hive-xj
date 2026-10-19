@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>仪表盘样式包 v2.1 · 示例</title>
+<title>仪表盘样式包 v2.2 · 示例</title>
 <link rel="stylesheet" href="dashboard-kit.css">
 </head>
 <body>
@@ -203,6 +203,7 @@ $("heat").innerHTML = html + "</tbody>";
 rollCards($("cards"));
 staggerIn(document.querySelector(".panel.active"));
 initMenu();
+initHoverGlass();   // v2.2：格子原地抬起、表格整行 / 图表的列垫白色玻璃托板
 </script>
 </body>
 </html>

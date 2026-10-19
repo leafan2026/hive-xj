@@ -1,4 +1,5 @@
-// 仪表盘图表工具包 v2.1（配套 dashboard-kit.css）。v2.1 加入动效：弹簧长出 / 形变、悬停卡弹簧跟随、数字滚动、报告页入场。从 hive 服务看板提炼，无任何第三方依赖，不用 Chart.js。
+// 仪表盘图表工具包 v2.2（配套 dashboard-kit.css）。v2.1 加入动效：弹簧长出 / 形变、悬停卡弹簧跟随、数字滚动、报告页入场；
+// v2.2 加入液态玻璃（浮层材质 + Chromium 边缘折射）和 Apple 式悬停（格子 Lift、行 / 列 Highlight），页面里调一次 initHoverGlass()。从 hive 服务看板提炼，无任何第三方依赖，不用 Chart.js。
 // 在页面里引入一次；所有柱线图用 domChart()，并列双柱用 pairChart()，悬停卡统一走 bindDomTip()。
 
 // ============== 颜色 ==============
@@ -144,7 +145,211 @@ function changeText(cur, prev, kind) {
 function deltaClass(text) { return /▲|^\+/.test(text) ? "up" : /▼|^-/.test(text) ? "down" : "flat"; }
 function pillHtml(text) { return text ? '<span class="dl ' + deltaClass(text) + '">' + escHtml(text) + "</span>" : ""; }
 
-// ============== 悬停：整列浅灰底（CSS）+ 深色提示卡 ==============
+// ============== 液态玻璃（2026-10-19，v2.2） ==============
+// 只用在浮在内容上的控件：图表悬停卡（深色玻璃）、吸顶筛选栏、手机顶栏和抽屉、悬停托板。卡片本身仍然实心、无阴影。
+// 材质 = 半透明底 + backdrop 模糊提饱和 + 边缘高光（CSS），Chromium 里再叠一层「边缘折射」：
+// 按元素尺寸算一张位移图（圆角矩形的边缘带里，像素沿法线往里取样，越靠边越强），
+// 用 SVG feDisplacementMap 作为 backdrop-filter 的第一步，透过玻璃看到的柱子在边缘会弯一下——这是液态玻璃和普通毛玻璃的区别。
+// Safari / Firefox 不支持 backdrop-filter: url()，只用模糊；系统开了「减少透明度」时全部退回实色（CSS 里处理）。
+const REDUCED_TRANSPARENCY = typeof matchMedia === "function" && matchMedia("(prefers-reduced-transparency: reduce)").matches;
+const GLASS_REFRACT = !REDUCED_TRANSPARENCY && typeof document !== "undefined" &&
+  !!(navigator.userAgentData && navigator.userAgentData.brands && navigator.userAgentData.brands.some((b) => /Chromium/.test(b.brand)));
+const glassCache = new Map();
+let glassDefs = null;
+// 圆角矩形的位移图：w × h、圆角 r、边缘带宽 bezel（px）；返回 filter id
+function glassFilter(w, h, r, bezel, scale) {
+  w = Math.max(4, Math.round(w)); h = Math.max(4, Math.round(h));
+  // 位移图按屏幕像素密度画（Retina 上 2 倍），否则边缘会有锯齿
+  const dpr = Math.min(2, Math.max(1, Math.round(window.devicePixelRatio || 1)));
+  const key = w + "x" + h + "x" + r + "x" + bezel + "x" + scale + "@" + dpr;
+  if (glassCache.has(key)) return glassCache.get(key);
+  const W = w * dpr, Hh = h * dpr;
+  const c = document.createElement("canvas");
+  c.width = W; c.height = Hh;
+  const ctx = c.getContext("2d");
+  const img = ctx.createImageData(W, Hh);
+  const rr = Math.min(r, w / 2, h / 2);
+  for (let y = 0; y < Hh; y++) {
+    for (let x = 0; x < W; x++) {
+      const px = (x + 0.5) / dpr - w / 2, py = (y + 0.5) / dpr - h / 2;
+      const qx = Math.abs(px) - (w / 2 - rr), qy = Math.abs(py) - (h / 2 - rr);
+      const ox = Math.max(qx, 0), oy = Math.max(qy, 0);
+      const sd = Math.hypot(ox, oy) + Math.min(Math.max(qx, qy), 0) - rr;   // <0 在里面
+      const d = -sd;                                                        // 离边多远
+      let dx = 0, dy = 0;
+      if (d >= 0 && d < bezel) {
+        // 凸透镜式的边：越靠边折得越厉害（平方根曲线，边上陡、往里很快变平）
+        const t = 1 - d / bezel;
+        const mag = 1 - Math.sqrt(1 - t * t);
+        let nx, ny;
+        if (qx > 0 && qy > 0) { const l = Math.hypot(qx, qy) || 1; nx = Math.sign(px) * qx / l; ny = Math.sign(py) * qy / l; }
+        else if (qx > qy) { nx = Math.sign(px); ny = 0; }
+        else { nx = 0; ny = Math.sign(py); }
+        dx = -nx * mag; dy = -ny * mag;   // 往里取样：边缘把里面的东西「拉」出来
+      }
+      const i = (y * W + x) * 4;
+      img.data[i] = Math.round(128 + dx * 127);
+      img.data[i + 1] = Math.round(128 + dy * 127);
+      img.data[i + 2] = 128;
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  if (!glassDefs) {
+    glassDefs = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    glassDefs.setAttribute("width", "0"); glassDefs.setAttribute("height", "0");
+    glassDefs.setAttribute("aria-hidden", "true");
+    glassDefs.style.position = "absolute";
+    document.body.appendChild(glassDefs);
+  }
+  const id = "hg" + glassCache.size;
+  const NS = "http://www.w3.org/2000/svg";
+  const f = document.createElementNS(NS, "filter");
+  f.setAttribute("id", id);
+  f.setAttribute("x", "0"); f.setAttribute("y", "0"); f.setAttribute("width", w); f.setAttribute("height", h);
+  f.setAttribute("filterUnits", "userSpaceOnUse");
+  f.setAttribute("color-interpolation-filters", "sRGB");
+  const im = document.createElementNS(NS, "feImage");
+  im.setAttribute("href", c.toDataURL());
+  im.setAttribute("x", "0"); im.setAttribute("y", "0"); im.setAttribute("width", w); im.setAttribute("height", h);
+  im.setAttribute("preserveAspectRatio", "none");
+  im.setAttribute("result", "map");
+  const dm = document.createElementNS(NS, "feDisplacementMap");
+  dm.setAttribute("in", "SourceGraphic"); dm.setAttribute("in2", "map");
+  dm.setAttribute("scale", scale);
+  dm.setAttribute("xChannelSelector", "R"); dm.setAttribute("yChannelSelector", "G");
+  f.append(im, dm);
+  glassDefs.appendChild(f);
+  glassCache.set(key, id);
+  return id;
+}
+// ============== 悬停（2026-10-19，v2.2，按 Apple 指针交互的两种效果） ==============
+// · 格子（热力格、矩阵、透视表、忙闲柱）= Lift：格子自己在原地略放大、浮起一层影子和白色高光边、字加粗；
+//   离开的那格同时落回去，新格子同时抬起来——各管各的，不会有一块东西拖着内容满表跑。
+// · 数据表的行、柱线图的列 = Highlight：一块玻璃托板垫在内容「后面」，在相邻的行 / 列之间滑过去；
+//   行里的字原地略放大加深（按各列原来的对齐方向放大），列里的柱子照旧变黑。
+// 弹簧一律临界阻尼（不回弹，Apple：悬停这种没有甩动的交互不加回弹），响应约 0.3 秒；进出场是缩放 + 淡入一起做。
+// 只给鼠标（触屏没有悬停）；减少动态效果时直接到位，减少透明度时托板退回实色（CSS）。
+const HOVER_CELL_SEL = ".heat-row > i, .heat-table tbody td:not(:first-child):not(.total)";
+const HOVER_COL_SEL = ".dc-col, .pair-col";
+// 普通数据表（周报 / 客服评估 / 明细等）：整行
+function dataRow(target) {
+  const tr = target.closest && target.closest("tbody tr");
+  if (!tr) return null;
+  const table = tr.closest("table");
+  if (!table || table.classList.contains("heat-table") || !tr.cells.length) return null;
+  return tr;
+}
+function initHoverGlass() {
+  if (typeof matchMedia === "function" && !matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+  document.documentElement.classList.add("hover-glass");
+  let cur = null, marks = [], plate = null;
+  const unmark = () => { marks.forEach((m) => m.classList.remove("lifted", "row-lift", "xh")); marks = []; };
+  // 十字定位：抬起的格子所在行的行名、所在列的列头一起加深加粗
+  const crosshair = (el) => {
+    const row = el.parentElement;
+    if (!row) return;
+    const k = Array.prototype.indexOf.call(row.children, el);
+    const rowHead = row.firstElementChild;
+    if (rowHead && rowHead !== el) marks.push(rowHead);
+    let head = null;
+    const table = el.closest("table");
+    if (table) {
+      const rows = table.tHead ? Array.from(table.tHead.rows) : [];
+      const hr = rows.reverse().find((r) => r.cells.length === row.children.length);
+      head = hr && hr.cells[k];
+    } else if (el.closest(".heat-grid")) { const ax = el.closest(".heat-grid").querySelector(".heat-axis"); head = ax && ax.children[k]; }
+    if (head) marks.push(head);
+  };
+  // 托板：垫在某个容器里、内容后面；换了容器就在新容器里重新长出来
+  const plateIn = (host) => {
+    if (plate && plate.parentElement === host) return plate;
+    if (plate) { const old = plate; old.classList.remove("on"); setTimeout(() => old.remove(), 200); }
+    if (getComputedStyle(host).position === "static") host.style.position = "relative";
+    host.classList.add("plate-host");
+    plate = document.createElement("i");
+    plate.className = "hover-plate";
+    plate.setAttribute("aria-hidden", "true");
+    host.prepend(plate);
+    return plate;
+  };
+  const movePlate = (host, x, y, w, h, br) => {
+    const p = plateIn(host);
+    const first = !p.classList.contains("on");
+    if (first) p.classList.add("jump");
+    p.style.width = w + "px"; p.style.height = h + "px"; p.style.borderRadius = br + "px";
+    p.style.transform = "translate(" + x + "px," + y + "px)";
+    if (first) { void p.offsetWidth; p.classList.remove("jump"); p.classList.add("on"); }
+  };
+  const dropPlate = () => { if (plate) plate.classList.remove("on"); };
+  const hide = () => { cur = null; unmark(); dropPlate(); };
+  const place = (el) => {
+    unmark();
+    // 格子：原地抬起
+    if (el.matches(HOVER_CELL_SEL)) {
+      dropPlate();
+      marks.push(el);
+      el.classList.add("lifted");
+      crosshair(el);
+      marks.forEach((m) => { if (m !== el) m.classList.add("xh"); });
+      return;
+    }
+    // 行：托板垫在表格后面滑过去，行里各格的字按对齐方向原地放大加深
+    if (el.tagName === "TR") {
+      const table = el.closest("table");
+      const host = table.parentElement;
+      const hr = host.getBoundingClientRect(), r = el.getBoundingClientRect();
+      Array.from(el.cells).forEach((td) => {
+        if (td.$origin) return;
+        const al = getComputedStyle(td).textAlign;
+        td.$origin = al === "right" || al === "end" ? "right center" : al === "center" ? "center" : "left center";
+        td.style.transformOrigin = td.$origin;
+        // 格子里有横条（占比条之类）铺满整格时，整格放大会压到隔壁的字：只放大字，横条不动
+        if (td.querySelector(".cbar, .track, .stack, .spark")) td.classList.add("lift-text-only");
+      });
+      marks.push(el);
+      el.classList.add("row-lift");
+      movePlate(host, r.left - hr.left + host.scrollLeft - 6, r.top - hr.top + host.scrollTop - 2, r.width + 12, r.height + 4, 12);
+      return;
+    }
+    // 柱线图的列：托板垫在柱子后面滑过去
+    const host = el.parentElement;
+    const hr = host.getBoundingClientRect(), r = el.getBoundingClientRect();
+    movePlate(host, r.left - hr.left + 1, r.top - hr.top, r.width - 2, r.height, 10);
+  };
+  document.addEventListener("pointerover", (e) => {
+    if (e.pointerType && e.pointerType !== "mouse") return;
+    const t = e.target.closest && (e.target.closest(HOVER_CELL_SEL) || e.target.closest(HOVER_COL_SEL) || dataRow(e.target));
+    if (!t) { if (cur) hide(); return; }
+    if (t === cur) return;
+    cur = t;
+    place(t);
+  }, { passive: true });
+  window.addEventListener("resize", hide);
+  // 图重画后原来的格子没了，跟着收掉
+  new MutationObserver(() => { if (cur && !cur.isConnected) hide(); if (plate && !plate.isConnected) plate = null; }).observe(document.body, { childList: true, subtree: true });
+}
+
+// 给元素挂上玻璃：玻璃本体是元素里垫在最底下的一层 .glass-g（底色 + backdrop 模糊 + 折射），高光和影子画在元素自己的 ::after 上。
+// 分两层是因为 Chromium 里带 box-shadow 的元素，backdrop 折射的坐标原点会挪到影子外沿，折射就错位了。
+// 折射只在 Chromium；其他浏览器只有 CSS 里的模糊。tail 是折射之后接着做的模糊 / 提饱和，和 CSS 保持一致。
+function glassify(el, opts) {
+  if (!el) return;
+  let g = el.firstElementChild;
+  if (!g || !g.classList.contains("glass-g")) { g = document.createElement("i"); g.className = "glass-g"; g.setAttribute("aria-hidden", "true"); el.prepend(g); }
+  if (!GLASS_REFRACT) return;
+  const o = opts || {};
+  // 尺寸在过渡中时 offsetWidth 还是旧值，调用方知道目标尺寸就直接传进来
+  const w = Math.round(o.w || el.offsetWidth), h = Math.round(o.h || el.offsetHeight);
+  if (!w || !h) return;
+  const sig = w + "x" + h + "x" + (o.scale || 20);
+  if (g.$glass === sig) return;
+  g.$glass = sig;
+  const id = glassFilter(w, h, o.radius || 12, o.bezel || 10, o.scale || 20);
+  g.style.backdropFilter = "url(#" + id + ") " + (o.tail || "");
+}
+
+// ============== 悬停提示卡：深色液态玻璃 ==============
 function tipEl() {
   let el = document.getElementById("glass-tooltip");
   if (!el) { el = document.createElement("div"); el.id = "glass-tooltip"; el.className = "chart-glass-tooltip"; el.setAttribute("role", "status"); document.body.appendChild(el); }
@@ -176,6 +381,7 @@ function paintTip(title, rows, foot, notes) {
 // 锚在列旁边；越过视口中线翻到左侧。显示中换位置走弹簧过渡（CSS）；从隐藏到出现先瞬移到位（.jump）再淡入，不会从上次的位置飞过来
 function placeTip(el, x, y) {
   const w = el.offsetWidth, h = el.offsetHeight;
+  glassify(el, { radius: 14, bezel: 14, scale: 26, tail: "blur(10px) saturate(170%)" });
   let left = x > window.innerWidth / 2 ? x - w - 14 : x + 14;
   left = Math.min(Math.max(12, left), window.innerWidth - w - 12);
   let top = y - h / 2;

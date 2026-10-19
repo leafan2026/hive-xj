@@ -1,4 +1,4 @@
-/* 仪表盘样式包 v2.1（黑白灰 + 品牌绿、胶囊柱、深色悬停卡）
+/* 仪表盘样式包 v2.2（黑白灰 + 品牌绿、胶囊柱、深色玻璃悬停卡、液态玻璃浮层）
    从 hive 服务看板提炼，去掉业务专属部分。配套 dashboard-kit.js。改之前读 DESIGN-portable.md。 */
 
 :root {
@@ -16,10 +16,19 @@
   --green-soft: #F4FDF6;  /* 绿的浅底：表格高亮行 */
   --band: rgba(117, 251, 144, .3);  /* 当前周期底带 */
   --hover: #E9E8EC;       /* 悬停列 */
+  /* 液态玻璃（v2.2，2026-10-19）：只给浮在内容上的控件。浅玻璃 = 白 + 模糊提饱和；深玻璃 = 墨 + 模糊；
+     边缘一圈高光、顶边更亮、底边一线暗；浮起来的才带一点影子（卡片仍然无阴影） */
+  --glass-light-bg: rgba(255, 255, 255, .42);
+  --glass-light-rim: inset 0 0 0 1px rgba(255, 255, 255, .75), inset 0 1.5px 1px rgba(255, 255, 255, .95), inset 0 -1px 1px rgba(11, 11, 12, .12);
+  --glass-dark-bg: rgba(16, 16, 18, .78);
+  --glass-dark-rim: inset 0 0 0 1px rgba(255, 255, 255, .14), inset 0 1px 0 rgba(255, 255, 255, .30), inset 0 -1px 0 rgba(0, 0, 0, .30);
+  --glass-lift: 0 1px 2px rgba(11, 11, 12, .10), 0 8px 22px rgba(11, 11, 12, .14);
   --radius: 22px;
   --font: "Urbanist", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
   /* 动效（2026-10-15）：阻尼弹簧闭式解采样成 linear()。soft ≈ ζ0.72 回弹 3.8%（长出、悬停卡跟随），snap ≈ ζ0.86 回弹 0.5%（数据形变） */
   --spring-soft: linear(0, 0.024, 0.085, 0.171, 0.27, 0.374, 0.477, 0.574, 0.663, 0.742, 0.811, 0.868, 0.916, 0.953, 0.982, 1.004, 1.019, 1.03, 1.035, 1.038, 1.038, 1.037, 1.034, 1.03, 1.026, 1.022, 1.018, 1.015, 1.012, 1.009, 1.006, 1.004, 1.003, 1.001, 1, 1, 1);
+  /* 临界阻尼（ζ = 1、响应 0.3s，440ms 到位、不回弹）：悬停、托板这类没有甩动的交互用它 */
+  --spring-crit: linear(0, 0.058, 0.18, 0.321, 0.455, 0.573, 0.671, 0.75, 0.812, 0.86, 0.897, 0.924, 0.945, 0.96, 0.971, 0.979, 0.985, 0.989, 0.992, 0.994, 0.996, 0.997, 0.998, 0.999, 1);
   --spring-snap: linear(0, 0.022, 0.079, 0.156, 0.244, 0.335, 0.425, 0.511, 0.589, 0.659, 0.722, 0.775, 0.821, 0.86, 0.892, 0.919, 0.94, 0.957, 0.97, 0.98, 0.988, 0.994, 0.998, 1.001, 1.003, 1.004, 1.005, 1.005, 1.005, 1.005, 1.004, 1.004, 1.003, 1.003, 1.003, 1.002, 1);
 }
 
@@ -80,8 +89,12 @@ button, select, input { font: inherit; }
 .seg button[aria-pressed="true"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--ink); }
 
 /* 筛选栏：白底圆角条，控件浅灰底、无边框，生效中的控件白底黑边 */
-.sticky-top { position: sticky; top: 0; z-index: 60; background: var(--bg); margin: 0 -8px 2px; padding: 0 8px 14px; transition: box-shadow .18s; }
-.sticky-top.stuck { box-shadow: 0 12px 24px -16px rgba(11, 11, 12, .35); }
+.sticky-top { position: sticky; top: 0; z-index: 60; background: var(--bg); margin: 0 -8px 2px; padding: 0 8px 14px; transition: background-color .18s; }
+/* 吸住之后变成浅玻璃：下面滚过去的卡片透出来，底边用一道渐隐代替影子（不画分隔线） */
+.sticky-top.stuck { background: rgba(236, 235, 239, .68); -webkit-backdrop-filter: blur(20px) saturate(180%); backdrop-filter: blur(20px) saturate(180%); }
+.sticky-top::after { content: ""; position: absolute; left: 0; right: 0; bottom: -14px; height: 14px; pointer-events: none; opacity: 0; transition: opacity .18s;
+  background: linear-gradient(rgba(236, 235, 239, .55), rgba(236, 235, 239, 0)); }
+.sticky-top.stuck::after { opacity: 1; }
 .filterbar { background: var(--card); border-radius: 18px; padding: 10px 12px; }
 .filterbar.busy { opacity: .55; pointer-events: none; }
 .filter-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
@@ -240,9 +253,14 @@ button, select, input { font: inherit; }
 
 /* ============ 悬停提示：深色卡片，跟随所在列，过中线翻到左侧 ============ */
 
-.chart-glass-tooltip { position: fixed; z-index: 80; width: 220px; padding: 12px 14px; border-radius: 14px; color: #fff; background: rgba(11, 11, 12, .94); box-shadow: 0 14px 34px rgba(11, 11, 12, .28); opacity: 0; visibility: hidden; pointer-events: none; display: flex; flex-direction: column; gap: 8px; font-family: var(--font); }
+.chart-glass-tooltip { position: fixed; z-index: 80; width: 220px; padding: 12px 14px; border-radius: 14px; color: #fff; opacity: 0; visibility: hidden; pointer-events: none; display: flex; flex-direction: column; gap: 8px; font-family: var(--font); }
 .chart-glass-tooltip.visible { opacity: 1; visibility: visible; }
-.chart-glass-tooltip { transform: translateY(4px); transition: opacity 100ms ease-in, transform 100ms ease-in, visibility 0s linear 100ms; }
+/* 深色液态玻璃：底色 + 模糊在垫底的 .glass-g 层上（Chromium 里 JS 另叠边缘折射），高光和影子画在 ::after——
+   元素自己带 box-shadow 时 Chromium 会把折射的坐标原点挪到影子外沿，折射就错位 */
+.glass-g { position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none; display: block; }
+.chart-glass-tooltip > .glass-g { background: var(--glass-dark-bg); -webkit-backdrop-filter: blur(10px) saturate(170%); backdrop-filter: blur(10px) saturate(170%); }
+.chart-glass-tooltip::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: var(--glass-dark-rim), 0 14px 34px rgba(11, 11, 12, .26); }
+.chart-glass-tooltip { transform: translateY(4px) scale(.96); transition: opacity 100ms ease-in, transform 100ms ease-in, visibility 0s linear 100ms; }
 .chart-glass-tooltip.visible { transform: none; transition: left 300ms var(--spring-soft), top 200ms var(--spring-snap), opacity 140ms ease-out, transform 180ms var(--spring-snap), visibility 0s; }
 .chart-glass-tooltip.jump { transition: none !important; }
 .chart-glass-tooltip-title { font-size: 12px; color: #C9C8CD; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -298,10 +316,10 @@ tr.hl, tr.hl:hover { background: var(--green-soft); }
 /* 手机：侧边栏折成顶部一条（logo 左、汉堡右），导航变右侧抽屉；筛选栏收起成一行摘要 */
 @media (max-width: 640px) {
   .app { flex-direction: column; }
-  .side { position: sticky; top: 0; z-index: 70; height: auto; width: 100%; flex: none; padding: 10px 16px; gap: 10px; background: var(--bg); flex-direction: row; align-items: center; justify-content: space-between; overflow: visible; }
+  .side { position: sticky; top: 0; z-index: 70; height: auto; width: 100%; flex: none; padding: 10px 16px; gap: 10px; background: rgba(236, 235, 239, .72); -webkit-backdrop-filter: blur(20px) saturate(180%); backdrop-filter: blur(20px) saturate(180%); flex-direction: row; align-items: center; justify-content: space-between; overflow: visible; }
   .menu-btn { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border: 0; border-radius: 12px; background: var(--card); color: var(--ink); cursor: pointer; }
   .menu-btn svg, .menu-close svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
-  .side-body { position: fixed; top: 0; right: 0; bottom: 0; z-index: 90; width: min(300px, 86vw); padding: 14px 16px 18px; background: var(--card); box-shadow: -14px 0 34px rgba(11, 11, 12, .18); overflow-y: auto; transform: translateX(100%); transition: transform .2s ease; gap: 22px; }
+  .side-body { position: fixed; top: 0; right: 0; bottom: 0; z-index: 90; width: min(300px, 86vw); padding: 14px 16px 18px; background: rgba(255, 255, 255, .72); -webkit-backdrop-filter: blur(24px) saturate(180%); backdrop-filter: blur(24px) saturate(180%); box-shadow: inset 1px 0 0 rgba(255, 255, 255, .8), -14px 0 34px rgba(11, 11, 12, .18); overflow-y: auto; transform: translateX(100%); transition: transform .2s ease; gap: 22px; }
   body.menu-open .side-body { transform: none; }
   .drawer-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; }
   .menu-close { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 0; border-radius: 10px; background: var(--soft); color: var(--ink); cursor: pointer; }
@@ -378,8 +396,47 @@ tr.hl, tr.hl:hover { background: var(--green-soft); }
 .heat-row > i, .heat-table tbody td, .hm-row > * { animation: dcFadeOnly 360ms ease-out both; }
 .card-value { font-variant-numeric: tabular-nums; }
 
+/* 悬停（v2.2，按 Apple 指针交互）：格子 = Lift（原地抬起），数据表的行 / 图表的列 = Highlight（玻璃托板垫在内容后面滑动）。
+   弹簧一律临界阻尼、不回弹（--spring-crit，响应 ≈ 0.3s）；离开的和进入的各自过渡，互不牵连 */
+.hover-glass .heat-row > i, .hover-glass .heat-table tbody td {
+  transition: transform 440ms var(--spring-crit), box-shadow 220ms ease, color 160ms ease; }
+.hover-glass .lifted { position: relative; z-index: 3; transform: scale(1.06); font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .45), 0 0 0 2px rgba(255, 255, 255, .95), 0 6px 16px rgba(11, 11, 12, .16), 0 1px 3px rgba(11, 11, 12, .10); }
+.hover-glass .heat-row > i:hover { outline: none; }
+/* 行：各格的字按对齐方向原地放大 1.05 倍、变墨色；托板在后面 */
+.hover-glass tbody tr > td { transition: transform 440ms var(--spring-crit), color 160ms ease; }
+.hover-glass tbody tr.row-lift > td { transform: scale(1.06); color: var(--ink); font-weight: 600; }
+.hover-glass tbody tr.row-lift > td.lift-text-only { transform: none; }
+/* 托起的那一行上下两条分隔线让位，托板边缘才干净 */
+.hover-glass tbody tr > td { transition: transform 440ms var(--spring-crit), color 160ms ease, border-color 160ms ease; }
+.hover-glass tbody tr.row-lift > td, .hover-glass tbody tr:has(+ tr.row-lift) > td { border-bottom-color: transparent; }
+.hover-glass tbody tr > td.lift-text-only .cbar > span { display: inline-block; transform-origin: right center; transition: transform 440ms var(--spring-crit); }
+.hover-glass tbody tr.row-lift > td.lift-text-only .cbar > span { transform: scale(1.05); }
+.hover-glass .plate-host tbody tr:hover { background: transparent; }
+/* 托板：白色玻璃（2026-10-19 用户定：不要灰色）+ 白边高光 + 柔影，整行像被托起来；位置、尺寸走临界阻尼弹簧，进场缩放和淡入一起做 */
+.plate-host { isolation: isolate; }
+.hover-plate { position: absolute; left: 0; top: 0; z-index: -1; pointer-events: none; display: block; opacity: 0; scale: .97;
+  background: rgba(255, 255, 255, .92); -webkit-backdrop-filter: blur(8px) saturate(180%); backdrop-filter: blur(8px) saturate(180%);
+  box-shadow: inset 0 1px 0 #FFFFFF, inset 0 0 0 1px rgba(255, 255, 255, .8), 0 0 0 1px rgba(11, 11, 12, .04), 0 10px 26px rgba(11, 11, 12, .14), 0 2px 4px rgba(11, 11, 12, .08);
+  transition: transform 440ms var(--spring-crit), width 440ms var(--spring-crit), height 440ms var(--spring-crit), opacity 120ms ease-in, scale 120ms ease-in; }
+.hover-plate.on { opacity: 1; scale: 1; transition: transform 440ms var(--spring-crit), width 440ms var(--spring-crit), height 440ms var(--spring-crit), opacity 160ms ease-out, scale 300ms var(--spring-crit); }
+.hover-plate.jump { transition: none !important; }
+.dc-cols > .hover-plate, .pair-bars > .hover-plate { z-index: 0; }
+.hover-glass .dc-col:hover::before, .hover-glass .pair-col:hover::before { background: transparent; }
+.xh { color: var(--ink) !important; font-weight: 700 !important; }
+
+/* 系统开了「减少透明度」：玻璃一律退回实色，不模糊、不折射 */
+@media (prefers-reduced-transparency: reduce) {
+  .chart-glass-tooltip > .glass-g { background: rgba(11, 11, 12, .96); -webkit-backdrop-filter: none; backdrop-filter: none !important; }
+  .sticky-top.stuck, .side { background: var(--bg) !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+  .side-body { background: var(--card) !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+  .hover-plate { background: #FFFFFF; -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+  .hover-plate { scale: 1 !important; }
+  .hover-glass .lifted, .hover-glass tbody tr.row-lift > td { transform: none; }
 }
 
 /* ============ 打印：只留当前页 ============ */
