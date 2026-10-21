@@ -934,12 +934,14 @@ async function loadDashboard() {
     const ok = m.status === "ok" ? m : (m.lastOk || {});
     const pad2 = (n) => String(n).padStart(2, "0");
     const hm = (iso) => { const t = new Date(iso); return pad2(t.getMonth() + 1) + "-" + pad2(t.getDate()) + " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes()); };
-    if (ok.updatedAt) {
-      $("updatedAt").innerHTML = "<span>数据更新于 " + hm(ok.updatedAt) + "</span><span>共 " + fmtNum(ok.total) + " 条会话</span>";
+    // 增量同步后 updatedAt 只在明细真有变化时才变；「数据更新于」显示最近一次同步完成的 checkedAt
+    const synced = ok.checkedAt || ok.updatedAt;
+    if (synced) {
+      $("updatedAt").innerHTML = "<span>数据更新于 " + hm(synced) + "</span><span>共 " + fmtNum(ok.total) + " 条会话</span>";
     }
     if (m.status === "error") {
       banner("最近一次拉取数据失败（" + (m.failedAt ? hm(m.failedAt) : "时间未知") + "）：" + (m.error || "原因未知") +
-        "。页面上的数据停在 " + (ok.updatedAt ? hm(ok.updatedAt) : "上一次成功拉取") + "，可点「重新拉取数据」重试。", "warn");
+        "。页面上的数据停在 " + (synced ? hm(synced) : "上一次成功拉取") + "，可点「重新拉取数据」重试。", "warn");
     } else {
       banner(
         json.stats.total === 0 ? "当前筛选条件下没有会话，放宽条件或点「重置筛选」。" : "",

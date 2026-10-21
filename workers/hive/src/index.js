@@ -19,7 +19,8 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 // 一行 = 首次提问摘要 + 复问了几次 + 最后一次谁接的。明细多了一个字段，所以 K_ENTRIES 也要换键、重新拉数。
 const K_STATS = "hive:stats:v15";
 // entries v7（2026-10-21）：明细改成按月分块存，K_ENTRIES 只放清单，见「明细分块存储」。
-const K_ENTRIES = "hive:entries:v7";
+// entries v8（2026-10-21）：明细加 sn（金数据 serial_number），按「最后更新时间」增量同步要靠它合并，见「增量同步」。
+const K_ENTRIES = "hive:entries:v8";
 const K_WEEKLY = "hive:weekly:v7";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
@@ -53,8 +54,12 @@ const AVOIDABLE_REASONS = new Set([
 
 // 一页最多等 PAGE_TIMEOUT_MS。没有超时的话，只要有一页挂住不返回，
 // 整个 refreshCache 就永远不结束，meta 会一直停在 running、把后续刷新全挡掉（2026-09-18 的故障现场）。
-async function fetchPage(auth, next) {
-  const url = next ? `${JSJ_BASE}?next=${encodeURIComponent(next)}` : JSJ_BASE;
+// params：{ next, filters }。带 filters 时金数据的 next 是行偏移，不再是 serial_number。
+async function fetchPage(auth, next, filters) {
+  const qs = new URLSearchParams();
+  if (next !== null && next !== undefined) qs.set("next", String(next));
+  if (filters) qs.set("filters", JSON.stringify(filters));
+  const url = qs.toString() ? `${JSJ_BASE}?${qs}` : JSJ_BASE;
   let lastErr;
   for (let 第几次 = 0; 第几次 < 2; 第几次++) {
     try {
@@ -74,7 +79,7 @@ async function fetchPage(auth, next) {
       lastErr = err;
     }
   }
-  throw new Error(`取页失败（${next ?? "首页"}）：${lastErr && lastErr.message}`);
+  throw new Error(`取页失败（${filters ? "增量 " : ""}${next ?? "首页"}）：${lastErr && lastErr.message}`);
 }
 
 async function fetchAllEntries(env) {
@@ -123,10 +128,51 @@ async function fetchAllEntries(env) {
   return { rows, total };
 }
 
+// ============== 增量同步（2026-10-21） ==============
+// 全量拉一次要 600 多页、25～40 秒，而数据源一天只进一两批新会话；老会话也会被回填改动
+// （实测 10-04 改了 26 天前的记录、10-21 改了 8 天前的），所以不能按「N 天前冻结」，
+// 改为按金数据的「最后更新时间」只拉上次同步之后新增或改过的记录，按 sn 合并进已存明细。
+// 增量看不到删除，所以每天北京时间 FULL_SYNC_HOUR 点后的第一次刷新、或手动「重新拉取数据」走全量。
+const SYNC_OVERLAP_MS = 10 * 60 * 1000;   // 游标往回多拉 10 分钟，盖住时钟误差和同步期间正在写入的记录
+const FULL_SYNC_HOUR = 3;                 // 数据源每天约 04:30 进批量，凌晨 3 点后全量一次
+
+// 金数据的时间参数按北京时间解析
+function bjTime(ms) {
+  return new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 19).replace("T", " ");
+}
+
+async function fetchUpdatedSince(env, sinceMs) {
+  const auth = btoa(`${env.JSJ_API_KEY}:${env.JSJ_API_SECRET}`);
+  const filters = [{ field: "updated_at", operator: "gte", value: bjTime(sinceMs) }];
+  const seen = new Set();
+  const rows = [];
+  const absorb = (page) => {
+    for (const e of page.data || []) {
+      const key = e.serial_number;
+      if (key === null || key === undefined || seen.has(key)) continue;
+      seen.add(key);
+      rows.push(trim(e));
+    }
+  };
+  const first = await fetchPage(auth, null, filters);
+  const total = first.total || 0;
+  const size = (first.data || []).length || PAGE_SIZE;
+  absorb(first);
+  // 带筛选时 next 是行偏移：知道总数后并行按偏移取（大批回填时也快）
+  const offsets = [];
+  for (let o = size; o < total; o += size) offsets.push(o);
+  for (let i = 0; i < offsets.length; i += CONCURRENCY) {
+    const pages = await Promise.all(offsets.slice(i, i + CONCURRENCY).map((o) => fetchPage(auth, o, filters)));
+    pages.forEach(absorb);
+  }
+  return { rows, total };
+}
+
 // 精简条目：只留看板/周报要用的字段，控制 KV value 体积。
 // 只保留有消费者的字段 —— 明细每多一个字段，筛选路径就要多解析 6600 次。
 function trim(e) {
   return {
+    sn: e.serial_number,            // 增量同步按它合并同一条记录
     t: e.field_1 || "",
     url: e.field_2 || "",           // 会话地址，只有「复问明细」表消费（复问自 指向的也是它）
     uid: e.field_8 || "",
@@ -1037,7 +1083,7 @@ async function readMeta(env) {
 // 最近一次成功落地的数据是哪一版。刷新失败 / 进行中时，页面上的数据仍是这一版。
 function lastOkOf(meta) {
   if (!meta) return null;
-  if (meta.status === "ok" && meta.updatedAt) return { updatedAt: meta.updatedAt, total: meta.total };
+  if (meta.status === "ok" && meta.updatedAt) return { updatedAt: meta.updatedAt, checkedAt: meta.checkedAt || meta.updatedAt, total: meta.total };
   return meta.lastOk || null;
 }
 
@@ -1049,7 +1095,7 @@ function lastOkOf(meta) {
 //   { stamp, total, parts: [{ key, n }] }
 // 块的键里带内容指纹：内容没变的块键不变、不重写（老月份基本不动，每次刷新通常只写当月一块）；
 // 内容变了就是新键，清单最后才切过去——任何一块写失败，读的人看到的仍是完整的旧版本，不会新旧混读。
-const K_ENTRY_PART = "hive:entries:v7:part:";
+const K_ENTRY_PART = "hive:entries:v8:part:";
 const ENTRY_PART_ROWS = 6000;
 const ENTRY_PART_MAX_BYTES = 20 * 1024 * 1024;   // 离 25 MiB 上限留余量，超了直接报错而不是等 KV 拒写
 
@@ -1076,7 +1122,7 @@ function splitEntries(rows) {
 
 let entriesMemo = null;   // 同一个 isolate 里按清单 stamp 记住解析好的明细，省掉每次请求解析几十 MB
 
-async function writeEntries(env, rows) {
+async function writeEntries(env, rows, extra) {
   const prev = (await env.CACHE.get(K_ENTRIES, { type: "json" })) || {};
   const had = new Set((prev.parts || []).map((p) => p.key));
   const enc = new TextEncoder();
@@ -1091,12 +1137,17 @@ async function writeEntries(env, rows) {
   const toWrite = parts.filter((p) => !had.has(p.key));
   await Promise.all(toWrite.map((p) => env.CACHE.put(p.key, p.body)));   // 任何一块失败都整体抛出，清单不切
   const stamp = new Date().toISOString();
-  await env.CACHE.put(K_ENTRIES, JSON.stringify({ stamp, total: rows.length, parts: parts.map(({ key, n }) => ({ key, n })) }));
+  await env.CACHE.put(K_ENTRIES, JSON.stringify({ ...(extra || {}), stamp, total: rows.length, parts: parts.map(({ key, n }) => ({ key, n })) }));
   // 新清单里不再用的旧块删掉（正在读旧清单的请求缺块时会重读一次清单，见 readEntries）
   const keep = new Set(parts.map((p) => p.key));
   await Promise.allSettled((prev.parts || []).filter((p) => !keep.has(p.key)).map((p) => env.CACHE.delete(p.key)));
   entriesMemo = { stamp, rows };
   return { parts: parts.length, written: toWrite.length };
+}
+
+async function readManifest(env) {
+  const man = await env.CACHE.get(K_ENTRIES, { type: "json" });
+  return man && Array.isArray(man.parts) ? man : null;
 }
 
 async function readEntries(env) {
@@ -1113,35 +1164,78 @@ async function readEntries(env) {
   return null;
 }
 
-async function refreshCache(env) {
+// mode："auto"（定时 / 缓存缺失）按需全量或增量；"full"（手动「重新拉取数据」）强制全量。
+// meta.updatedAt 是「明细最后一次变化」的时间，也是查询缓存的数据版本——增量没拉到改动就不变，查询缓存继续命中；
+// meta.checkedAt 是最近一次同步完成的时间，页面「数据更新于」显示它。
+async function refreshCache(env, mode = "auto") {
   const startedAt = Date.now();
-  const lastOk = lastOkOf(await readMeta(env));
+  const prevMeta = await readMeta(env);
+  const lastOk = lastOkOf(prevMeta);
   await env.CACHE.put(
     K_META,
     JSON.stringify({ status: "running", startedAt, startedAtIso: new Date(startedAt).toISOString(), lastOk })
   );
 
   try {
-    const { rows, total } = await fetchAllEntries(env);
-    rows.sort((a, b) => (b.t || "").localeCompare(a.t || ""));
-    // 明细是唯一的事实来源：先写明细，写成了才写派生的 stats / weekly / loop。
-    // 明细写不进去就整次算失败、派生键也不动，免得「派生是新的、明细是旧的」。
-    const 分块 = await writeEntries(env, rows);
-    const 派生键 = [
-      [K_STATS, buildStats(rows)],
-      [K_WEEKLY, buildWeekly(rows)],
-      [K_LOOP, buildLoop(rows)],
-    ];
-    const 结果 = await Promise.allSettled(派生键.map(([k, v]) => env.CACHE.put(k, JSON.stringify(v))));
-    const 失败键 = 派生键.map(([k]) => k).filter((k, i) => 结果[i].status === "rejected");
-    // 派生键写失败就删掉旧值，读的时候从新明细现算（见「派生」），不留和明细对不上的旧值
-    await Promise.allSettled(失败键.map((k) => env.CACHE.delete(k)));
-    const updatedAt = new Date().toISOString();
+    const man = await readManifest(env);
+    const 今天 = bjTime(startedAt).slice(0, 10);
+    const 全量 = mode === "full" || !man || !man.cursor || !man.fullAt ||
+      (bjTime(Date.parse(man.fullAt)).slice(0, 10) < 今天 && Number(bjTime(startedAt).slice(11, 13)) >= FULL_SYNC_HOUR);
+    const cursor = new Date(startedAt - SYNC_OVERLAP_MS).toISOString();
+
+    let rows, reportedTotal, changed, fullAt;
+    if (全量) {
+      const r = await fetchAllEntries(env);
+      rows = r.rows;
+      reportedTotal = r.total;
+      changed = rows.length;
+      fullAt = new Date(startedAt).toISOString();
+    } else {
+      const [old, inc] = await Promise.all([readEntries(env), fetchUpdatedSince(env, Date.parse(man.cursor))]);
+      if (!old) throw new Error("读不到已存明细，下次改走全量");
+      fullAt = man.fullAt;
+      reportedTotal = null;
+      // 只算真正有变化的：增量窗口和上次有重叠，同一条记录内容没变就不算改动
+      const bySn = new Map(old.map((r) => [r.sn, r]));
+      changed = 0;
+      for (const r of inc.rows) {
+        const was = bySn.get(r.sn);
+        if (!was || JSON.stringify(was) !== JSON.stringify(r)) { bySn.set(r.sn, r); changed++; }
+      }
+      rows = changed ? [...bySn.values()] : old;
+    }
+
+    let 分块 = { parts: man ? man.parts.length : 0, written: 0 };
+    let 失败键 = [];
+    let updatedAt = lastOk && lastOk.updatedAt;
+    if (全量 || changed || !updatedAt) {
+      rows.sort((a, b) => (b.t || "").localeCompare(a.t || ""));
+      // 明细是唯一的事实来源：先写明细，写成了才写派生的 stats / weekly / loop。
+      // 明细写不进去就整次算失败、派生键也不动，免得「派生是新的、明细是旧的」。
+      分块 = await writeEntries(env, rows, { cursor, fullAt });
+      const 派生键 = [
+        [K_STATS, buildStats(rows)],
+        [K_WEEKLY, buildWeekly(rows)],
+        [K_LOOP, buildLoop(rows)],
+      ];
+      const 结果 = await Promise.allSettled(派生键.map(([k, v]) => env.CACHE.put(k, JSON.stringify(v))));
+      失败键 = 派生键.map(([k]) => k).filter((k, i) => 结果[i].status === "rejected");
+      // 派生键写失败就删掉旧值，读的时候从新明细现算（见「派生」），不留和明细对不上的旧值
+      await Promise.allSettled(失败键.map((k) => env.CACHE.delete(k)));
+      updatedAt = new Date().toISOString();
+    } else {
+      // 没有改动：明细不重写，只把游标往前挪
+      await env.CACHE.put(K_ENTRIES, JSON.stringify({ ...man, cursor }));
+    }
     const meta = {
       status: "ok",
+      mode: 全量 ? "full" : "incr",
       updatedAt,
+      checkedAt: new Date().toISOString(),
+      fullAt,
       total: rows.length,
-      reportedTotal: total,
+      changed,
+      ...(reportedTotal !== null ? { reportedTotal } : {}),
       parts: 分块.parts,
       partsWritten: 分块.written,
       tookMs: Date.now() - startedAt,
@@ -2173,7 +2267,7 @@ export default {
       if (request.method !== "POST") return json({ success: false, error: "use POST" }, 405);
       const meta = await readMeta(env);
       if (isRunning(meta)) return json({ success: true, alreadyRunning: true, meta }, 202);
-      ctx.waitUntil(refreshCache(env));
+      ctx.waitUntil(refreshCache(env, "full"));   // 手动拉取走全量：顺带兜住增量看不到的删除
       return json({ success: true, started: true }, 202);
     }
 
@@ -2185,4 +2279,4 @@ export default {
 };
 
 // 给 scripts/preview.mjs 和本地自测用：预览按线上同一套分块格式写明细
-export { writeEntries, readEntries, refreshCache };
+export { writeEntries, readEntries, refreshCache, fetchUpdatedSince, bjTime };
