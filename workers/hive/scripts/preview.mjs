@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
-import worker from "../src/index.js";
+import worker, { writeEntries } from "../src/index.js";
 import { synthRows } from "./preview-data.mjs";
 
 const port = Number(process.env.PORT || 4173);
@@ -45,9 +45,14 @@ const scratch = new Map();
 
 const cache = {
   async get(key) {
-    // 只预置明细和 meta；stats / weekly / loop 缺失时 worker 会从明细现算（与线上「派生」同一条路径）
-    if (key === "hive:entries:v6") return rows;
-    if (key === "hive:meta:v1") return { status: "ok", updatedAt, total: rows.length };
+    // 只预置 meta；明细在启动时用线上同一个 writeEntries 分块写进来。
+    // stats / weekly / loop 缺失时 worker 会从明细现算（与线上「派生」同一条路径）。
+    // PREVIEW_META=error 模拟「最近一次拉取失败、页面停在上一版」，看提示条
+    if (key === "hive:meta:v1") {
+      return process.env.PREVIEW_META === "error"
+        ? { status: "error", error: "演示：明细写入失败", failedAt: new Date().toISOString(), lastOk: { updatedAt, total: rows.length } }
+        : { status: "ok", updatedAt, total: rows.length };
+    }
     const hit = scratch.get(key);
     return hit === undefined ? null : hit;
   },
@@ -65,6 +70,9 @@ const env = {
   CACHE: cache,
   ASSETS: { url: async (path) => `${origin}/assets${path}` },
 };
+
+await writeEntries(env, [...rows].sort((a, b) => (b.t || "").localeCompare(a.t || "")));
+
 
 const assetTypes = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".woff2": "font/woff2" };
 

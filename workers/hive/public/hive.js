@@ -928,16 +928,24 @@ async function loadDashboard() {
     $("matchInfo").innerHTML = json.filtered
       ? "筛选后 <b>" + fmtNum(json.matched) + "</b> / " + fmtNum(json.fullTotal) + " 条会话"
       : "全部 <b>" + fmtNum(json.fullTotal || json.stats.total) + "</b> 条会话";
-    if (json.meta) {
-      const t = new Date(json.meta.updatedAt);
-      const pad2 = (n) => String(n).padStart(2, "0");
-      $("updatedAt").innerHTML = "<span>数据更新于 " + pad2(t.getMonth() + 1) + "-" + pad2(t.getDate()) + " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes()) +
-        "</span><span>共 " + fmtNum(json.meta.total) + " 条会话</span>";
+    // 「数据更新于」写的是页面上这份数据真正落地的时间：刷新失败 / 进行中时用 lastOk，
+    // 不能用失败那次的时间——2026-10-20 明细写入失败了一天多，页面却照常显示刚刚更新过。
+    const m = json.meta || {};
+    const ok = m.status === "ok" ? m : (m.lastOk || {});
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const hm = (iso) => { const t = new Date(iso); return pad2(t.getMonth() + 1) + "-" + pad2(t.getDate()) + " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes()); };
+    if (ok.updatedAt) {
+      $("updatedAt").innerHTML = "<span>数据更新于 " + hm(ok.updatedAt) + "</span><span>共 " + fmtNum(ok.total) + " 条会话</span>";
     }
-    banner(
-      json.stats.total === 0 ? "当前筛选条件下没有会话，放宽条件或点「重置筛选」。" : "",
-      "info"
-    );
+    if (m.status === "error") {
+      banner("最近一次拉取数据失败（" + (m.failedAt ? hm(m.failedAt) : "时间未知") + "）：" + (m.error || "原因未知") +
+        "。页面上的数据停在 " + (ok.updatedAt ? hm(ok.updatedAt) : "上一次成功拉取") + "，可点「重新拉取数据」重试。", "warn");
+    } else {
+      banner(
+        json.stats.total === 0 ? "当前筛选条件下没有会话，放宽条件或点「重置筛选」。" : "",
+        "info"
+      );
+    }
   } catch (err) {
     banner("看板数据加载失败：" + err.message);
   }

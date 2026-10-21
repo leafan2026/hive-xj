@@ -18,7 +18,8 @@ const JSJ_BASE = `https://next.jinshuju.net/api/v1/forms/${FORM_TOKEN}/entries`;
 // entries v6 / stats v11 / q v6（2026-10-13 改版）：明细加 sum（field_11 一句话总结），复问明细改成按「复问链」合并：
 // 一行 = 首次提问摘要 + 复问了几次 + 最后一次谁接的。明细多了一个字段，所以 K_ENTRIES 也要换键、重新拉数。
 const K_STATS = "hive:stats:v15";
-const K_ENTRIES = "hive:entries:v6";
+// entries v7（2026-10-21）：明细改成按月分块存，K_ENTRIES 只放清单，见「明细分块存储」。
+const K_ENTRIES = "hive:entries:v7";
 const K_WEEKLY = "hive:weekly:v7";
 const K_LOOP = "hive:loop:v1";
 const K_META = "hive:meta:v1";
@@ -1033,37 +1034,118 @@ async function readMeta(env) {
   return (await env.CACHE.get(K_META, { type: "json" })) || null;
 }
 
+// 最近一次成功落地的数据是哪一版。刷新失败 / 进行中时，页面上的数据仍是这一版。
+function lastOkOf(meta) {
+  if (!meta) return null;
+  if (meta.status === "ok" && meta.updatedAt) return { updatedAt: meta.updatedAt, total: meta.total };
+  return meta.lastOk || null;
+}
+
+// ============== 明细分块存储（2026-10-21） ==============
+// 教训：明细原来整份放在一个 KV 值里。3 万条精简明细逼近 KV 单值上限 25 MiB，
+// 2026-10-20 凌晨起每次写入都失败，筛选查询一直读 10-19 那份旧明细，10-19 之后的会话全看不到；
+// 而页面照常显示「数据更新于 …」，因为写失败只记在 meta 里、前端没展示。
+// 现在按会话月份分块（每块最多 ENTRY_PART_ROWS 条），K_ENTRIES 只放清单：
+//   { stamp, total, parts: [{ key, n }] }
+// 块的键里带内容指纹：内容没变的块键不变、不重写（老月份基本不动，每次刷新通常只写当月一块）；
+// 内容变了就是新键，清单最后才切过去——任何一块写失败，读的人看到的仍是完整的旧版本，不会新旧混读。
+const K_ENTRY_PART = "hive:entries:v7:part:";
+const ENTRY_PART_ROWS = 6000;
+const ENTRY_PART_MAX_BYTES = 20 * 1024 * 1024;   // 离 25 MiB 上限留余量，超了直接报错而不是等 KV 拒写
+
+function fnv1a(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36) + s.length.toString(36);
+}
+
+// rows 已按时间倒序：同一个月连在一起，月内再按条数切
+function splitEntries(rows) {
+  const parts = [];
+  let cur = null;
+  for (const r of rows) {
+    const m = (r.t || "").slice(0, 7) || "none";
+    if (!cur || cur.m !== m || cur.rows.length >= ENTRY_PART_ROWS) {
+      cur = { m, idx: cur && cur.m === m ? cur.idx + 1 : 0, rows: [] };
+      parts.push(cur);
+    }
+    cur.rows.push(r);
+  }
+  return parts;
+}
+
+let entriesMemo = null;   // 同一个 isolate 里按清单 stamp 记住解析好的明细，省掉每次请求解析几十 MB
+
+async function writeEntries(env, rows) {
+  const prev = (await env.CACHE.get(K_ENTRIES, { type: "json" })) || {};
+  const had = new Set((prev.parts || []).map((p) => p.key));
+  const enc = new TextEncoder();
+  const parts = splitEntries(rows).map((p) => {
+    const body = JSON.stringify(p.rows);
+    const bytes = enc.encode(body).length;
+    if (bytes > ENTRY_PART_MAX_BYTES) {
+      throw new Error(`明细分块 ${p.m}#${p.idx} 有 ${(bytes / 1048576).toFixed(1)} MB，超过单块上限，需调小 ENTRY_PART_ROWS`);
+    }
+    return { key: K_ENTRY_PART + p.m + ":" + p.idx + ":" + fnv1a(body), n: p.rows.length, body };
+  });
+  const toWrite = parts.filter((p) => !had.has(p.key));
+  await Promise.all(toWrite.map((p) => env.CACHE.put(p.key, p.body)));   // 任何一块失败都整体抛出，清单不切
+  const stamp = new Date().toISOString();
+  await env.CACHE.put(K_ENTRIES, JSON.stringify({ stamp, total: rows.length, parts: parts.map(({ key, n }) => ({ key, n })) }));
+  // 新清单里不再用的旧块删掉（正在读旧清单的请求缺块时会重读一次清单，见 readEntries）
+  const keep = new Set(parts.map((p) => p.key));
+  await Promise.allSettled((prev.parts || []).filter((p) => !keep.has(p.key)).map((p) => env.CACHE.delete(p.key)));
+  entriesMemo = { stamp, rows };
+  return { parts: parts.length, written: toWrite.length };
+}
+
+async function readEntries(env) {
+  for (let 第几次 = 0; 第几次 < 2; 第几次++) {
+    const man = await env.CACHE.get(K_ENTRIES, { type: "json" });
+    if (!man || !Array.isArray(man.parts)) return null;
+    if (entriesMemo && entriesMemo.stamp === man.stamp) return entriesMemo.rows;
+    const chunks = await Promise.all(man.parts.map((p) => env.CACHE.get(p.key, { type: "json" })));
+    if (chunks.some((c) => !Array.isArray(c))) continue;   // 刚好赶上换版删旧块：重读一次清单
+    const rows = [].concat(...chunks);
+    entriesMemo = { stamp: man.stamp, rows };
+    return rows;
+  }
+  return null;
+}
+
 async function refreshCache(env) {
   const startedAt = Date.now();
+  const lastOk = lastOkOf(await readMeta(env));
   await env.CACHE.put(
     K_META,
-    JSON.stringify({ status: "running", startedAt, startedAtIso: new Date(startedAt).toISOString() })
+    JSON.stringify({ status: "running", startedAt, startedAtIso: new Date(startedAt).toISOString(), lastOk })
   );
 
   try {
     const { rows, total } = await fetchAllEntries(env);
     rows.sort((a, b) => (b.t || "").localeCompare(a.t || ""));
-    // 先全部算完再写：allSettled 保证一个键写失败不会连累其它键（Promise.all 一拒绝，
-    // 剩下的 put 可能随上下文一起被掐掉），哪个失败也会记进 meta，不再「假装成功」。
-    const 要写 = [
+    // 明细是唯一的事实来源：先写明细，写成了才写派生的 stats / weekly / loop。
+    // 明细写不进去就整次算失败、派生键也不动，免得「派生是新的、明细是旧的」。
+    const 分块 = await writeEntries(env, rows);
+    const 派生键 = [
       [K_STATS, buildStats(rows)],
-      [K_ENTRIES, rows],
       [K_WEEKLY, buildWeekly(rows)],
       [K_LOOP, buildLoop(rows)],
     ];
-    const 结果 = await Promise.allSettled(
-      要写.map(([k, v]) => env.CACHE.put(k, JSON.stringify(v)))
-    );
-    const 失败 = 要写
-      .map(([k], i) => (结果[i].status === "rejected" ? `${k}: ${结果[i].reason && 结果[i].reason.message}` : null))
-      .filter(Boolean);
+    const 结果 = await Promise.allSettled(派生键.map(([k, v]) => env.CACHE.put(k, JSON.stringify(v))));
+    const 失败键 = 派生键.map(([k]) => k).filter((k, i) => 结果[i].status === "rejected");
+    // 派生键写失败就删掉旧值，读的时候从新明细现算（见「派生」），不留和明细对不上的旧值
+    await Promise.allSettled(失败键.map((k) => env.CACHE.delete(k)));
+    const updatedAt = new Date().toISOString();
     const meta = {
-      status: 失败.length ? "error" : "ok",
-      updatedAt: new Date().toISOString(),
+      status: "ok",
+      updatedAt,
       total: rows.length,
       reportedTotal: total,
+      parts: 分块.parts,
+      partsWritten: 分块.written,
       tookMs: Date.now() - startedAt,
-      ...(失败.length ? { error: `缓存写入失败 ${失败.join("；")}` } : {}),
+      ...(失败键.length ? { warn: `派生缓存写入失败，已改为现算：${失败键.join("、")}` } : {}),
     };
     await env.CACHE.put(K_META, JSON.stringify(meta));
     console.log("[refresh]", meta.status, JSON.stringify(meta));
@@ -1074,6 +1156,7 @@ async function refreshCache(env) {
       error: err.message,
       failedAt: new Date().toISOString(),
       tookMs: Date.now() - startedAt,
+      lastOk,   // 页面上的数据停在这一版
     };
     await env.CACHE.put(K_META, JSON.stringify(meta));
     console.error("[refresh] failed:", err.message);
@@ -1215,8 +1298,10 @@ async function queryCacheKey(q, dataVersion, range) {
 }
 
 // 没有 updatedAt 就没有可靠的失效依据，这时干脆不缓存
+// 刷新失败或进行中时，明细仍是 lastOk 那一版（明细写入是整版切换的），照样可以按它缓存
 function dataVersionOf(meta) {
-  return meta && meta.status === "ok" && meta.updatedAt ? meta.updatedAt : "";
+  const ok = lastOkOf(meta);
+  return ok && ok.updatedAt ? ok.updatedAt : "";
 }
 
 function isRunning(meta) {
@@ -1234,7 +1319,7 @@ function kickoff(env, ctx, meta) {
 // 所以这三个键缺失时不该干等后台刷新：只要明细还在，就当场算、顺手回写。
 // 这样换缓存键（bump vN）不再让页面卡在「正在构建」，后台刷新死掉也不至于整页没数。
 async function 派生(env, ctx, key, build) {
-  const rows = await env.CACHE.get(K_ENTRIES, { type: "json" });
+  const rows = await readEntries(env);
   if (!rows) return null;
   const value = build(rows);
   ctx.waitUntil(
@@ -1987,7 +2072,7 @@ export default {
         const hit = await env.CACHE.get(key, { type: "json" });
         if (hit) return json({ ...hit, meta });
       }
-      const rows = await env.CACHE.get(K_ENTRIES, { type: "json" });
+      const rows = await readEntries(env);
       if (!rows) return 构建中(env, ctx, meta);
       const from = fixedWindowFrom();
       const st = buildStats(rows.filter((r) => (r.t || "").slice(0, 10) >= from));
@@ -2030,7 +2115,7 @@ export default {
       }
 
       const [rows, cachedFull] = await Promise.all([
-        env.CACHE.get(K_ENTRIES, { type: "json" }),
+        readEntries(env),
         env.CACHE.get(K_STATS, { type: "json" }),
       ]);
       if (!rows) return 构建中(env, ctx, meta);
@@ -2098,3 +2183,6 @@ export default {
     return new Response("Not Found", { status: 404 });
   },
 };
+
+// 给 scripts/preview.mjs 和本地自测用：预览按线上同一套分块格式写明细
+export { writeEntries, readEntries, refreshCache };
