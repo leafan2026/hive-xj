@@ -135,6 +135,7 @@ async function fetchAllEntries(env) {
 // 增量看不到删除，所以每天北京时间 FULL_SYNC_HOUR 点后的第一次刷新、或手动「重新拉取数据」走全量。
 const SYNC_OVERLAP_MS = 10 * 60 * 1000;   // 游标往回多拉 10 分钟，盖住时钟误差和同步期间正在写入的记录
 const FULL_SYNC_HOUR = 3;                 // 数据源每天约 04:30 进批量，凌晨 3 点后全量一次
+const INCR_MAX_ROWS = 3000;               // 改动超过这个数（顺序 60 页）就直接走全量
 
 // 金数据的时间参数按北京时间解析
 function bjTime(ms) {
@@ -156,15 +157,21 @@ async function fetchUpdatedSince(env, sinceMs) {
   };
   const first = await fetchPage(auth, null, filters);
   const total = first.total || 0;
-  const size = (first.data || []).length || PAGE_SIZE;
+  // 改动太多（大批回填）就不逐页顺序拉了，交给并行的全量，更快
+  if (total > INCR_MAX_ROWS) return null;
   absorb(first);
-  // 带筛选时 next 是行偏移：知道总数后并行按偏移取（大批回填时也快）
-  const offsets = [];
-  for (let o = size; o < total; o += size) offsets.push(o);
-  for (let i = 0; i < offsets.length; i += CONCURRENCY) {
-    const pages = await Promise.all(offsets.slice(i, i + CONCURRENCY).map((o) => fetchPage(auth, o, filters)));
-    pages.forEach(absorb);
+  // 2026-10-22 教训：带 updated_at 筛选时，金数据返回的 next 仍是 serial_number 游标，不是行偏移。
+  // 第一版按行偏移并行取，第 2 页起拿到的全是第 1 页的重复，只合并了最早的 50 条，
+  // 10-21 那批 205 条新会话整批漏掉、meta 还报 ok。现在只顺着接口返回的 next 一页页走，不自己算偏移。
+  let next = first.next;
+  for (let guard = 0; next !== null && next !== undefined && rows.length < total && guard < 200; guard++) {
+    const page = await fetchPage(auth, next, filters);
+    absorb(page);
+    if (!page.next || String(page.next) === String(next) || !(page.data || []).length) break;
+    next = page.next;
   }
+  // 少拉一条都不合并：宁可这次报错、页面停在上一版，也不能悄悄漏数据
+  if (rows.length < total) throw new Error(`增量只拉到 ${rows.length} / ${total} 条，本次不合并`);
   return { rows, total };
 }
 
@@ -1179,11 +1186,15 @@ async function refreshCache(env, mode = "auto") {
   try {
     const man = await readManifest(env);
     const 今天 = bjTime(startedAt).slice(0, 10);
-    const 全量 = mode === "full" || !man || !man.cursor || !man.fullAt ||
+    let 全量 = mode === "full" || !man || !man.cursor || !man.fullAt ||
       (bjTime(Date.parse(man.fullAt)).slice(0, 10) < 今天 && Number(bjTime(startedAt).slice(11, 13)) >= FULL_SYNC_HOUR);
     const cursor = new Date(startedAt - SYNC_OVERLAP_MS).toISOString();
 
-    let rows, reportedTotal, changed, fullAt;
+    let rows, reportedTotal, changed, fullAt, old = null, inc = null;
+    if (!全量) {
+      [old, inc] = await Promise.all([readEntries(env), fetchUpdatedSince(env, Date.parse(man.cursor))]);
+      if (!inc) 全量 = true;   // 改动太多，走全量
+    }
     if (全量) {
       const r = await fetchAllEntries(env);
       rows = r.rows;
@@ -1191,7 +1202,6 @@ async function refreshCache(env, mode = "auto") {
       changed = rows.length;
       fullAt = new Date(startedAt).toISOString();
     } else {
-      const [old, inc] = await Promise.all([readEntries(env), fetchUpdatedSince(env, Date.parse(man.cursor))]);
       if (!old) throw new Error("读不到已存明细，下次改走全量");
       fullAt = man.fullAt;
       reportedTotal = null;
