@@ -765,10 +765,25 @@ function buildingText(meta) {
   if (m.status === "running") {
     const 秒 = m.startedAt ? Math.round((Date.now() - m.startedAt) / 1000) : 0;
     return 秒 > 120
-      ? "上一次拉取已卡住 " + 秒 + " 秒，点右上角「重新拉取数据」重新发起。"
-      : "正在从金数据全量拉取（已 " + 秒 + " 秒，通常 30 秒左右），完成后自动显示。";
+      ? "上一次拉取已卡住 " + 秒 + " 秒，点「重新拉取数据」重新发起。"
+      : progressText(m) + "，完成后自动显示。";
   }
   return "数据还没拉过，点右上角「重新拉取数据」。";
+}
+
+// 刷新进度（meta.phase / done / total 由后台每 0.7 秒左右写一次）
+function progressText(m) {
+  if (m.phase === "full" && m.total) {
+    return "正在全量拉取：已拉 " + fmtNum(m.done || 0) + " / " + fmtNum(m.total) + " 条（" + Math.min(100, Math.round(((m.done || 0) / m.total) * 100)) + "%）";
+  }
+  if (m.phase === "write") return "已拉完 " + fmtNum(m.total || 0) + " 条，正在重算图表";
+  if (m.phase === "incr") return "正在拉取金数据上的新增和改动";
+  return "正在准备拉取";
+}
+function progressPct(m) {
+  if (m.phase === "full" && m.total) return Math.min(99, Math.round(((m.done || 0) / m.total) * 100)) + "%";
+  if (m.phase === "write") return "99%";
+  return "";
 }
 
 // 缓存还在构建时轮询，构建完自动渲染
@@ -789,10 +804,11 @@ function pollUntilReady() {
         banner("数据拉取失败：" + (meta.error || "未知错误") + "（可点右上角重试）");
         return;
       }
+      if (meta.status === "running") banner(buildingText(meta), "info");   // 显示后台进度
     } catch (e) { /* 忽略单次轮询失败 */ }
-    setTimeout(tick, 4000);
+    setTimeout(tick, 1000);
   };
-  setTimeout(tick, 4000);
+  setTimeout(tick, 1000);
 }
 
 // ============== 筛选 ==============
@@ -3064,11 +3080,11 @@ async function hardRefresh() {
   const btn = $("refreshBtn");
   btn.disabled = true;
   btn.textContent = "拉取中…";
-  banner("正在后台从金数据全量拉取，约需 20 秒，完成后自动刷新页面数据。", "info");
+  banner("正在拉取金数据上的新增和改动…", "info");
   try {
     const json = await api("/api/refresh", { method: "POST" });
     if (!json.success) throw new Error(json.error || "未知错误");
-    await waitForRefresh();
+    await waitForRefresh(json.requestedAt || "", btn);
   } catch (err) {
     banner("刷新失败：" + err.message);
   } finally {
@@ -3078,22 +3094,33 @@ async function hardRefresh() {
   }
 }
 
-// 等后台刷新落地（最多 90 秒）
-async function waitForRefresh() {
-  for (let i = 0; i < 30; i++) {
-    await new Promise((r) => setTimeout(r, 3000));
+// 等后台刷新落地（最多 2 分钟）。每秒查一次状态，按后台写的进度更新提示条和按钮；
+// 只认「本次点击之后」完成的结果（checkedAt / failedAt ≥ requestedAt），不会把上一次的 ok 当成这次做完。
+async function waitForRefresh(requestedAt, btn) {
+  const after = (iso) => !requestedAt || (iso && iso >= requestedAt);
+  for (let i = 0; i < 120; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
     try {
       const meta = (await api("/api/status")).meta || {};
-      if (meta.status === "ok") {
-        banner("");
+      if (meta.status === "ok" && after(meta.checkedAt || meta.updatedAt)) {
         await loadDashboard();
+        const 改动 = meta.mode === "full"
+          ? "全量拉取 " + fmtNum(meta.total) + " 条" + (meta.fullReason ? "，原因：" + meta.fullReason : "")
+          : meta.changed ? "拉到 " + fmtNum(meta.changed) + " 条新增或改动" : "金数据上没有新的改动";
+        banner("同步完成：" + 改动 + "，用时 " + (meta.tookMs / 1000).toFixed(1) + " 秒。", "info");
+        setTimeout(() => { if ($("banner").textContent.startsWith("同步完成")) banner(""); }, 5000);
         return;
       }
-      if (meta.status === "error") {
+      if (meta.status === "error" && after(meta.failedAt)) {
         banner("数据拉取失败：" + (meta.error || "未知错误"));
         return;
       }
-    } catch (e) { /* 忽略 */ }
+      if (meta.status === "running") {
+        banner(progressText(meta) + "…", "info");
+        const pct = progressPct(meta);
+        if (btn) btn.textContent = "拉取中" + (pct ? " " + pct : "…");
+      }
+    } catch (e) { /* 忽略单次轮询失败 */ }
   }
   banner("拉取仍未完成，请稍后刷新页面查看。", "info");
 }
