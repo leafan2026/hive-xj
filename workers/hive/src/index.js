@@ -55,10 +55,11 @@ const AVOIDABLE_REASONS = new Set([
 
 // 一页最多等 PAGE_TIMEOUT_MS。没有超时的话，只要有一页挂住不返回，
 // 整个 refreshCache 就永远不结束，meta 会一直停在 running、把后续刷新全挡掉（2026-09-18 的故障现场）。
-// params：{ next, filters }。带 filters 时金数据的 next 是行偏移，不再是 serial_number。
-async function fetchPage(auth, next, filters, limit = PAGE_SIZE) {
+// next 是 serial_number 游标（带不带 filters 都是）；fields 只取哪些字段（逗号分隔，serial_number 总会返回）
+async function fetchPage(auth, next, filters, limit = PAGE_SIZE, fields) {
   const qs = new URLSearchParams();
   qs.set("limit", String(limit));
+  if (fields) qs.set("fields", fields);
   if (next !== null && next !== undefined) qs.set("next", String(next));
   if (filters) qs.set("filters", JSON.stringify(filters));
   const url = qs.toString() ? `${JSJ_BASE}?${qs}` : JSJ_BASE;
@@ -85,7 +86,8 @@ async function fetchPage(auth, next, filters, limit = PAGE_SIZE) {
 }
 
 // onProgress(已拉条数, 总条数)：每取完一批页调一次，给页面显示进度
-async function fetchAllEntries(env, onProgress) {
+// fields：只核对序号时传 "field_1"，几万条只拉编号和一个字段，比拉全部内容小得多
+async function fetchAllEntries(env, onProgress, fields) {
   const auth = btoa(`${env.JSJ_API_KEY}:${env.JSJ_API_SECRET}`);
   const seen = new Set();
   const rows = [];
@@ -104,7 +106,7 @@ async function fetchAllEntries(env, onProgress) {
     }
   };
 
-  const first = await fetchPage(auth, null);
+  const first = await fetchPage(auth, null, null, PAGE_SIZE, fields);
   const total = first.total || 0;
   absorb(first);
   if (onProgress) await onProgress(rows.length, total);
@@ -116,7 +118,7 @@ async function fetchAllEntries(env, onProgress) {
   for (let o = step + 1; o <= total; o += step) offsets.push(o);
   for (let i = 0; i < offsets.length; i += CONCURRENCY) {
     const pages = await Promise.all(
-      offsets.slice(i, i + CONCURRENCY).map((o) => fetchPage(auth, o))
+      offsets.slice(i, i + CONCURRENCY).map((o) => fetchPage(auth, o, null, PAGE_SIZE, fields))
     );
     pages.forEach(absorb);
     if (onProgress) await onProgress(rows.length, total);
@@ -125,7 +127,7 @@ async function fetchAllEntries(env, onProgress) {
   // 兜底：仍有缺口时顺序补拉
   let guard = 0;
   while (rows.length < total && maxNext && guard < 100) {
-    const page = await fetchPage(auth, maxNext);
+    const page = await fetchPage(auth, maxNext, null, PAGE_SIZE, fields);
     const before = rows.length;
     absorb(page);
     guard++;
@@ -139,9 +141,13 @@ async function fetchAllEntries(env, onProgress) {
 // 全量拉一次要 600 多页、25～40 秒，而数据源一天只进一两批新会话；老会话也会被回填改动
 // （实测 10-04 改了 26 天前的记录、10-21 改了 8 天前的），所以不能按「N 天前冻结」，
 // 改为按金数据的「最后更新时间」只拉上次同步之后新增或改过的记录，按 sn 合并进已存明细。
-// 增量看不到删除，所以每天北京时间 FULL_SYNC_HOUR 点后的第一次刷新、或手动「重新拉取数据」走全量。
+// 增量看不到删除：每次合并后和数据源总条数对账，对不上就核对序号（只拉编号、不拉内容），删掉数据源里已经没有的行。
+// 质检表按周处理，删行基本只发生在当周和上周，所以先只核对最近 RECENT_DAYS 天的序号（1 页左右）；
+// 还对不上、或距上次全表核对超过 LIST_CHECK_DAYS 天，才拉全表序号清单（约 31 页、每页很小）。
+// 整表重拉内容只剩：第一次建库、改动超过 INCR_MAX_ROWS 条（口径大改整表回填）、序号核对后仍对不上、手动 ?full=1。
 const SYNC_OVERLAP_MS = 10 * 60 * 1000;   // 游标往回多拉 10 分钟，盖住时钟误差和同步期间正在写入的记录
-const FULL_SYNC_HOUR = 3;                 // 数据源每天约 04:30 进批量，凌晨 3 点后全量一次
+const RECENT_DAYS = 14;   // 当周 + 上周
+const LIST_CHECK_DAYS = 7;
 const INCR_MAX_ROWS = 3000;               // 改动超过这个数（顺序 60 页）就直接走全量
 
 // 金数据的时间参数按北京时间解析
@@ -180,6 +186,20 @@ async function fetchUpdatedSince(env, sinceMs) {
   // 少拉一条都不合并：宁可这次报错、页面停在上一版，也不能悄悄漏数据
   if (rows.length < total) throw new Error(`增量只拉到 ${rows.length} / ${total} 条，本次不合并`);
   return { rows, total };
+}
+
+// 从 startSn 往后顺序取序号（只取 field_1），返回数据源里这一段现存的 serial_number 集合
+async function fetchSerialsFrom(env, startSn) {
+  const auth = btoa(`${env.JSJ_API_KEY}:${env.JSJ_API_SECRET}`);
+  const set = new Set();
+  let next = startSn;
+  for (let guard = 0; next !== null && next !== undefined && guard < 100; guard++) {
+    const page = await fetchPage(auth, next, null, PAGE_SIZE, "field_1");
+    for (const e of page.data || []) if (e.serial_number !== null && e.serial_number !== undefined) set.add(e.serial_number);
+    if (!page.next || String(page.next) === String(next) || !(page.data || []).length) break;
+    next = page.next;
+  }
+  return set;
 }
 
 // 数据源当前总条数（只取 1 条），增量合并后用来对账
@@ -1212,12 +1232,11 @@ async function refreshCache(env, mode = "auto") {
 
   try {
     const man = await readManifest(env);
-    const 今天 = bjTime(startedAt).slice(0, 10);
-    let 全量 = mode === "full" || !man || !man.cursor || !man.fullAt ||
-      (bjTime(Date.parse(man.fullAt)).slice(0, 10) < 今天 && Number(bjTime(startedAt).slice(11, 13)) >= FULL_SYNC_HOUR);
+    let 全量 = mode === "full" || !man || !man.cursor || !man.fullAt;
     const cursor = new Date(startedAt - SYNC_OVERLAP_MS).toISOString();
 
-    let rows, reportedTotal, changed, fullAt, old = null, inc = null, srcTotal = null, 全量原因 = 全量 ? (mode === "full" ? "手动全量" : !man ? "首次" : "每日全量") : "";
+    let rows, reportedTotal, changed, fullAt, old = null, inc = null, srcTotal = null, 全量原因 = 全量 ? (mode === "full" ? "手动全量" : "首次建库") : "";
+    let 删除 = 0, listAt = man ? (man.listAt || man.fullAt) : null;
     if (!全量) {
       写进度({ phase: "incr" }, true);
       [old, inc, srcTotal] = await Promise.all([
@@ -1236,9 +1255,38 @@ async function refreshCache(env, mode = "auto") {
         const was = bySn.get(r.sn);
         if (!was || JSON.stringify(was) !== JSON.stringify(r)) { bySn.set(r.sn, r); changed++; }
       }
-      // 对账：合并后条数和数据源总数对不上，说明有删除（增量看不到）或漏拉，本次直接改走全量
-      if (bySn.size !== srcTotal) { 全量 = true; 全量原因 = `条数对不上（本地 ${bySn.size} / 数据源 ${srcTotal}）`; }
-      else { rows = changed ? [...bySn.values()] : old; fullAt = man.fullAt; reportedTotal = null; }
+      // 对账：合并后条数和数据源总数对不上 = 有删行（增量看不到）或漏拉。先核对最近 RECENT_DAYS 天的序号
+      const 删掉 = (keep, from = 0) => { for (const sn of [...bySn.keys()]) if (sn >= from && !keep.has(sn)) { bySn.delete(sn); 删除++; } };
+      let 有漏 = false;
+      if (bySn.size !== srcTotal) {
+        写进度({ phase: "check" }, true);
+        const 起点日 = bjTime(startedAt - RECENT_DAYS * 86400e3).slice(0, 10);
+        let from = Infinity, maxSn = 0;
+        for (const r of bySn.values()) { if (r.sn > maxSn) maxSn = r.sn; if ((r.t || "") >= 起点日 && r.sn < from) from = r.sn; }
+        if (from === Infinity) from = maxSn + 1;
+        const tail = await fetchSerialsFrom(env, from);
+        删掉(tail, from);
+        有漏 = [...tail].some((sn) => !bySn.has(sn));
+      }
+      // 还对不上、或到了每周一次的全表核对：拉全表序号清单（只有编号和一个字段）
+      const 该全表核对 = !listAt || startedAt - Date.parse(listAt) > LIST_CHECK_DAYS * 86400e3;
+      if (!有漏 && (bySn.size !== srcTotal || 该全表核对)) {
+        const all = await fetchAllEntries(env, (done, total) => 写进度({ phase: "list", done, total }), "field_1");
+        const keep = new Set(all.rows.map((r) => r.sn));
+        删掉(keep);
+        有漏 = [...keep].some((sn) => !bySn.has(sn));
+        srcTotal = keep.size;
+        listAt = new Date(startedAt).toISOString();
+      }
+      if (有漏 || bySn.size !== srcTotal) {
+        全量 = true;
+        全量原因 = 有漏 ? "数据源里有本地没有的行" : `核对序号后条数仍对不上（本地 ${bySn.size} / 数据源 ${srcTotal}）`;
+      } else {
+        changed += 删除;
+        rows = changed ? [...bySn.values()] : old;
+        fullAt = man.fullAt;
+        reportedTotal = null;
+      }
     }
     if (全量) {
       const r = await fetchAllEntries(env, (done, total) => 写进度({ phase: "full", done, total }));
@@ -1246,6 +1294,8 @@ async function refreshCache(env, mode = "auto") {
       reportedTotal = r.total;
       changed = rows.length;
       fullAt = new Date(startedAt).toISOString();
+      listAt = fullAt;
+      删除 = 0;
     }
 
     let 分块 = { parts: man ? man.parts.length : 0, written: 0 };
@@ -1256,7 +1306,7 @@ async function refreshCache(env, mode = "auto") {
       rows.sort((a, b) => (b.t || "").localeCompare(a.t || ""));
       // 明细是唯一的事实来源：先写明细，写成了才写派生的 stats / weekly / loop。
       // 明细写不进去就整次算失败、派生键也不动，免得「派生是新的、明细是旧的」。
-      分块 = await writeEntries(env, rows, { cursor, fullAt });
+      分块 = await writeEntries(env, rows, { cursor, fullAt, listAt });
       const 派生键 = [
         [K_STATS, buildStats(rows)],
         [K_WEEKLY, buildWeekly(rows)],
@@ -1269,7 +1319,7 @@ async function refreshCache(env, mode = "auto") {
       updatedAt = new Date().toISOString();
     } else {
       // 没有改动：明细不重写，只把游标往前挪
-      await env.CACHE.put(K_ENTRIES, JSON.stringify({ ...man, cursor }));
+      await env.CACHE.put(K_ENTRIES, JSON.stringify({ ...man, cursor, listAt }));
     }
     await 进度链;
     const meta = {
@@ -1279,8 +1329,10 @@ async function refreshCache(env, mode = "auto") {
       updatedAt,
       checkedAt: new Date().toISOString(),
       fullAt,
+      listAt,
       total: rows.length,
       changed,
+      deleted: 删除,
       ...(reportedTotal !== null ? { reportedTotal } : {}),
       parts: 分块.parts,
       partsWritten: 分块.written,

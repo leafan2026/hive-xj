@@ -776,12 +776,16 @@ function progressText(m) {
   if (m.phase === "full" && m.total) {
     return "正在全量拉取：已拉 " + fmtNum(m.done || 0) + " / " + fmtNum(m.total) + " 条（" + Math.min(100, Math.round(((m.done || 0) / m.total) * 100)) + "%）";
   }
+  if (m.phase === "list" && m.total) {
+    return "正在核对全表序号（只拉编号）：" + fmtNum(m.done || 0) + " / " + fmtNum(m.total) + "（" + Math.min(100, Math.round(((m.done || 0) / m.total) * 100)) + "%）";
+  }
+  if (m.phase === "check") return "条数和金数据对不上，正在核对最近两周删掉的行";
   if (m.phase === "write") return "已拉完 " + fmtNum(m.total || 0) + " 条，正在重算图表";
   if (m.phase === "incr") return "正在拉取金数据上的新增和改动";
   return "正在准备拉取";
 }
 function progressPct(m) {
-  if (m.phase === "full" && m.total) return Math.min(99, Math.round(((m.done || 0) / m.total) * 100)) + "%";
+  if ((m.phase === "full" || m.phase === "list") && m.total) return Math.min(99, Math.round(((m.done || 0) / m.total) * 100)) + "%";
   if (m.phase === "write") return "99%";
   return "";
 }
@@ -3106,7 +3110,9 @@ async function waitForRefresh(requestedAt, btn) {
         await loadDashboard();
         const 改动 = meta.mode === "full"
           ? "全量拉取 " + fmtNum(meta.total) + " 条" + (meta.fullReason ? "，原因：" + meta.fullReason : "")
-          : meta.changed ? "拉到 " + fmtNum(meta.changed) + " 条新增或改动" : "金数据上没有新的改动";
+          : meta.changed
+            ? "拉到 " + fmtNum(meta.changed - (meta.deleted || 0)) + " 条新增或改动" + (meta.deleted ? "，同步删除 " + fmtNum(meta.deleted) + " 条" : "")
+            : "金数据上没有新的改动";
         banner("同步完成：" + 改动 + "，用时 " + (meta.tookMs / 1000).toFixed(1) + " 秒。", "info");
         setTimeout(() => { if ($("banner").textContent.startsWith("同步完成")) banner(""); }, 5000);
         return;
