@@ -3188,8 +3188,29 @@ function initTabs() {
       window.scrollTo({ top: 0 });
     });
   });
-  window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
-  showTab(location.hash.slice(1));
+  // 2026-10-26 修：周报目录是 <a href="#wk1">，点击会把地址改成 #wk1，hashchange 当成未知页签退回总览。
+  // 目录点击改成页内滚动、地址保持 #weekly；从外部带 #wk3 这类锚点打开时，落到它所在的页签再滚过去。
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest && e.target.closest('.toc a[href^="#"]');
+    if (!a) return;
+    const el = document.getElementById(a.getAttribute("href").slice(1));
+    if (!el) return;
+    e.preventDefault();
+    el.scrollIntoView({ behavior: REDUCED_MOTION ? "auto" : "smooth", block: "start" });
+  });
+  const route = () => {
+    const name = location.hash.slice(1);
+    if (TAB_NAMES.includes(name) || !name) { showTab(name); return; }
+    const el = document.getElementById(name);
+    const panel = el && el.closest(".panel");
+    const tab = panel && panel.id.replace(/^panel-/, "");
+    if (!TAB_NAMES.includes(tab)) { showTab(name); return; }
+    history.replaceState(null, "", "#" + tab);
+    showTab(tab);
+    requestAnimationFrame(() => el.scrollIntoView({ block: "start" }));
+  };
+  window.addEventListener("hashchange", route);
+  route();
 }
 
 // 筛选栏 + 页签吸顶状态：哨兵元素一滚出视口顶端，就给吸顶块加 .stuck（更重的投影）
